@@ -160,6 +160,30 @@ class BrokerAnalysisView(ctk.CTkFrame):
             self.ranking_card, fg_color="transparent")
         self.rank_list_frame.pack(fill="both", expand=True, padx=12, pady=(0, 14))
 
+        # --- Holder distribution card ---
+        self.holder_card = ctk.CTkFrame(self.container, corner_radius=12)
+
+        holder_hdr = ctk.CTkFrame(self.holder_card, fg_color="transparent")
+        holder_hdr.pack(fill="x", padx=20, pady=(16, 4))
+        ctk.CTkLabel(
+            holder_hdr, text="大戶 / 散戶持股比例",
+            font=ctk.CTkFont(size=14, weight="bold"),
+        ).pack(side="left")
+        self.holder_refresh_btn = ctk.CTkButton(
+            holder_hdr, text="從 TDCC 更新", width=110, height=28,
+            corner_radius=6, font=ctk.CTkFont(size=11),
+            command=self._on_refresh_holder,
+        )
+        self.holder_refresh_btn.pack(side="right")
+
+        self.holder_info_frame = ctk.CTkFrame(
+            self.holder_card, fg_color="transparent")
+        self.holder_info_frame.pack(fill="x", padx=16, pady=(0, 4))
+
+        self.holder_chart_frame = ctk.CTkFrame(
+            self.holder_card, fg_color="transparent")
+        self.holder_chart_frame.pack(fill="x", padx=8, pady=(0, 16))
+
         # --- Detail chart area ---
         self.detail_card = ctk.CTkFrame(self.container, corner_radius=12)
 
@@ -254,6 +278,9 @@ class BrokerAnalysisView(ctk.CTkFrame):
         start = start_dt.strftime("%Y-%m-%d")
         self.vm.reload_detail(start, end)
 
+    def _on_refresh_holder(self):
+        self.vm.load_holder_distribution()
+
     def _on_rank_tab_change(self, value: str):
         if "關聯" in value:
             start = self.date_start_entry.get().strip() or self.vm.date_min
@@ -272,6 +299,8 @@ class BrokerAnalysisView(ctk.CTkFrame):
         self.vm.bind("detail_data", self._on_detail_data)
         self.vm.bind("correlation_data", self._on_correlation_data)
         self.vm.bind("correlation_loading", self._on_correlation_loading)
+        self.vm.bind("holder_data", self._on_holder_data)
+        self.vm.bind("holder_loading", self._on_holder_loading)
 
     def _on_error(self, v):
         self.after(0, lambda: self.error_label.configure(text=v))
@@ -297,6 +326,7 @@ class BrokerAnalysisView(ctk.CTkFrame):
             if not stock:
                 self.stock_info_card.pack_forget()
                 self.ranking_card.pack_forget()
+                self.holder_card.pack_forget()
                 self.detail_card.pack_forget()
                 return
             self.stock_title_label.configure(
@@ -310,7 +340,10 @@ class BrokerAnalysisView(ctk.CTkFrame):
                 text=f"資料範圍：{d_min} ~ {d_max}" if d_min else "")
             self.stock_info_card.pack(padx=40, pady=8, fill="x")
             self.ranking_card.pack(padx=40, pady=8, fill="x")
+            self.holder_card.pack(padx=40, pady=8, fill="x")
             self.detail_card.pack_forget()
+            # Auto-load holder distribution
+            self.vm.load_holder_distribution()
         self.after(0, _u)
 
     def _on_brokers_data(self, brokers):
@@ -338,6 +371,108 @@ class BrokerAnalysisView(ctk.CTkFrame):
             self._build_detail_chart(data)
             self.detail_card.pack(padx=40, pady=8, fill="x")
         self.after(0, _u)
+
+    def _on_holder_loading(self, v):
+        def _u():
+            if v:
+                self.holder_refresh_btn.configure(state="disabled", text="載入中...")
+            else:
+                self.holder_refresh_btn.configure(state="normal", text="從 TDCC 更新")
+        self.after(0, _u)
+
+    def _on_holder_data(self, data):
+        def _u():
+            self._render_holder(data)
+        self.after(0, _u)
+
+    def _render_holder(self, data):
+        for w in self.holder_info_frame.winfo_children():
+            w.destroy()
+        for w in self.holder_chart_frame.winfo_children():
+            w.destroy()
+
+        if data is None:
+            return
+        if "error" in data:
+            ctk.CTkLabel(
+                self.holder_info_frame, text=data["error"],
+                font=ctk.CTkFont(size=12), text_color="#FF6B6B",
+            ).pack(pady=8)
+            return
+
+        cur = data.get("current", {})
+        history = data.get("history", [])
+
+        # KPI cards
+        kpi_row = ctk.CTkFrame(self.holder_info_frame, fg_color="transparent")
+        kpi_row.pack(fill="x", pady=(4, 4))
+
+        for label, value, color in [
+            ("大戶 (>400張)", f"{cur.get('big_pct', 0):.1f}%", "#ef5350"),
+            ("中實戶 (20-400張)", f"{cur.get('mid_pct', 0):.1f}%", "#ff9800"),
+            ("散戶 (<20張)", f"{cur.get('retail_pct', 0):.1f}%", "#26a69a"),
+            ("資料日期", cur.get("report_date", ""), "#8e8e93"),
+        ]:
+            f = ctk.CTkFrame(kpi_row, corner_radius=8, width=130)
+            f.pack(side="left", padx=6, pady=2)
+            ctk.CTkLabel(f, text=label, font=ctk.CTkFont(size=10),
+                          text_color="gray").pack(padx=10, pady=(5, 0))
+            ctk.CTkLabel(f, text=value,
+                          font=ctk.CTkFont(size=14, weight="bold"),
+                          text_color=color).pack(padx=10, pady=(0, 5))
+
+        # Trend chart (if history available)
+        if not history or not HAS_MPL or len(history) < 2:
+            if len(history) < 2:
+                ctk.CTkLabel(
+                    self.holder_chart_frame,
+                    text="（累積 2 週以上資料後可顯示趨勢圖）",
+                    font=ctk.CTkFont(size=11), text_color="gray",
+                ).pack(pady=8)
+            return
+
+        from matplotlib.figure import Figure
+        from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
+
+        is_dark = ctk.get_appearance_mode().lower() == "dark"
+        bg = "#1c1c1e" if is_dark else "#fafafa"
+        panel = "#1c1c1e" if is_dark else "#ffffff"
+        txt = "#c0c0c0" if is_dark else "#333333"
+        grid = "#2c2c2e" if is_dark else "#e0e0e0"
+
+        n = len(history)
+        xs = list(range(n))
+        big = [h["big_pct"] for h in history]
+        mid = [h["mid_pct"] for h in history]
+        ret = [h["retail_pct"] for h in history]
+        labels = [h["report_date"][5:] for h in history]  # mm-dd
+
+        fig = Figure(figsize=(8, 2.5), dpi=100, facecolor=bg)
+        fig.subplots_adjust(left=0.08, right=0.96, top=0.90, bottom=0.18)
+        ax = fig.add_subplot(111)
+        ax.set_facecolor(panel)
+
+        ax.plot(xs, big, color="#ef5350", linewidth=1.5, marker="o",
+                markersize=3, label="大戶")
+        ax.plot(xs, mid, color="#ff9800", linewidth=1.5, marker="s",
+                markersize=3, label="中實戶")
+        ax.plot(xs, ret, color="#26a69a", linewidth=1.5, marker="^",
+                markersize=3, label="散戶")
+
+        ax.set_ylabel("%", fontsize=8, color=txt)
+        ax.tick_params(axis="both", colors=txt, labelsize=7)
+        for sp in ax.spines.values():
+            sp.set_color(grid)
+        ax.grid(True, alpha=0.2, color=grid, linewidth=0.5)
+        ax.legend(loc="upper left", fontsize=7, framealpha=0.5,
+                  facecolor=panel, edgecolor=grid, labelcolor=txt, ncol=3)
+
+        ax.set_xticks(xs)
+        ax.set_xticklabels(labels, fontsize=7, color=txt, rotation=35, ha="right")
+
+        canvas = FigureCanvasTkAgg(fig, self.holder_chart_frame)
+        canvas.draw()
+        canvas.get_tk_widget().pack(fill="x", padx=4, pady=(4, 4))
 
     def _on_correlation_loading(self, v):
         def _u():

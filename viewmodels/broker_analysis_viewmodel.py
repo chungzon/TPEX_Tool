@@ -5,6 +5,7 @@ import threading
 from viewmodels.base_viewmodel import BaseViewModel, ObservableProperty
 from services.db_service import DbService
 from services.correlation_service import compute_broker_correlations
+from services.tdcc_service import fetch_distribution
 
 
 class BrokerAnalysisViewModel(BaseViewModel):
@@ -29,6 +30,10 @@ class BrokerAnalysisViewModel(BaseViewModel):
     # Correlation analysis
     correlation_data = ObservableProperty(None)    # list[BrokerCorrelation] | None
     correlation_loading = ObservableProperty(False)
+
+    # Holder distribution
+    holder_data = ObservableProperty(None)         # dict | None
+    holder_loading = ObservableProperty(False)
 
     def __init__(self):
         super().__init__()
@@ -175,6 +180,54 @@ class BrokerAnalysisViewModel(BaseViewModel):
                 self.error_text = f"關聯度分析錯誤：{e}"
             finally:
                 self.correlation_loading = False
+
+        threading.Thread(target=_work, daemon=True).start()
+
+    def load_holder_distribution(self):
+        """Fetch holder distribution from TDCC and save to DB."""
+        stock = self.selected_stock
+        if not stock or self.holder_loading:
+            return
+        self.holder_loading = True
+        self.holder_data = None
+
+        def _work():
+            try:
+                code = stock["stock_code"]
+                dist = fetch_distribution(code)
+                if dist is None:
+                    self.holder_data = {"error": "查無集保資料"}
+                    return
+
+                # Save to DB
+                self._db.connect()
+                self._db.ensure_tables()
+                levels_dicts = [
+                    {"level": lv.level, "label": lv.label,
+                     "holders": lv.holders, "shares": lv.shares, "pct": lv.pct}
+                    for lv in dist.levels
+                ]
+                self._db.save_distribution(code, dist.report_date, levels_dicts)
+
+                # Load history from DB
+                history = self._db.get_distribution_history(code)
+
+                self.holder_data = {
+                    "current": {
+                        "report_date": dist.report_date,
+                        "retail_pct": dist.retail_pct,
+                        "mid_pct": dist.mid_pct,
+                        "big_pct": dist.big_pct,
+                        "total_holders": dist.total_holders,
+                        "total_shares": dist.total_shares,
+                        "levels": levels_dicts,
+                    },
+                    "history": history,
+                }
+            except Exception as e:
+                self.holder_data = {"error": f"載入失敗：{e}"}
+            finally:
+                self.holder_loading = False
 
         threading.Thread(target=_work, daemon=True).start()
 

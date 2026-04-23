@@ -132,7 +132,7 @@ class SchedulerService:
                 self.start()
 
     def _run_download(self) -> None:
-        """Download broker data using the saved stock list from config."""
+        """Download broker data, then verify."""
         codes = self._config.get("stock_codes") or []
         if not codes:
             self.last_result = "尚未設定股票清單，請先按「更新清單」"
@@ -140,55 +140,98 @@ class SchedulerService:
             log.warning("No stock_codes in config, skipping download")
             return
 
-        codes_str = ", ".join(codes)
-        self._status(f"共 {len(codes)} 檔，開始批次下載...")
-        log.info("Starting batch download: %d stocks", len(codes))
+        self._status(f"分點資料下載（共 {len(codes)} 檔）...")
+        log.info("Broker data download: %d stocks", len(codes))
 
-        # Reuse BatchDownloadViewModel — all pacing / anti-detection /
-        # DB write / skip-existing logic lives there, no duplication.
         from viewmodels.batch_download_viewmodel import BatchDownloadViewModel
 
         vm = BatchDownloadViewModel()
         self.active_vm = vm
-
-        # start_batch sets is_downloading=True synchronously,
-        # then kicks off the async coroutine in a background thread.
-        vm.start_batch(codes_str, skip_existing=True)
-
-        # Give the async loop a moment to spin up and begin _do_batch
+        vm.start_batch(", ".join(codes), skip_existing=True)
         time.sleep(1)
 
-        # Wait for download to finish
         while vm.is_downloading:
             if self._cancel_event.is_set():
                 vm.cancel()
                 self._status("排程已取消")
-                log.info("Scheduler cancelled by user")
-                # Wait for VM to actually stop
                 for _ in range(30):
                     if not vm.is_downloading:
                         break
                     time.sleep(1)
-                break
+                self.active_vm = None
+                vm.shutdown()
+                return
             time.sleep(3)
 
-        # Extract result from VM log
-        log_text = vm.log_text or ""
-        log.info("Batch download finished. Log length: %d chars", len(log_text))
-
-        summary = "已完成"
-        for line in reversed(log_text.splitlines()):
-            line = line.strip()
-            if line and ("成功" in line or "完成" in line or "結束" in line):
-                summary = line
-                break
-        self.last_result = summary
-        self._status(f"排程完成：{summary}")
-        log.info("Scheduler result: %s", summary)
-
-        # Cleanup
+        broker_log = vm.log_text or ""
         self.active_vm = None
         vm.shutdown()
+
+        # Verify and auto-retry failures
+        if not self._cancel_event.is_set():
+            self._status("驗證下載結果...")
+            verify_result = self._verify_download(codes, broker_log)
+        else:
+            verify_result = ""
+
+        # Summary
+        broker_summary = ""
+        for line in reversed(broker_log.splitlines()):
+            line = line.strip()
+            if line and ("成功" in line or "結束" in line):
+                broker_summary = line
+                break
+
+        parts = [p for p in [broker_summary, verify_result] if p]
+        self.last_result = "　".join(parts) or "已完成"
+        self._status(f"排程完成：{self.last_result}")
+        log.info("Scheduler result: %s", self.last_result)
+
+    def _verify_download(self, codes: list[str], broker_log: str) -> str:
+        """Check which stocks failed or were missing from today's download."""
+        # Parse the log to find error lines
+        error_codes = []
+        for line in broker_log.splitlines():
+            if "錯誤" in line:
+                # Extract stock code from lines like "[W1][6180] 錯誤：..."
+                for code in codes:
+                    if f"[{code}]" in line:
+                        error_codes.append(code)
+                        break
+
+        # Deduplicate
+        error_codes = list(dict.fromkeys(error_codes))
+
+        if not error_codes:
+            self._status("驗證通過：所有股票下載成功")
+            return "驗證通過"
+        else:
+            msg = f"驗證：{len(error_codes)} 檔下載失敗"
+            self._status(f"{msg}（{', '.join(error_codes[:10])}...）")
+            log.warning("Failed stocks: %s", error_codes)
+
+            # Auto-retry failed stocks
+            if len(error_codes) <= 30 and not self._cancel_event.is_set():
+                self._status(f"自動重試 {len(error_codes)} 檔失敗的股票...")
+                log.info("Auto-retrying %d failed stocks", len(error_codes))
+
+                from viewmodels.batch_download_viewmodel import BatchDownloadViewModel
+                vm2 = BatchDownloadViewModel(num_workers=1)  # single worker for retry
+                self.active_vm = vm2
+                vm2.start_batch(", ".join(error_codes), skip_existing=True)
+                time.sleep(1)
+
+                while vm2.is_downloading:
+                    if self._cancel_event.is_set():
+                        vm2.cancel()
+                        break
+                    time.sleep(3)
+
+                self.active_vm = None
+                vm2.shutdown()
+                return f"重試 {len(error_codes)} 檔"
+            else:
+                return msg
 
     def _status(self, msg: str) -> None:
         self._on_status(msg)

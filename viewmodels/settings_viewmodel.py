@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 import re
 import threading
 from datetime import datetime
@@ -9,6 +10,8 @@ from datetime import datetime
 from viewmodels.base_viewmodel import BaseViewModel, ObservableProperty
 from services.config_service import ConfigService
 from services.scheduler_service import SchedulerService
+
+log = logging.getLogger(__name__)
 
 
 class SettingsViewModel(BaseViewModel):
@@ -22,6 +25,10 @@ class SettingsViewModel(BaseViewModel):
     # Stock list info
     stock_list_info = ObservableProperty("")   # e.g. "300 檔（2026-04-22 更新）"
     stock_list_loading = ObservableProperty(False)
+    # TDCC batch download
+    tdcc_status = ObservableProperty("")
+    tdcc_loading = ObservableProperty(False)
+
     # Live download progress
     progress = ObservableProperty(0.0)
     progress_text = ObservableProperty("")
@@ -110,6 +117,57 @@ class SettingsViewModel(BaseViewModel):
             self.stock_list_info = f"{len(codes)} 檔（{date} 更新）"
         else:
             self.stock_list_info = "尚未設定"
+
+    def download_tdcc(self) -> None:
+        """Download TDCC holder distribution for all stocks in saved list."""
+        codes = self._config.get("stock_codes") or []
+        if not codes:
+            self.tdcc_status = "請先按「更新清單」取得股票清單"
+            return
+        if self.tdcc_loading:
+            return
+        self.tdcc_loading = True
+        self.tdcc_status = "從 TDCC 下載集保資料..."
+
+        def _work():
+            try:
+                from services.tdcc_service import fetch_distributions_batch
+                from services.db_service import DbService
+
+                self.tdcc_status = f"正在從 TDCC 取得資料（{len(codes)} 檔）..."
+                results = fetch_distributions_batch(codes)
+                self.tdcc_status = f"取得 {len(results)} 檔，寫入資料庫..."
+
+                db = DbService()
+                ok = 0
+                fail = 0
+                try:
+                    db.ensure_tables()
+                    for code in codes:
+                        dist = results.get(code)
+                        if dist and dist.levels:
+                            levels = [
+                                {"level": lv.level, "label": lv.label,
+                                 "holders": lv.holders, "shares": lv.shares,
+                                 "pct": lv.pct}
+                                for lv in dist.levels
+                            ]
+                            db.save_distribution(code, dist.report_date, levels)
+                            ok += 1
+                        else:
+                            fail += 1
+                finally:
+                    db.close()
+
+                self.tdcc_status = f"完成！成功 {ok} 檔，未找到 {fail} 檔"
+                log.info("TDCC batch: ok=%d, fail=%d", ok, fail)
+            except Exception as e:
+                self.tdcc_status = f"失敗：{e}"
+                log.exception("TDCC batch download failed")
+            finally:
+                self.tdcc_loading = False
+
+        threading.Thread(target=_work, daemon=True).start()
 
     def run_now(self) -> None:
         """Trigger immediate download using saved stock list."""

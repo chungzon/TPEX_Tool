@@ -92,6 +92,46 @@ class SettingsView(ctk.CTkFrame):
         self.refresh_list_btn.pack(side="left")
 
         # ============================================================
+        # TDCC holder distribution card
+        # ============================================================
+        tdcc_card = ctk.CTkFrame(container, corner_radius=12)
+        tdcc_card.pack(padx=40, pady=8, fill="x")
+
+        ctk.CTkLabel(
+            tdcc_card, text="集保戶股權分散表（TDCC）",
+            font=ctk.CTkFont(size=16, weight="bold"),
+        ).pack(anchor="w", padx=24, pady=(20, 4))
+
+        ctk.CTkLabel(
+            tdcc_card,
+            text="下載所有清單股票的大戶/散戶持股比例，資料來源：台灣集保結算所（每週五更新）",
+            font=ctk.CTkFont(size=11), text_color="gray",
+        ).pack(anchor="w", padx=24, pady=(0, 10))
+
+        tdcc_btn_row = ctk.CTkFrame(tdcc_card, fg_color="transparent")
+        tdcc_btn_row.pack(fill="x", padx=24, pady=(0, 4))
+
+        self.tdcc_btn = ctk.CTkButton(
+            tdcc_btn_row, text="下載集保資料（使用目前清單）",
+            width=280, height=36, corner_radius=8,
+            font=ctk.CTkFont(size=13, weight="bold"),
+            fg_color="#7b61ff", hover_color="#6344e0",
+            command=self._on_download_tdcc,
+        )
+        self.tdcc_btn.pack(side="left")
+
+        tdcc_status_row = ctk.CTkFrame(tdcc_card, fg_color="transparent")
+        tdcc_status_row.pack(fill="x", padx=24, pady=(4, 16))
+
+        ctk.CTkLabel(tdcc_status_row, text="狀態：",
+                      font=ctk.CTkFont(size=12),
+                      text_color="gray").pack(side="left")
+        self.tdcc_status_label = ctk.CTkLabel(
+            tdcc_status_row, text="—",
+            font=ctk.CTkFont(size=12), text_color="#b0b0b0")
+        self.tdcc_status_label.pack(side="left")
+
+        # ============================================================
         # Scheduler card
         # ============================================================
         card = ctk.CTkFrame(container, corner_radius=12)
@@ -219,6 +259,9 @@ class SettingsView(ctk.CTkFrame):
     def _on_refresh_list(self):
         self.vm.refresh_stock_list()
 
+    def _on_download_tdcc(self):
+        self.vm.download_tdcc()
+
     def _on_run_now(self):
         self.vm.run_now()
 
@@ -230,6 +273,8 @@ class SettingsView(ctk.CTkFrame):
         self.vm.bind("last_result_text", self._on_last_result)
         self.vm.bind("stock_list_info", self._on_list_info)
         self.vm.bind("stock_list_loading", self._on_list_loading)
+        self.vm.bind("tdcc_status", self._on_tdcc_status)
+        self.vm.bind("tdcc_loading", self._on_tdcc_loading)
         self.vm.bind("progress", self._on_progress)
         self.vm.bind("progress_text", self._on_progress_text)
         self.vm.bind("log_text", self._on_log)
@@ -257,6 +302,18 @@ class SettingsView(ctk.CTkFrame):
                 self.refresh_list_btn.configure(
                     state="normal",
                     text="更新清單（從 TPEX 取得今日前 N 名）")
+        self.after(0, _u)
+
+    def _on_tdcc_status(self, v: str):
+        self.after(0, lambda: self.tdcc_status_label.configure(text=v or "—"))
+
+    def _on_tdcc_loading(self, v: bool):
+        def _u():
+            if v:
+                self.tdcc_btn.configure(state="disabled", text="下載中...")
+            else:
+                self.tdcc_btn.configure(
+                    state="normal", text="下載集保資料（使用目前清單）")
         self.after(0, _u)
 
     def _on_progress(self, v: float):

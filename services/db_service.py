@@ -186,6 +186,26 @@ CREATE INDEX IX_BrokerDailyStats_stock_date
     ON BrokerDailyStats (stock_code, trade_date);
 """
 
+_DDL_HOLDER_DISTRIBUTION = """
+IF NOT EXISTS (
+    SELECT * FROM sys.tables WHERE name = 'StockHolderDistribution'
+)
+CREATE TABLE StockHolderDistribution (
+    id            INT IDENTITY(1,1) PRIMARY KEY,
+    stock_code    NVARCHAR(10)   NOT NULL,
+    report_date   DATE           NOT NULL,
+    level         NVARCHAR(5)    NOT NULL,
+    level_label   NVARCHAR(50)   NOT NULL,
+    holders       INT            NOT NULL DEFAULT 0,
+    shares        BIGINT         NOT NULL DEFAULT 0,
+    pct           DECIMAL(8,4)   NOT NULL DEFAULT 0,
+    created_at    DATETIME       DEFAULT GETDATE(),
+
+    CONSTRAINT UQ_HolderDist
+        UNIQUE (stock_code, report_date, level)
+);
+"""
+
 
 # ---------------------------------------------------------------------------
 # Service
@@ -254,6 +274,7 @@ class DbService:
         cur.execute(_DDL_STOCK_DAILY_SUMMARY)
         cur.execute(_DDL_BROKER_DAILY_STATS)
         cur.execute(_DDL_INDEX)
+        cur.execute(_DDL_HOLDER_DISTRIBUTION)
         self._conn.commit()
 
     # -- Write --------------------------------------------------------------
@@ -478,6 +499,63 @@ class DbService:
                 "trade_date": str(r[0]), "broker_code": r[1],
                 "broker_name": r[2], "net_volume": r[3],
                 "close_price": r[4],
+            }
+            for r in cur.fetchall()
+        ]
+
+    # -- Holder distribution ------------------------------------------------
+
+    def save_distribution(self, stock_code: str, report_date: str,
+                          levels: list[dict]) -> int:
+        """Upsert shareholding distribution levels."""
+        cur = self._cursor()
+        count = 0
+        for lv in levels:
+            cur.execute("""
+                MERGE StockHolderDistribution AS tgt
+                USING (SELECT %s AS stock_code, %s AS report_date,
+                              %s AS level) AS src
+                    ON tgt.stock_code = src.stock_code
+                   AND tgt.report_date = src.report_date
+                   AND tgt.level = src.level
+                WHEN MATCHED THEN UPDATE SET
+                    level_label = %s, holders = %s, shares = %s, pct = %s
+                WHEN NOT MATCHED THEN INSERT (
+                    stock_code, report_date, level, level_label,
+                    holders, shares, pct
+                ) VALUES (%s, %s, %s, %s, %s, %s, %s);
+            """, (
+                stock_code, report_date, lv["level"],
+                lv["label"], lv["holders"], lv["shares"], lv["pct"],
+                stock_code, report_date, lv["level"],
+                lv["label"], lv["holders"], lv["shares"], lv["pct"],
+            ))
+            count += 1
+        self._conn.commit()
+        return count
+
+    def get_distribution_history(self, stock_code: str) -> list[dict]:
+        """Get weekly distribution summary (retail/mid/big pct) over time."""
+        cur = self._cursor()
+        cur.execute("""
+            SELECT report_date,
+                SUM(CASE WHEN level IN ('1','2','3','4','5')
+                    THEN pct ELSE 0 END) AS retail_pct,
+                SUM(CASE WHEN level IN ('6','7','8','9','10','11')
+                    THEN pct ELSE 0 END) AS mid_pct,
+                SUM(CASE WHEN level IN ('12','13','14','15')
+                    THEN pct ELSE 0 END) AS big_pct
+            FROM StockHolderDistribution
+            WHERE stock_code=%s
+            GROUP BY report_date
+            ORDER BY report_date
+        """, (stock_code,))
+        return [
+            {
+                "report_date": str(r[0]),
+                "retail_pct": float(r[1]),
+                "mid_pct": float(r[2]),
+                "big_pct": float(r[3]),
             }
             for r in cur.fetchall()
         ]
