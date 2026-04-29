@@ -96,7 +96,8 @@ def _parse_stock(rows: list[dict], stock_code: str) -> StockDistribution | None:
     if not rows:
         return None
 
-    raw_date = rows[0].get("資料日期", "")
+    # The API key has a BOM prefix: \ufeff資料日期
+    raw_date = rows[0].get("\ufeff資料日期", "") or rows[0].get("資料日期", "")
     report_date = (
         f"{raw_date[:4]}-{raw_date[4:6]}-{raw_date[6:8]}"
         if len(raw_date) == 8 else raw_date
@@ -183,6 +184,29 @@ def fetch_distributions_batch(stock_codes: list[str]) -> dict[str, StockDistribu
         if dist:
             results[code] = dist
 
+    return results
+
+
+def fetch_all_distributions() -> dict[str, StockDistribution]:
+    """Fetch distributions for ALL stocks in one API call.
+
+    Returns a dict mapping stock_code -> StockDistribution.
+    """
+    data = _fetch_raw()
+
+    by_code: dict[str, list[dict]] = defaultdict(list)
+    for r in data:
+        code = r.get("證券代號", "").strip()
+        if code:
+            by_code[code].append(r)
+
+    results: dict[str, StockDistribution] = {}
+    for code, rows in by_code.items():
+        dist = _parse_stock(rows, code)
+        if dist:
+            results[code] = dist
+
+    log.info("Parsed %d stocks from TDCC data", len(results))
     return results
 
 

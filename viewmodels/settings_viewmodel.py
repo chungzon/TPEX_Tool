@@ -119,11 +119,7 @@ class SettingsViewModel(BaseViewModel):
             self.stock_list_info = "尚未設定"
 
     def download_tdcc(self) -> None:
-        """Download TDCC holder distribution for all stocks in saved list."""
-        codes = self._config.get("stock_codes") or []
-        if not codes:
-            self.tdcc_status = "請先按「更新清單」取得股票清單"
-            return
+        """Download TDCC holder distribution for ALL stocks."""
         if self.tdcc_loading:
             return
         self.tdcc_loading = True
@@ -131,21 +127,20 @@ class SettingsViewModel(BaseViewModel):
 
         def _work():
             try:
-                from services.tdcc_service import fetch_distributions_batch
+                from services.tdcc_service import fetch_all_distributions
                 from services.db_service import DbService
 
-                self.tdcc_status = f"正在從 TDCC 取得資料（{len(codes)} 檔）..."
-                results = fetch_distributions_batch(codes)
-                self.tdcc_status = f"取得 {len(results)} 檔，寫入資料庫..."
+                self.tdcc_status = "正在從 TDCC 取得全部股票資料..."
+                results = fetch_all_distributions()
+                total = len(results)
+                self.tdcc_status = f"取得 {total} 檔，寫入資料庫..."
 
                 db = DbService()
                 ok = 0
-                fail = 0
                 try:
                     db.ensure_tables()
-                    for code in codes:
-                        dist = results.get(code)
-                        if dist and dist.levels:
+                    for i, (code, dist) in enumerate(results.items()):
+                        if dist.levels:
                             levels = [
                                 {"level": lv.level, "label": lv.label,
                                  "holders": lv.holders, "shares": lv.shares,
@@ -154,13 +149,15 @@ class SettingsViewModel(BaseViewModel):
                             ]
                             db.save_distribution(code, dist.report_date, levels)
                             ok += 1
-                        else:
-                            fail += 1
+                        if (i + 1) % 200 == 0:
+                            self.tdcc_status = (
+                                f"寫入資料庫 {i + 1}/{total}..."
+                            )
                 finally:
                     db.close()
 
-                self.tdcc_status = f"完成！成功 {ok} 檔，未找到 {fail} 檔"
-                log.info("TDCC batch: ok=%d, fail=%d", ok, fail)
+                self.tdcc_status = f"完成！共寫入 {ok} 檔集保資料"
+                log.info("TDCC all stocks: %d saved", ok)
             except Exception as e:
                 self.tdcc_status = f"失敗：{e}"
                 log.exception("TDCC batch download failed")

@@ -483,11 +483,12 @@ class DbService:
     def get_all_brokers_daily(
         self, stock_code: str, start_date: str, end_date: str,
     ) -> list[dict]:
-        """All brokers' daily net_volume + close_price for correlation analysis."""
+        """All brokers' daily data + stock volume for correlation analysis."""
         cur = self._cursor()
         cur.execute("""
             SELECT b.trade_date, b.broker_code, b.broker_name,
-                   b.net_volume, s.close_price
+                   b.buy_volume, b.sell_volume, b.net_volume,
+                   s.close_price, s.total_volume
             FROM BrokerDailyStats b
             JOIN StockDailySummary s
               ON b.stock_code = s.stock_code AND b.trade_date = s.trade_date
@@ -497,8 +498,9 @@ class DbService:
         return [
             {
                 "trade_date": str(r[0]), "broker_code": r[1],
-                "broker_name": r[2], "net_volume": r[3],
-                "close_price": r[4],
+                "broker_name": r[2], "buy_volume": r[3],
+                "sell_volume": r[4], "net_volume": r[5],
+                "close_price": r[6], "total_volume": r[7],
             }
             for r in cur.fetchall()
         ]

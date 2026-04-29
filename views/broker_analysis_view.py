@@ -8,6 +8,7 @@ import tkinter as tk
 from datetime import datetime
 
 from viewmodels.broker_analysis_viewmodel import BrokerAnalysisViewModel
+from services.broker_tags import get_broker_tags, TAG_COLORS, TAG_LABELS
 
 try:
     import matplotlib
@@ -24,6 +25,38 @@ except ImportError:
     HAS_MPL = False
 
 
+class _Tooltip:
+    """Lightweight hover tooltip for any tkinter widget."""
+
+    def __init__(self, widget, text: str):
+        self._widget = widget
+        self._text = text
+        self._tw = None
+        widget.bind("<Enter>", self._show)
+        widget.bind("<Leave>", self._hide)
+
+    def _show(self, event):
+        x = self._widget.winfo_rootx() + 25
+        y = self._widget.winfo_rooty() + 20
+        tw = tk.Toplevel(self._widget)
+        tw.wm_overrideredirect(True)
+        tw.wm_geometry(f"+{x}+{y}")
+        tw.attributes("-topmost", True)
+        lbl = tk.Label(
+            tw, text=self._text,
+            background="#333333", foreground="#e0e0e0",
+            font=("Microsoft JhengHei", 11),
+            padx=8, pady=4, relief="flat",
+        )
+        lbl.pack()
+        self._tw = tw
+
+    def _hide(self, event):
+        if self._tw:
+            self._tw.destroy()
+            self._tw = None
+
+
 def _parse_price(v: str | None) -> float | None:
     if v is None:
         return None
@@ -35,6 +68,16 @@ def _parse_price(v: str | None) -> float | None:
 
 def _fmt(n: int) -> str:
     return f"{n:,}"
+
+
+def _to_lots(shares: int) -> int:
+    """Convert shares to lots (張). 1張 = 1,000股."""
+    return shares // 1000
+
+
+def _fmt_lots(shares: int) -> str:
+    """Format shares as lots with thousands separator."""
+    return _fmt(_to_lots(shares))
 
 
 # =====================================================================
@@ -68,7 +111,7 @@ class BrokerAnalysisView(ctk.CTkFrame):
         ctk.CTkLabel(
             self.container,
             text="搜尋股票，檢視各分點買賣超，點選分點查看詳細走勢圖",
-            font=ctk.CTkFont(size=13), text_color="gray",
+            font=ctk.CTkFont(size=14), text_color="gray",
         ).pack(pady=(0, 24))
 
         # --- Search card ---
@@ -79,24 +122,24 @@ class BrokerAnalysisView(ctk.CTkFrame):
         search_row.pack(fill="x", padx=20, pady=16)
 
         ctk.CTkLabel(search_row, text="股票搜尋：",
-                      font=ctk.CTkFont(size=13)).pack(side="left")
+                      font=ctk.CTkFont(size=14)).pack(side="left")
 
         self.search_entry = ctk.CTkEntry(
             search_row, width=200, placeholder_text="代碼或名稱",
-            font=ctk.CTkFont(size=13),
+            font=ctk.CTkFont(size=14),
         )
         self.search_entry.pack(side="left", padx=(4, 8))
         self.search_entry.bind("<Return>", lambda e: self._on_search())
 
         self.search_btn = ctk.CTkButton(
             search_row, text="搜尋", width=80, height=32,
-            corner_radius=8, font=ctk.CTkFont(size=13),
+            corner_radius=8, font=ctk.CTkFont(size=14),
             command=self._on_search,
         )
         self.search_btn.pack(side="left")
 
         self.error_label = ctk.CTkLabel(
-            search_row, text="", font=ctk.CTkFont(size=12),
+            search_row, text="", font=ctk.CTkFont(size=14),
             text_color="#FF6B6B",
         )
         self.error_label.pack(side="left", padx=(12, 0))
@@ -118,30 +161,30 @@ class BrokerAnalysisView(ctk.CTkFrame):
         info_row = ctk.CTkFrame(self.stock_info_card, fg_color="transparent")
         info_row.pack(fill="x", padx=20, pady=(16, 8))
         self.stock_title_label = ctk.CTkLabel(
-            info_row, text="", font=ctk.CTkFont(size=16, weight="bold"))
+            info_row, text="", font=ctk.CTkFont(size=17, weight="bold"))
         self.stock_title_label.pack(side="left")
 
         date_row = ctk.CTkFrame(self.stock_info_card, fg_color="transparent")
         date_row.pack(fill="x", padx=20, pady=(0, 16))
         ctk.CTkLabel(date_row, text="日期區間：",
-                      font=ctk.CTkFont(size=12)).pack(side="left")
+                      font=ctk.CTkFont(size=14)).pack(side="left")
         self.date_start_entry = ctk.CTkEntry(
-            date_row, width=110, font=ctk.CTkFont(size=12),
+            date_row, width=110, font=ctk.CTkFont(size=14),
             placeholder_text="yyyy-mm-dd")
         self.date_start_entry.pack(side="left", padx=(4, 4))
         ctk.CTkLabel(date_row, text="~",
-                      font=ctk.CTkFont(size=12)).pack(side="left")
+                      font=ctk.CTkFont(size=14)).pack(side="left")
         self.date_end_entry = ctk.CTkEntry(
-            date_row, width=110, font=ctk.CTkFont(size=12),
+            date_row, width=110, font=ctk.CTkFont(size=14),
             placeholder_text="yyyy-mm-dd")
         self.date_end_entry.pack(side="left", padx=(4, 8))
         self.date_apply_btn = ctk.CTkButton(
             date_row, text="套用", width=60, height=28,
-            corner_radius=6, font=ctk.CTkFont(size=12),
+            corner_radius=6, font=ctk.CTkFont(size=14),
             command=self._on_date_apply)
         self.date_apply_btn.pack(side="left")
         self.date_info_label = ctk.CTkLabel(
-            date_row, text="", font=ctk.CTkFont(size=11), text_color="gray")
+            date_row, text="", font=ctk.CTkFont(size=14), text_color="gray")
         self.date_info_label.pack(side="left", padx=(12, 0))
 
         # --- Ranking card (tabbed) ---
@@ -167,11 +210,11 @@ class BrokerAnalysisView(ctk.CTkFrame):
         holder_hdr.pack(fill="x", padx=20, pady=(16, 4))
         ctk.CTkLabel(
             holder_hdr, text="大戶 / 散戶持股比例",
-            font=ctk.CTkFont(size=14, weight="bold"),
+            font=ctk.CTkFont(size=17, weight="bold"),
         ).pack(side="left")
         self.holder_refresh_btn = ctk.CTkButton(
             holder_hdr, text="從 TDCC 更新", width=110, height=28,
-            corner_radius=6, font=ctk.CTkFont(size=11),
+            corner_radius=6, font=ctk.CTkFont(size=14),
             command=self._on_refresh_holder,
         )
         self.holder_refresh_btn.pack(side="right")
@@ -191,7 +234,7 @@ class BrokerAnalysisView(ctk.CTkFrame):
         self.detail_header.pack(fill="x", padx=20, pady=(16, 4))
         self.detail_title_label = ctk.CTkLabel(
             self.detail_header, text="",
-            font=ctk.CTkFont(size=14, weight="bold"))
+            font=ctk.CTkFont(size=17, weight="bold"))
         self.detail_title_label.pack(side="left")
 
         # Chart frame (matplotlib goes here)
@@ -200,7 +243,7 @@ class BrokerAnalysisView(ctk.CTkFrame):
 
         # Info below chart: 券商損益 line
         self.broker_info_label = ctk.CTkLabel(
-            self.detail_card, text="", font=ctk.CTkFont(size=12),
+            self.detail_card, text="", font=ctk.CTkFont(size=14),
             text_color="#c0c0c0", anchor="w")
         self.broker_info_label.pack(fill="x", padx=24, pady=(2, 4))
 
@@ -212,11 +255,11 @@ class BrokerAnalysisView(ctk.CTkFrame):
                                      border_width=2, border_color="#e88a1a")
         self.box_net.pack(side="left", fill="x", expand=True, padx=4)
         self.box_net_title = ctk.CTkLabel(
-            self.box_net, text="區間買賣超 (張)", font=ctk.CTkFont(size=11),
+            self.box_net, text="區間買賣超 (張)", font=ctk.CTkFont(size=14),
             text_color="gray")
         self.box_net_title.pack(pady=(6, 0))
         self.box_net_value = ctk.CTkLabel(
-            self.box_net, text="", font=ctk.CTkFont(size=16, weight="bold"),
+            self.box_net, text="", font=ctk.CTkFont(size=17, weight="bold"),
             text_color="#ef5350")
         self.box_net_value.pack(pady=(0, 6))
 
@@ -224,11 +267,11 @@ class BrokerAnalysisView(ctk.CTkFrame):
                                      border_width=2, border_color="#e88a1a")
         self.box_amt.pack(side="left", fill="x", expand=True, padx=4)
         self.box_amt_title = ctk.CTkLabel(
-            self.box_amt, text="區間買賣超金額 (萬)", font=ctk.CTkFont(size=11),
+            self.box_amt, text="區間買賣超金額 (萬)", font=ctk.CTkFont(size=14),
             text_color="gray")
         self.box_amt_title.pack(pady=(6, 0))
         self.box_amt_value = ctk.CTkLabel(
-            self.box_amt, text="", font=ctk.CTkFont(size=16, weight="bold"),
+            self.box_amt, text="", font=ctk.CTkFont(size=17, weight="bold"),
             text_color="#ef5350")
         self.box_amt_value.pack(pady=(0, 6))
 
@@ -236,11 +279,11 @@ class BrokerAnalysisView(ctk.CTkFrame):
         day_row = ctk.CTkFrame(self.detail_card, fg_color="transparent")
         day_row.pack(fill="x", padx=20, pady=(4, 14))
         ctk.CTkLabel(day_row, text="統計天數",
-                      font=ctk.CTkFont(size=12)).pack(side="left", padx=(0, 8))
+                      font=ctk.CTkFont(size=14)).pack(side="left", padx=(0, 8))
         for d in [1, 3, 5, 10, 20, 60, 120, 240]:
             ctk.CTkButton(
                 day_row, text=str(d), width=38, height=28, corner_radius=6,
-                font=ctk.CTkFont(size=11),
+                font=ctk.CTkFont(size=14),
                 fg_color="#3a3a3a", hover_color="#555555",
                 command=lambda days=d: self._on_day_select(days),
             ).pack(side="left", padx=2)
@@ -396,7 +439,7 @@ class BrokerAnalysisView(ctk.CTkFrame):
         if "error" in data:
             ctk.CTkLabel(
                 self.holder_info_frame, text=data["error"],
-                font=ctk.CTkFont(size=12), text_color="#FF6B6B",
+                font=ctk.CTkFont(size=14), text_color="#FF6B6B",
             ).pack(pady=8)
             return
 
@@ -415,10 +458,10 @@ class BrokerAnalysisView(ctk.CTkFrame):
         ]:
             f = ctk.CTkFrame(kpi_row, corner_radius=8, width=130)
             f.pack(side="left", padx=6, pady=2)
-            ctk.CTkLabel(f, text=label, font=ctk.CTkFont(size=10),
+            ctk.CTkLabel(f, text=label, font=ctk.CTkFont(size=14),
                           text_color="gray").pack(padx=10, pady=(5, 0))
             ctk.CTkLabel(f, text=value,
-                          font=ctk.CTkFont(size=14, weight="bold"),
+                          font=ctk.CTkFont(size=17, weight="bold"),
                           text_color=color).pack(padx=10, pady=(0, 5))
 
         # Trend chart (if history available)
@@ -427,7 +470,7 @@ class BrokerAnalysisView(ctk.CTkFrame):
                 ctk.CTkLabel(
                     self.holder_chart_frame,
                     text="（累積 2 週以上資料後可顯示趨勢圖）",
-                    font=ctk.CTkFont(size=11), text_color="gray",
+                    font=ctk.CTkFont(size=14), text_color="gray",
                 ).pack(pady=8)
             return
 
@@ -459,16 +502,16 @@ class BrokerAnalysisView(ctk.CTkFrame):
         ax.plot(xs, ret, color="#26a69a", linewidth=1.5, marker="^",
                 markersize=3, label="散戶")
 
-        ax.set_ylabel("%", fontsize=8, color=txt)
+        ax.set_ylabel("%", fontsize=11, color=txt)
         ax.tick_params(axis="both", colors=txt, labelsize=7)
         for sp in ax.spines.values():
             sp.set_color(grid)
         ax.grid(True, alpha=0.2, color=grid, linewidth=0.5)
-        ax.legend(loc="upper left", fontsize=7, framealpha=0.5,
+        ax.legend(loc="upper left", fontsize=11, framealpha=0.5,
                   facecolor=panel, edgecolor=grid, labelcolor=txt, ncol=3)
 
         ax.set_xticks(xs)
-        ax.set_xticklabels(labels, fontsize=7, color=txt, rotation=35, ha="right")
+        ax.set_xticklabels(labels, fontsize=11, color=txt, rotation=35, ha="right")
 
         canvas = FigureCanvasTkAgg(fig, self.holder_chart_frame)
         canvas.draw()
@@ -481,7 +524,7 @@ class BrokerAnalysisView(ctk.CTkFrame):
                     w.destroy()
                 ctk.CTkLabel(
                     self.rank_list_frame, text="分析中...",
-                    font=ctk.CTkFont(size=13), text_color="gray",
+                    font=ctk.CTkFont(size=14), text_color="gray",
                 ).pack(pady=20)
         self.after(0, _u)
 
@@ -505,26 +548,26 @@ class BrokerAnalysisView(ctk.CTkFrame):
         if not rows:
             ctk.CTkLabel(
                 self.rank_list_frame, text="（無資料）",
-                font=ctk.CTkFont(size=12), text_color="gray",
+                font=ctk.CTkFont(size=14), text_color="gray",
             ).pack(pady=20)
             return
 
         # Header
-        hdr = ctk.CTkFrame(self.rank_list_frame, fg_color="transparent", height=28)
+        hdr = ctk.CTkFrame(self.rank_list_frame, fg_color="transparent", height=32)
         hdr.pack(fill="x", padx=8, pady=(4, 0))
         hdr.pack_propagate(False)
         for text, w, anc in [("券商", 0.42, "w"), ("買賣超(張)", 0.28, "e"),
                               ("損益(萬)", 0.28, "e")]:
-            lbl = ctk.CTkLabel(hdr, text=text, font=ctk.CTkFont(size=11),
+            lbl = ctk.CTkLabel(hdr, text=text, font=ctk.CTkFont(size=14),
                                 text_color="gray")
             lbl.place(relx=w - 0.28 + 0.02 if anc == "w" else 0,
                       rely=0.5, anchor="w" if anc == "w" else "w")
         # manual placement
-        ctk.CTkLabel(hdr, text="券商", font=ctk.CTkFont(size=11),
+        ctk.CTkLabel(hdr, text="券商", font=ctk.CTkFont(size=14),
                       text_color="gray").place(relx=0.02, rely=0.5, anchor="w")
-        ctk.CTkLabel(hdr, text="買賣超(張)", font=ctk.CTkFont(size=11),
+        ctk.CTkLabel(hdr, text="買賣超(張)", font=ctk.CTkFont(size=14),
                       text_color="gray").place(relx=0.58, rely=0.5, anchor="e")
-        ctk.CTkLabel(hdr, text="損益(萬)", font=ctk.CTkFont(size=11),
+        ctk.CTkLabel(hdr, text="損益(萬)", font=ctk.CTkFont(size=14),
                       text_color="gray").place(relx=0.97, rely=0.5, anchor="e")
         # clear the generic ones
         for w2 in list(hdr.winfo_children())[:-3]:
@@ -533,21 +576,35 @@ class BrokerAnalysisView(ctk.CTkFrame):
         for i, b in enumerate(rows):
             bg = "#1e1e1e" if i % 2 == 0 else "#252526"
             row_f = ctk.CTkFrame(self.rank_list_frame, fg_color=bg,
-                                  corner_radius=6, height=38)
+                                  corner_radius=6, height=42)
             row_f.pack(fill="x", padx=8, pady=1)
             row_f.pack_propagate(False)
 
             net = b["net_volume"]
-            net_str = f"+{_fmt(net)}" if net > 0 else _fmt(net)
+            net_lots = _to_lots(net)
+            net_str = f"+{_fmt(net_lots)}" if net_lots > 0 else _fmt(net_lots)
             pnl = b.get("pnl", 0)
             pnl_val = round(pnl / 10000, 1)  # 萬
             pnl_str = f"+{pnl_val:,.1f}" if pnl > 0 else f"{pnl_val:,.1f}"
             pnl_clr = "#26a69a" if pnl >= 0 else "#ef5350"
 
+            # Broker name + tags
+            name_frame = ctk.CTkFrame(row_f, fg_color="transparent")
+            name_frame.place(relx=0.02, rely=0.5, anchor="w")
             ctk.CTkLabel(
-                row_f, text=b["broker_name"],
-                font=ctk.CTkFont(size=12), text_color="#e0e0e0",
-            ).place(relx=0.02, rely=0.5, anchor="w")
+                name_frame, text=b["broker_name"],
+                font=ctk.CTkFont(size=14), text_color="#e0e0e0",
+            ).pack(side="left")
+            for tag in get_broker_tags(b["broker_name"]):
+                tag_lbl = ctk.CTkLabel(
+                    name_frame, text=tag,
+                    font=ctk.CTkFont(size=10, weight="bold"),
+                    text_color="#1e1e1e",
+                    fg_color=TAG_COLORS.get(tag, "#888"),
+                    corner_radius=4, width=20, height=18,
+                )
+                tag_lbl.pack(side="left", padx=(3, 0))
+                _Tooltip(tag_lbl, TAG_LABELS.get(tag, tag))
 
             ctk.CTkLabel(
                 row_f, text=net_str,
@@ -556,7 +613,7 @@ class BrokerAnalysisView(ctk.CTkFrame):
 
             ctk.CTkLabel(
                 row_f, text=pnl_str,
-                font=ctk.CTkFont(size=12), text_color=pnl_clr,
+                font=ctk.CTkFont(size=14), text_color=pnl_clr,
             ).place(relx=0.97, rely=0.5, anchor="e")
 
             # Click to show detail
@@ -580,19 +637,76 @@ class BrokerAnalysisView(ctk.CTkFrame):
         if not corr_list:
             ctk.CTkLabel(
                 self.rank_list_frame, text="（資料不足，無法分析）",
-                font=ctk.CTkFont(size=12), text_color="gray",
+                font=ctk.CTkFont(size=14), text_color="gray",
             ).pack(pady=20)
             return
 
+        # Legend / hint panel
+        hint_frame = ctk.CTkFrame(
+            self.rank_list_frame, fg_color="#1e1e1e", corner_radius=8)
+        hint_frame.pack(fill="x", padx=8, pady=(4, 6))
+
+        hint_title_row = ctk.CTkFrame(hint_frame, fg_color="transparent")
+        hint_title_row.pack(fill="x", padx=12, pady=(8, 2))
+        ctk.CTkLabel(
+            hint_title_row, text="欄位說明",
+            font=ctk.CTkFont(size=13, weight="bold"),
+            text_color="#aaaaaa",
+        ).pack(side="left")
+
+        hints = [
+            ("分數", "#ffeb3b",
+             "綜合評分（0~1），越高 = 該分點操作與股價走勢關聯越強"),
+            ("IC", "#26a69a",
+             "資訊係數：綠色正值 = 買超後股價傾向漲，"
+             "紅色負值 = 反指標"),
+            ("lag", "#c0c0c0",
+             "最佳領先天數：0d = 當日反映，2d = 操作領先股價 2 天"),
+            ("連續", "#ffeb3b",
+             "平均連續同方向天數：≥3（黃）= 有計畫佈局，<2（灰）= 隨機"),
+            ("佔比%", "#c0c0c0",
+             "該分點成交量佔全股成交量的百分比，越高影響力越大"),
+            ("偏向", "#ba68c8",
+             "買賣不對稱度：>50%（紫）= 幾乎單邊操作（主力特徵）"),
+        ]
+        for col_name, color, desc in hints:
+            row = ctk.CTkFrame(hint_frame, fg_color="transparent")
+            row.pack(fill="x", padx=12, pady=1)
+            ctk.CTkLabel(
+                row, text=col_name, width=50,
+                font=ctk.CTkFont(size=13, weight="bold"),
+                text_color=color,
+            ).pack(side="left")
+            ctk.CTkLabel(
+                row, text=desc,
+                font=ctk.CTkFont(size=12),
+                text_color="#888888",
+            ).pack(side="left", padx=(4, 0))
+
+        # Color legend
+        clr_row = ctk.CTkFrame(hint_frame, fg_color="transparent")
+        clr_row.pack(fill="x", padx=12, pady=(4, 8))
+        for label, clr in [
+            ("■ 高關聯", "#ffeb3b"), ("■ 中關聯", "#ff9800"),
+            ("■ 低關聯", "#8e8e93"), ("■ IC 正", "#26a69a"),
+            ("■ IC 負", "#ef5350"), ("■ 單邊操作", "#ba68c8"),
+        ]:
+            ctk.CTkLabel(
+                clr_row, text=label,
+                font=ctk.CTkFont(size=12), text_color=clr,
+            ).pack(side="left", padx=(0, 12))
+
         # Header
-        hdr = ctk.CTkFrame(self.rank_list_frame, fg_color="transparent", height=28)
+        hdr = ctk.CTkFrame(self.rank_list_frame, fg_color="transparent", height=32)
         hdr.pack(fill="x", padx=8, pady=(4, 0))
         hdr.pack_propagate(False)
-        for text, rx in [("券商", 0.02), ("綜合分數", 0.42),
-                          ("IC", 0.58), ("最佳lag", 0.72),
-                          ("交易天", 0.88)]:
-            anc = "w" if text == "券商" else "e"
-            ctk.CTkLabel(hdr, text=text, font=ctk.CTkFont(size=10),
+        cols = [
+            ("券商", 0.02, "w"), ("分數", 0.30, "e"), ("IC", 0.41, "e"),
+            ("lag", 0.50, "e"), ("連續", 0.60, "e"), ("佔比%", 0.72, "e"),
+            ("偏向", 0.83, "e"), ("天數", 0.95, "e"),
+        ]
+        for text, rx, anc in cols:
+            ctk.CTkLabel(hdr, text=text, font=ctk.CTkFont(size=14),
                           text_color="gray").place(
                 relx=rx, rely=0.5, anchor=anc)
 
@@ -602,48 +716,67 @@ class BrokerAnalysisView(ctk.CTkFrame):
         for i, c in enumerate(top):
             bg = "#1e1e1e" if i % 2 == 0 else "#252526"
             row = ctk.CTkFrame(self.rank_list_frame, fg_color=bg,
-                                corner_radius=6, height=38)
+                                corner_radius=6, height=42)
             row.pack(fill="x", padx=8, pady=1)
             row.pack_propagate(False)
 
-            # Score color: high=yellow, medium=orange, low=gray
             ratio = c.composite_score / max_score if max_score > 0 else 0
-            if ratio > 0.7:
-                score_clr = "#ffeb3b"
-            elif ratio > 0.4:
-                score_clr = "#ff9800"
-            else:
-                score_clr = "#8e8e93"
-
+            score_clr = "#ffeb3b" if ratio > 0.7 else (
+                "#ff9800" if ratio > 0.4 else "#8e8e93")
             ic_clr = "#26a69a" if c.ic_score > 0 else "#ef5350"
 
-            ctk.CTkLabel(
-                row, text=c.broker_name,
-                font=ctk.CTkFont(size=12), text_color="#e0e0e0",
-            ).place(relx=0.02, rely=0.5, anchor="w")
+            # Streak color
+            streak_clr = "#ffeb3b" if c.avg_streak >= 3 else (
+                "#ff9800" if c.avg_streak >= 2 else "#8e8e93")
 
-            ctk.CTkLabel(
-                row, text=f"{c.composite_score:.3f}",
-                font=ctk.CTkFont(size=12, weight="bold"),
-                text_color=score_clr,
-            ).place(relx=0.50, rely=0.5, anchor="e")
+            # Asymmetry label
+            asym_clr = "#ba68c8" if c.asymmetry > 0.5 else "#8e8e93"
 
-            ic_str = f"{c.ic_score:+.3f}"
-            ctk.CTkLabel(
-                row, text=ic_str,
-                font=ctk.CTkFont(size=11), text_color=ic_clr,
-            ).place(relx=0.65, rely=0.5, anchor="e")
+            fs = ctk.CTkFont(size=14)
+            fsb = ctk.CTkFont(size=11, weight="bold")
 
-            lag_str = f"{c.cross_corr_lag}日"
-            ctk.CTkLabel(
-                row, text=lag_str,
-                font=ctk.CTkFont(size=11), text_color="#c0c0c0",
-            ).place(relx=0.78, rely=0.5, anchor="e")
+            nf = ctk.CTkFrame(row, fg_color="transparent")
+            nf.place(relx=0.02, rely=0.5, anchor="w")
+            ctk.CTkLabel(nf, text=c.broker_name, font=fs,
+                          text_color="#e0e0e0").pack(side="left")
+            for tag in get_broker_tags(c.broker_name):
+                tag_lbl = ctk.CTkLabel(
+                    nf, text=tag,
+                    font=ctk.CTkFont(size=10, weight="bold"),
+                    text_color="#1e1e1e",
+                    fg_color=TAG_COLORS.get(tag, "#888"),
+                    corner_radius=4, width=20, height=18,
+                )
+                tag_lbl.pack(side="left", padx=(3, 0))
+                _Tooltip(tag_lbl, TAG_LABELS.get(tag, tag))
 
-            ctk.CTkLabel(
-                row, text=str(c.active_days),
-                font=ctk.CTkFont(size=11), text_color="#8e8e93",
-            ).place(relx=0.92, rely=0.5, anchor="e")
+            ctk.CTkLabel(row, text=f"{c.composite_score:.3f}", font=fsb,
+                          text_color=score_clr).place(
+                relx=0.30, rely=0.5, anchor="e")
+
+            ctk.CTkLabel(row, text=f"{c.ic_score:+.2f}", font=fs,
+                          text_color=ic_clr).place(
+                relx=0.41, rely=0.5, anchor="e")
+
+            ctk.CTkLabel(row, text=f"{c.cross_corr_lag}d", font=fs,
+                          text_color="#c0c0c0").place(
+                relx=0.50, rely=0.5, anchor="e")
+
+            ctk.CTkLabel(row, text=f"{c.avg_streak:.1f}", font=fs,
+                          text_color=streak_clr).place(
+                relx=0.60, rely=0.5, anchor="e")
+
+            ctk.CTkLabel(row, text=f"{c.volume_share_pct:.2f}", font=fs,
+                          text_color="#c0c0c0").place(
+                relx=0.72, rely=0.5, anchor="e")
+
+            ctk.CTkLabel(row, text=f"{c.asymmetry:.0%}", font=fs,
+                          text_color=asym_clr).place(
+                relx=0.83, rely=0.5, anchor="e")
+
+            ctk.CTkLabel(row, text=str(c.active_days), font=fs,
+                          text_color="#8e8e93").place(
+                relx=0.95, rely=0.5, anchor="e")
 
             # Click to show detail chart
             row.bind("<Button-1>", lambda e, br=c: self._on_rank_row_click({
@@ -672,10 +805,11 @@ class BrokerAnalysisView(ctk.CTkFrame):
         self.broker_info_label.configure(text=parts)
 
         # Summary boxes
+        net_lots = _to_lots(net)
         net_clr = "#ef5350" if net >= 0 else "#26a69a"
-        self.box_net_value.configure(text=_fmt(net), text_color=net_clr)
+        self.box_net_value.configure(text=_fmt(net_lots), text_color=net_clr)
 
-        # 區間金額 (萬) = net_volume * avg_price (rough)
+        # 區間金額 (萬) = net_volume(股) * avg_price / 10000
         avg_p = avg_buy or avg_sell or 0
         amt = round(abs(net) * avg_p / 10000)
         amt_str = _fmt(amt)
@@ -692,7 +826,7 @@ class BrokerAnalysisView(ctk.CTkFrame):
 
         if not HAS_MPL:
             ctk.CTkLabel(self.chart_frame, text="（pip install matplotlib）",
-                          font=ctk.CTkFont(size=12),
+                          font=ctk.CTkFont(size=14),
                           text_color="gray").pack(pady=16)
             return
 
@@ -700,7 +834,7 @@ class BrokerAnalysisView(ctk.CTkFrame):
         broker_daily = data.get("broker_daily", [])
         if not prices:
             ctk.CTkLabel(self.chart_frame, text="（該區間無價格資料）",
-                          font=ctk.CTkFont(size=12),
+                          font=ctk.CTkFont(size=14),
                           text_color="gray").pack(pady=16)
             return
 
@@ -716,7 +850,7 @@ class BrokerAnalysisView(ctk.CTkFrame):
 
         if not labels:
             ctk.CTkLabel(self.chart_frame, text="（無法解析價格資料）",
-                          font=ctk.CTkFont(size=12),
+                          font=ctk.CTkFont(size=14),
                           text_color="gray").pack(pady=16)
             return
 
@@ -763,13 +897,14 @@ class BrokerAnalysisView(ctk.CTkFrame):
         ax = fig.add_subplot(111)
         ax.set_facecolor(panel_bg)
 
-        # ---- Volume bars (primary visual, left y-axis) ----
+        # ---- Volume bars (primary visual, left y-axis, in 張) ----
+        b_net_lots = [v // 1000 for v in b_net]
         bar_w = 0.55
-        bar_clrs = ["#ef5350" if v >= 0 else "#26a69a" for v in b_net]
-        ax.bar(xs, b_net, width=bar_w, color=bar_clrs, alpha=0.85, zorder=5)
+        bar_clrs = ["#ef5350" if v >= 0 else "#26a69a" for v in b_net_lots]
+        ax.bar(xs, b_net_lots, width=bar_w, color=bar_clrs, alpha=0.85, zorder=5)
 
         ax.axhline(0, color=grid_clr, linewidth=0.6, zorder=4)
-        ax.set_ylabel("淨量", fontsize=8, color=vol_axis_clr, labelpad=4)
+        ax.set_ylabel("淨量(張)", fontsize=11, color=vol_axis_clr, labelpad=4)
         ax.tick_params(axis="y", colors=vol_axis_clr, labelsize=7)
         ax.yaxis.set_major_formatter(
             mticker.FuncFormatter(lambda x, _: f"{int(x):,}"))
@@ -782,7 +917,7 @@ class BrokerAnalysisView(ctk.CTkFrame):
         ax_price = ax.twinx()
         ax_price.plot(xs, c_list, color=price_line_clr, linewidth=1.0,
                        zorder=8)
-        ax_price.set_ylabel("收盤價", fontsize=8, color=txt, labelpad=4)
+        ax_price.set_ylabel("收盤價", fontsize=11, color=txt, labelpad=4)
         ax_price.tick_params(axis="y", colors=txt, labelsize=7)
         for sp in ax_price.spines.values():
             sp.set_color(grid_clr)
@@ -802,16 +937,16 @@ class BrokerAnalysisView(ctk.CTkFrame):
 
         # ---- Text overlay at top (inside figure) ----
         net_clr = "#ef5350" if net_vol >= 0 else "#26a69a"
-        fig.text(0.06, 0.97, "分點進出", fontsize=10, color=txt_w,
+        fig.text(0.06, 0.97, "分點進出", fontsize=11, color=txt_w,
                  va="top", fontweight="bold")
-        cum_str = f"累積買賣超 (張) {_fmt(cum_net[-1] if cum_net else 0)}"
-        fig.text(0.20, 0.97, cum_str, fontsize=9, color="#ffeb3b", va="top")
+        cum_str = f"累積買賣超 (張) {_fmt_lots(cum_net[-1] if cum_net else 0)}"
+        fig.text(0.20, 0.97, cum_str, fontsize=11, color="#ffeb3b", va="top")
 
         detail_str = (
-            f"買賣超 (張) {_fmt(net_vol)}  "
-            f"買張 {_fmt(total_buy)}  賣張 {_fmt(total_sell)}"
+            f"買賣超 (張) {_fmt_lots(net_vol)}  "
+            f"買張 {_fmt_lots(total_buy)}  賣張 {_fmt_lots(total_sell)}"
         )
-        fig.text(0.20, 0.91, detail_str, fontsize=8.5, color=net_clr, va="top")
+        fig.text(0.20, 0.91, detail_str, fontsize=11, color=net_clr, va="top")
 
         # ---- X ticks ----
         def _fmt_lbl(i):
@@ -830,7 +965,7 @@ class BrokerAnalysisView(ctk.CTkFrame):
                 tks.append(ve)
             ax.set_xticks(tks)
             ax.set_xticklabels([_fmt_lbl(t) for t in tks],
-                                fontsize=7, color=txt, rotation=35, ha="right")
+                                fontsize=11, color=txt, rotation=35, ha="right")
 
         ax.set_xlim(-0.6, n - 0.4)
         _apply_ticks(-0.6, n - 0.4)
@@ -861,7 +996,7 @@ class BrokerAnalysisView(ctk.CTkFrame):
                                          zorder=19, visible=False)[0]
         self._annot = ax_price.annotate(
             "", xy=(0, 0), xytext=(12, 16), textcoords="offset points",
-            fontsize=8, color=txt_w,
+            fontsize=11, color=txt_w,
             bbox=dict(boxstyle="round,pad=0.4", fc="#2c2c2e",
                       ec="#3a3a3c", alpha=0.92),
             zorder=25, visible=False)
@@ -894,12 +1029,15 @@ class BrokerAnalysisView(ctk.CTkFrame):
         self._cross_dot.set_data([idx], [price])
         self._cross_dot.set_visible(True)
 
-        net_s = f"+{_fmt(net)}" if net > 0 else _fmt(net)
+        net_l = _to_lots(net)
+        buy_l = _to_lots(buy)
+        sell_l = _to_lots(sell)
+        net_s = f"+{_fmt(net_l)}" if net_l > 0 else _fmt(net_l)
         info = (
             f"{cd['labels'][idx]}\n"
             f"收盤 {price:.2f}\n"
-            f"買 {_fmt(buy)}  賣 {_fmt(sell)}\n"
-            f"淨量 {net_s}"
+            f"買 {_fmt(buy_l)} 張  賣 {_fmt(sell_l)} 張\n"
+            f"淨量 {net_s} 張"
         )
         self._annot.set_text(info)
         self._annot.xy = (idx, price)

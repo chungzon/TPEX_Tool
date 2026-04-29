@@ -112,7 +112,7 @@ class SettingsView(ctk.CTkFrame):
         tdcc_btn_row.pack(fill="x", padx=24, pady=(0, 4))
 
         self.tdcc_btn = ctk.CTkButton(
-            tdcc_btn_row, text="下載集保資料（使用目前清單）",
+            tdcc_btn_row, text="下載集保資料（全部股票）",
             width=280, height=36, corner_radius=8,
             font=ctk.CTkFont(size=13, weight="bold"),
             fg_color="#7b61ff", hover_color="#6344e0",
@@ -313,7 +313,7 @@ class SettingsView(ctk.CTkFrame):
                 self.tdcc_btn.configure(state="disabled", text="下載中...")
             else:
                 self.tdcc_btn.configure(
-                    state="normal", text="下載集保資料（使用目前清單）")
+                    state="normal", text="下載集保資料（全部股票）")
         self.after(0, _u)
 
     def _on_progress(self, v: float):
