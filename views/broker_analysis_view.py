@@ -8,7 +8,10 @@ import tkinter as tk
 from datetime import datetime
 
 from viewmodels.broker_analysis_viewmodel import BrokerAnalysisViewModel
-from services.broker_tags import get_broker_tags, TAG_COLORS, TAG_LABELS
+from services.broker_tags import (
+    get_broker_tags, TAG_COLORS, TAG_LABELS,
+    TAG_DAY, TAG_NEXT, TAG_SHORT, TAG_SWING,
+)
 
 try:
     import matplotlib
@@ -198,6 +201,11 @@ class BrokerAnalysisView(ctk.CTkFrame):
         )
         self.rank_tab.pack(padx=16, pady=(14, 6))
         self.rank_tab.set("買方 Top15")
+
+        # Broker-type volume share stats
+        self.tag_stats_frame = ctk.CTkFrame(
+            self.ranking_card, fg_color="transparent")
+        self.tag_stats_frame.pack(fill="x", padx=16, pady=(0, 4))
 
         self.rank_list_frame = ctk.CTkFrame(
             self.ranking_card, fg_color="transparent")
@@ -399,6 +407,7 @@ class BrokerAnalysisView(ctk.CTkFrame):
             sellers.sort(key=lambda b: b["net_volume"])
             self._rank_buyers = buyers[:15]
             self._rank_sellers = sellers[:15]
+            self._build_tag_stats(brokers)
             self._render_rank_list(self.rank_tab.get())
         self.after(0, _u)
 
@@ -536,6 +545,59 @@ class BrokerAnalysisView(ctk.CTkFrame):
         self.after(0, _u)
 
     # ================================================================ Ranking list
+
+    def _build_tag_stats(self, brokers: list[dict]):
+        """Show buy-volume share % for each broker-type tag."""
+        for w in self.tag_stats_frame.winfo_children():
+            w.destroy()
+
+        # Total buy volume across all brokers
+        total_buy = sum(b.get("buy_volume", 0) for b in brokers)
+        if total_buy == 0:
+            return
+
+        # Accumulate buy volume per tag
+        tag_buy: dict[str, int] = {
+            TAG_DAY: 0, TAG_NEXT: 0, TAG_SHORT: 0, TAG_SWING: 0,
+        }
+        for b in brokers:
+            bv = b.get("buy_volume", 0)
+            if bv <= 0:
+                continue
+            tags = get_broker_tags(b["broker_name"])
+            for t in tags:
+                if t in tag_buy:
+                    tag_buy[t] += bv
+
+        # Render
+        for tag, label in [
+            (TAG_DAY, "當沖"), (TAG_NEXT, "隔日沖"),
+            (TAG_SHORT, "短線"), (TAG_SWING, "波段"),
+        ]:
+            pct = tag_buy[tag] / total_buy * 100 if total_buy > 0 else 0
+            color = TAG_COLORS[tag]
+
+            f = ctk.CTkFrame(self.tag_stats_frame, fg_color="#1e1e1e",
+                              corner_radius=8)
+            f.pack(side="left", padx=4, pady=2)
+
+            ctk.CTkLabel(
+                f, text=tag, width=22, height=20,
+                font=ctk.CTkFont(size=10, weight="bold"),
+                text_color="#1e1e1e", fg_color=color,
+                corner_radius=4,
+            ).pack(side="left", padx=(8, 4), pady=6)
+
+            ctk.CTkLabel(
+                f, text=f"{label} 買入佔比",
+                font=ctk.CTkFont(size=12), text_color="#888888",
+            ).pack(side="left", pady=6)
+
+            ctk.CTkLabel(
+                f, text=f"{pct:.1f}%",
+                font=ctk.CTkFont(size=14, weight="bold"),
+                text_color=color,
+            ).pack(side="left", padx=(6, 10), pady=6)
 
     def _render_rank_list(self, tab: str):
         for w in self.rank_list_frame.winfo_children():
