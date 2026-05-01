@@ -248,6 +248,11 @@ class BrokerAnalysisView(ctk.CTkFrame):
             info_row, text="", font=ctk.CTkFont(size=17, weight="bold"))
         self.stock_title_label.pack(side="left")
 
+        # Volume info row (multiple labels for different colors)
+        self.vol_info_frame = ctk.CTkFrame(
+            self.stock_info_card, fg_color="transparent")
+        self.vol_info_frame.pack(fill="x", padx=22, pady=(0, 4))
+
         date_row = ctk.CTkFrame(self.stock_info_card, fg_color="transparent")
         date_row.pack(fill="x", padx=20, pady=(0, 16))
         ctk.CTkLabel(date_row, text="日期區間：",
@@ -474,6 +479,7 @@ class BrokerAnalysisView(ctk.CTkFrame):
         self.vm.bind("detail_data", self._on_detail_data)
         self.vm.bind("correlation_data", self._on_correlation_data)
         self.vm.bind("correlation_loading", self._on_correlation_loading)
+        self.vm.bind("volume_info", self._on_volume_info)
         self.vm.bind("holder_data", self._on_holder_data)
         self.vm.bind("holder_loading", self._on_holder_loading)
         self.vm.bind("insti_data", self._on_insti_data)
@@ -552,6 +558,89 @@ class BrokerAnalysisView(ctk.CTkFrame):
             self._fill_detail_info(data)
             self._build_detail_chart(data)
             self.detail_card.pack(padx=40, pady=8, fill="x")
+        self.after(0, _u)
+
+    def _on_volume_info(self, info):
+        def _u():
+            for w in self.vol_info_frame.winfo_children():
+                w.destroy()
+            if not info:
+                return
+
+            fs = ctk.CTkFont(size=14)
+            fsb = ctk.CTkFont(size=14, weight="bold")
+            gray = "#888888"
+            sp = "　"
+
+            date = info.get("trade_date", "")
+            price_raw = info.get("close_price", "")
+            vol_raw = info.get("total_volume", 0)
+            price_chg = info.get("price_change")
+            price_chg_pct = info.get("price_change_pct")
+            vol_chg = info.get("vol_change_pct")
+
+            try:
+                vol_int = int(str(vol_raw).replace(",", "").replace(" ", ""))
+            except (ValueError, TypeError):
+                vol_int = 0
+            try:
+                price_f = float(str(price_raw).replace(",", ""))
+            except (ValueError, TypeError):
+                price_f = None
+
+            # Date
+            ctk.CTkLabel(self.vol_info_frame, text=f"最新交易日：{date}{sp}",
+                          font=fs, text_color=gray).pack(side="left")
+
+            # Price
+            if price_f is not None:
+                # Determine price color
+                if price_chg is not None and price_chg > 0:
+                    p_clr = "#ef5350"
+                    arrow = "▲"
+                elif price_chg is not None and price_chg < 0:
+                    p_clr = "#26a69a"
+                    arrow = "▼"
+                else:
+                    p_clr = "#c0c0c0"
+                    arrow = ""
+
+                ctk.CTkLabel(self.vol_info_frame, text=f"{price_f:,.2f}",
+                              font=fsb, text_color=p_clr).pack(side="left")
+
+                if price_chg is not None and price_chg != 0:
+                    sign = "+" if price_chg > 0 else ""
+                    pct_str = ""
+                    if price_chg_pct is not None:
+                        pct_str = f"({sign}{price_chg_pct:.2f}%)"
+                    ctk.CTkLabel(
+                        self.vol_info_frame,
+                        text=f" {arrow}{sign}{price_chg:.2f} {pct_str}{sp}",
+                        font=fs, text_color=p_clr,
+                    ).pack(side="left")
+                else:
+                    ctk.CTkLabel(self.vol_info_frame, text=sp,
+                                  font=fs, text_color=gray).pack(side="left")
+
+            # Volume
+            ctk.CTkLabel(self.vol_info_frame,
+                          text=f"成交量 {vol_int // 1000:,} 張",
+                          font=fs, text_color="#c0c0c0").pack(side="left")
+
+            # Volume change
+            if vol_chg is not None:
+                if vol_chg > 0:
+                    v_txt = f" ▲量增 {vol_chg:.1f}%"
+                    v_clr = "#ef5350"
+                elif vol_chg < 0:
+                    v_txt = f" ▼量縮 {abs(vol_chg):.1f}%"
+                    v_clr = "#26a69a"
+                else:
+                    v_txt = " 量平"
+                    v_clr = "#888888"
+                ctk.CTkLabel(self.vol_info_frame, text=v_txt,
+                              font=fsb, text_color=v_clr).pack(side="left")
+
         self.after(0, _u)
 
     def _on_holder_loading(self, v):

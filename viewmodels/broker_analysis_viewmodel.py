@@ -34,6 +34,9 @@ class BrokerAnalysisViewModel(BaseViewModel):
     correlation_data = ObservableProperty(None)    # list[BrokerCorrelation] | None
     correlation_loading = ObservableProperty(False)
 
+    # Volume info (latest trading day)
+    volume_info = ObservableProperty(None)          # dict | None
+
     # Holder distribution
     holder_data = ObservableProperty(None)         # dict | None
     holder_loading = ObservableProperty(False)
@@ -72,6 +75,7 @@ class BrokerAnalysisViewModel(BaseViewModel):
         self.selected_broker = None
         self.detail_data = None
         self.insti_data = None
+        self.volume_info = None
         try:
             d_min, d_max = self._db.get_stock_date_range(stock_code)
             self.date_min = d_min
@@ -80,8 +84,50 @@ class BrokerAnalysisViewModel(BaseViewModel):
             # Load institutional data
             insti = self._db.get_insti_history(stock_code, d_min, d_max)
             self.insti_data = insti if insti else None
+            # Load volume info (last 2 days)
+            vol_rows = self._db.get_latest_volume(stock_code)
+            if vol_rows:
+                self._build_volume_info(vol_rows)
         except Exception as e:
             self.error_text = f"載入錯誤：{e}"
+
+    def _build_volume_info(self, vol_rows: list[dict]):
+        def _pv(v) -> int:
+            try:
+                return int(str(v).replace(",", "").replace(" ", ""))
+            except (ValueError, TypeError):
+                return 0
+
+        def _pp(v) -> float | None:
+            try:
+                return float(str(v).replace(",", "").replace(" ", ""))
+            except (ValueError, TypeError):
+                return None
+
+        latest = vol_rows[0]
+        latest_vol = _pv(latest["total_volume"])
+        latest_price = _pp(latest["close_price"])
+        info = {
+            "trade_date": latest["trade_date"],
+            "close_price": latest["close_price"],
+            "total_volume": latest_vol,
+            "vol_change_pct": None,
+            "price_change": None,
+            "price_change_pct": None,
+        }
+        if len(vol_rows) >= 2:
+            prev_vol = _pv(vol_rows[1]["total_volume"])
+            prev_price = _pp(vol_rows[1]["close_price"])
+            if prev_vol > 0:
+                info["vol_change_pct"] = round(
+                    (latest_vol - prev_vol) / prev_vol * 100, 1
+                )
+            if latest_price is not None and prev_price is not None and prev_price > 0:
+                info["price_change"] = round(latest_price - prev_price, 2)
+                info["price_change_pct"] = round(
+                    (latest_price - prev_price) / prev_price * 100, 2
+                )
+        self.volume_info = info
 
     def reload_brokers(self, start_date: str, end_date: str):
         """Reload broker summary for the selected stock with given date range."""
