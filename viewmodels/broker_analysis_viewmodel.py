@@ -291,24 +291,24 @@ class BrokerAnalysisViewModel(BaseViewModel):
                 stocks[code] = {
                     "stock_name": r["stock_name"],
                     "close_price": r["close_price"],
-                    "total_volume": _pv(r["total_volume"]),
-                    "tag_net": defaultdict(int),  # net = buy - sell
+                    "total_broker_vol": 0,  # sum of all broker buy+sell
+                    "tag_net": defaultdict(int),
                 }
             s = stocks[code]
             bv = r["buy_volume"] or 0
             sv = r["sell_volume"] or 0
+            s["total_broker_vol"] += bv + sv
             net = bv - sv
-            # Only count brokers with net buy (positive)
             if net > 0:
                 for t in get_broker_tags(r["broker_name"]):
                     s["tag_net"][t] += net
 
-        # Top 20 by net buy (買超) / total volume
+        # Top 20 by net buy (買超) / total broker volume
         result: dict[str, list[dict]] = {}
         for tag in (TAG_DAY, TAG_NEXT, TAG_SHORT):
             ranked = []
             for code, s in stocks.items():
-                tv = s["total_volume"]
+                tv = s["total_broker_vol"]
                 net = s["tag_net"].get(tag, 0)
                 if net <= 0 or tv <= 0:
                     continue
