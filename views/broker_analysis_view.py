@@ -117,6 +117,87 @@ class BrokerAnalysisView(ctk.CTkFrame):
             font=ctk.CTkFont(size=14), text_color="gray",
         ).pack(pady=(0, 24))
 
+        # --- Tag ranking section ---
+        tag_card = ctk.CTkFrame(self.container, corner_radius=12)
+        tag_card.pack(padx=40, pady=8, fill="x")
+
+        tag_hdr = ctk.CTkFrame(tag_card, fg_color="transparent")
+        tag_hdr.pack(fill="x", padx=20, pady=(14, 4))
+        ctk.CTkLabel(tag_hdr, text="主力分點排行",
+                      font=ctk.CTkFont(size=16, weight="bold")).pack(side="left")
+
+        tag_date_row = ctk.CTkFrame(tag_card, fg_color="transparent")
+        tag_date_row.pack(fill="x", padx=20, pady=(2, 6))
+        ctk.CTkLabel(tag_date_row, text="交易日期：",
+                      font=ctk.CTkFont(size=14)).pack(side="left")
+        self.tag_date_entry = ctk.CTkEntry(
+            tag_date_row, width=130, font=ctk.CTkFont(size=14),
+            placeholder_text="yyyy-mm-dd")
+        self.tag_date_entry.pack(side="left", padx=(4, 8))
+        from datetime import datetime as _dt
+        self.tag_date_entry.insert(0, _dt.now().strftime("%Y-%m-%d"))
+        self.tag_query_btn = ctk.CTkButton(
+            tag_date_row, text="查詢", width=80, height=32,
+            corner_radius=8, font=ctk.CTkFont(size=14, weight="bold"),
+            command=self._on_tag_query)
+        self.tag_query_btn.pack(side="left")
+        self.tag_error_label = ctk.CTkLabel(
+            tag_date_row, text="", font=ctk.CTkFont(size=13),
+            text_color="#FF6B6B")
+        self.tag_error_label.pack(side="left", padx=(12, 0))
+
+        # Three tables
+        self._tag_trees: dict[str, ttk.Treeview] = {}
+        tag_tables = ctk.CTkFrame(tag_card, fg_color="transparent")
+        tag_tables.pack(fill="x", padx=8, pady=(0, 12))
+        tag_tables.columnconfigure(0, weight=1)
+        tag_tables.columnconfigure(1, weight=1)
+        tag_tables.columnconfigure(2, weight=1)
+
+        for col, (tag, title) in enumerate([
+            (TAG_DAY, "當沖主力"), (TAG_NEXT, "隔日沖主力"),
+            (TAG_SHORT, "短線主力"),
+        ]):
+            f = ctk.CTkFrame(tag_tables, corner_radius=8)
+            f.grid(row=0, column=col, sticky="nsew", padx=3, pady=2)
+
+            hdr_f = ctk.CTkFrame(f, fg_color="transparent")
+            hdr_f.pack(fill="x", padx=10, pady=(8, 2))
+            ctk.CTkLabel(hdr_f, text="●",
+                          font=ctk.CTkFont(size=12),
+                          text_color=TAG_COLORS[tag]).pack(side="left")
+            ctk.CTkLabel(hdr_f, text=f" {title} 買超佔比 Top20",
+                          font=ctk.CTkFont(size=12, weight="bold")).pack(side="left")
+
+            tree_f = ctk.CTkFrame(f, fg_color="transparent")
+            tree_f.pack(fill="both", expand=True, padx=4, pady=(0, 6))
+
+            columns = ("rank", "code", "name", "price", "ratio")
+            tree = ttk.Treeview(
+                tree_f, columns=columns, show="headings",
+                style="TagRank.Treeview", height=10)
+            for c, txt, w, anc in [
+                ("rank", "#", 28, "center"), ("code", "代碼", 50, "center"),
+                ("name", "名稱", 70, "w"), ("price", "收盤", 55, "e"),
+                ("ratio", "佔比%", 52, "e"),
+            ]:
+                tree.heading(c, text=txt)
+                tree.column(c, width=w, anchor=anc, stretch=True)
+
+            tree.tag_configure("hot", foreground=TAG_COLORS[tag])
+            tree.bind("<<TreeviewSelect>>",
+                       lambda e, t=tree: self._on_tag_tree_select(t))
+
+            sb = ttk.Scrollbar(tree_f, orient="vertical", command=tree.yview)
+            tree.configure(yscrollcommand=sb.set)
+            tree.pack(side="left", fill="both", expand=True, padx=(4, 0), pady=2)
+            sb.pack(side="right", fill="y", padx=(0, 4), pady=2)
+
+            self._tag_trees[tag] = tree
+
+        # Ensure dark style for these trees
+        self._ensure_tag_tree_style()
+
         # --- Search card ---
         search_card = ctk.CTkFrame(self.container, corner_radius=12)
         search_card.pack(padx=40, pady=8, fill="x")
@@ -298,6 +379,37 @@ class BrokerAnalysisView(ctk.CTkFrame):
 
     # ================================================================ Events
 
+    def _on_tag_query(self):
+        self.vm.load_tag_rankings(self.tag_date_entry.get().strip())
+
+    def _on_tag_tree_select(self, tree: ttk.Treeview):
+        sel = tree.selection()
+        if not sel:
+            return
+        vals = tree.item(sel[0])["values"]
+        code = str(vals[1])  # stock_code
+        # Auto-fill search and trigger
+        self.search_entry.delete(0, "end")
+        self.search_entry.insert(0, code)
+        self._on_search()
+
+    def _ensure_tag_tree_style(self):
+        s = ttk.Style()
+        name = "TagRank.Treeview"
+        s.configure(name,
+                    background="#252526", foreground="#d4d4d4",
+                    fieldbackground="#252526", borderwidth=0,
+                    rowheight=26, font=("Microsoft JhengHei", 11))
+        s.map(name,
+              background=[("selected", "#264f78")],
+              foreground=[("selected", "#ffffff")])
+        s.configure(f"{name}.Heading",
+                    background="#2d2d2d", foreground="#cccccc",
+                    borderwidth=0, relief="flat",
+                    font=("Microsoft JhengHei", 11, "bold"))
+        s.map(f"{name}.Heading",
+              background=[("active", "#3e3e3e")])
+
     def _on_search(self):
         self.vm.search(self.search_entry.get().strip())
 
@@ -352,6 +464,9 @@ class BrokerAnalysisView(ctk.CTkFrame):
         self.vm.bind("correlation_loading", self._on_correlation_loading)
         self.vm.bind("holder_data", self._on_holder_data)
         self.vm.bind("holder_loading", self._on_holder_loading)
+        self.vm.bind("tag_rankings", self._on_tag_rankings)
+        self.vm.bind("tag_rankings_loading", self._on_tag_rankings_loading)
+        self.vm.bind("tag_rankings_error", self._on_tag_rankings_error)
 
     def _on_error(self, v):
         self.after(0, lambda: self.error_label.configure(text=v))
@@ -526,6 +641,40 @@ class BrokerAnalysisView(ctk.CTkFrame):
         canvas.draw()
         canvas.get_tk_widget().pack(fill="x", padx=4, pady=(4, 4))
 
+    def _on_tag_rankings_loading(self, v):
+        def _u():
+            if v:
+                self.tag_query_btn.configure(state="disabled", text="查詢中...")
+            else:
+                self.tag_query_btn.configure(state="normal", text="查詢")
+        self.after(0, _u)
+
+    def _on_tag_rankings_error(self, v):
+        self.after(0, lambda: self.tag_error_label.configure(text=v))
+
+    def _on_tag_rankings(self, data):
+        def _u():
+            for tag, tree in self._tag_trees.items():
+                tree.delete(*tree.get_children())
+            if data is None:
+                return
+            for tag, tree in self._tag_trees.items():
+                rows = data.get(tag, [])
+                for i, r in enumerate(rows, 1):
+                    price = r.get("close_price", "")
+                    try:
+                        price = f"{float(str(price).replace(',', '')):,.2f}"
+                    except (ValueError, TypeError):
+                        pass
+                    tag_style = "hot" if r["ratio"] >= 10 else ""
+                    tree.insert(
+                        "", "end",
+                        values=(i, r["stock_code"], r["stock_name"],
+                                price, f"{r['ratio']:.1f}"),
+                        tags=(tag_style,) if tag_style else (),
+                    )
+        self.after(0, _u)
+
     def _on_correlation_loading(self, v):
         def _u():
             if v:
@@ -547,34 +696,39 @@ class BrokerAnalysisView(ctk.CTkFrame):
     # ================================================================ Ranking list
 
     def _build_tag_stats(self, brokers: list[dict]):
-        """Show buy-volume share % for each broker-type tag."""
+        """Show net-buy (買超) volume share % for each broker-type tag."""
         for w in self.tag_stats_frame.winfo_children():
             w.destroy()
 
-        # Total buy volume across all brokers
-        total_buy = sum(b.get("buy_volume", 0) for b in brokers)
-        if total_buy == 0:
+        # Total net volume across all brokers (absolute sum for denominator)
+        total_vol = sum(
+            b.get("buy_volume", 0) + b.get("sell_volume", 0)
+            for b in brokers
+        )
+        if total_vol == 0:
             return
 
-        # Accumulate buy volume per tag
-        tag_buy: dict[str, int] = {
+        # Accumulate net (buy - sell) per tag
+        tag_net: dict[str, int] = {
             TAG_DAY: 0, TAG_NEXT: 0, TAG_SHORT: 0, TAG_SWING: 0,
         }
         for b in brokers:
             bv = b.get("buy_volume", 0)
-            if bv <= 0:
+            sv = b.get("sell_volume", 0)
+            net = bv - sv
+            if net <= 0:
                 continue
             tags = get_broker_tags(b["broker_name"])
             for t in tags:
-                if t in tag_buy:
-                    tag_buy[t] += bv
+                if t in tag_net:
+                    tag_net[t] += net
 
         # Render
         for tag, label in [
             (TAG_DAY, "當沖"), (TAG_NEXT, "隔日沖"),
             (TAG_SHORT, "短線"), (TAG_SWING, "波段"),
         ]:
-            pct = tag_buy[tag] / total_buy * 100 if total_buy > 0 else 0
+            pct = tag_net[tag] / total_vol * 100 if total_vol > 0 else 0
             color = TAG_COLORS[tag]
 
             f = ctk.CTkFrame(self.tag_stats_frame, fg_color="#1e1e1e",
@@ -589,7 +743,7 @@ class BrokerAnalysisView(ctk.CTkFrame):
             ).pack(side="left", padx=(8, 4), pady=6)
 
             ctk.CTkLabel(
-                f, text=f"{label} 買入佔比",
+                f, text=f"{label} 買超佔比",
                 font=ctk.CTkFont(size=12), text_color="#888888",
             ).pack(side="left", pady=6)
 

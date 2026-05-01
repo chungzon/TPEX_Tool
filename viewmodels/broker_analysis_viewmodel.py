@@ -2,10 +2,13 @@ from __future__ import annotations
 
 import threading
 
+from collections import defaultdict
+
 from viewmodels.base_viewmodel import BaseViewModel, ObservableProperty
 from services.db_service import DbService
 from services.correlation_service import compute_broker_correlations
 from services.tdcc_service import fetch_distribution
+from services.broker_tags import get_broker_tags, TAG_DAY, TAG_NEXT, TAG_SHORT
 
 
 class BrokerAnalysisViewModel(BaseViewModel):
@@ -34,6 +37,11 @@ class BrokerAnalysisViewModel(BaseViewModel):
     # Holder distribution
     holder_data = ObservableProperty(None)         # dict | None
     holder_loading = ObservableProperty(False)
+
+    # Tag rankings (主力分點排行)
+    tag_rankings = ObservableProperty(None)        # dict[tag -> list] | None
+    tag_rankings_loading = ObservableProperty(False)
+    tag_rankings_error = ObservableProperty("")
 
     def __init__(self):
         super().__init__()
@@ -230,6 +238,83 @@ class BrokerAnalysisViewModel(BaseViewModel):
                 self.holder_loading = False
 
         threading.Thread(target=_work, daemon=True).start()
+
+    # ---- Tag rankings ----
+
+    def load_tag_rankings(self, trade_date: str):
+        trade_date = trade_date.strip()
+        if not trade_date:
+            self.tag_rankings_error = "請輸入日期"
+            return
+        if self.tag_rankings_loading:
+            return
+        self.tag_rankings_loading = True
+        self.tag_rankings_error = ""
+        self.tag_rankings = None
+
+        def _work():
+            try:
+                self._db.connect()
+                rows = self._db.get_all_broker_buys_by_date(trade_date)
+                if not rows:
+                    self.tag_rankings_error = (
+                        f"{trade_date} 無資料（可能非交易日或尚未下載）"
+                    )
+                    return
+                self.tag_rankings = self._compute_tag_rankings(rows)
+            except Exception as e:
+                self.tag_rankings_error = f"查詢錯誤：{e}"
+            finally:
+                self.tag_rankings_loading = False
+
+        threading.Thread(target=_work, daemon=True).start()
+
+    @staticmethod
+    def _compute_tag_rankings(rows: list[dict]) -> dict[str, list[dict]]:
+        def _pv(v) -> int:
+            try:
+                return int(str(v).replace(",", "").replace(" ", ""))
+            except (ValueError, TypeError):
+                return 0
+
+        stocks: dict[str, dict] = {}
+        for r in rows:
+            code = r["stock_code"]
+            if code not in stocks:
+                stocks[code] = {
+                    "stock_name": r["stock_name"],
+                    "close_price": r["close_price"],
+                    "total_volume": _pv(r["total_volume"]),
+                    "tag_net": defaultdict(int),  # net = buy - sell
+                }
+            s = stocks[code]
+            bv = r["buy_volume"] or 0
+            sv = r["sell_volume"] or 0
+            net = bv - sv
+            # Only count brokers with net buy (positive)
+            if net > 0:
+                for t in get_broker_tags(r["broker_name"]):
+                    s["tag_net"][t] += net
+
+        # Top 20 by net buy (買超) / total volume
+        result: dict[str, list[dict]] = {}
+        for tag in (TAG_DAY, TAG_NEXT, TAG_SHORT):
+            ranked = []
+            for code, s in stocks.items():
+                tv = s["total_volume"]
+                net = s["tag_net"].get(tag, 0)
+                if net <= 0 or tv <= 0:
+                    continue
+                ranked.append({
+                    "stock_code": code,
+                    "stock_name": s["stock_name"],
+                    "close_price": s["close_price"],
+                    "tag_net_volume": net,
+                    "ratio": round(net / tv * 100, 2),
+                })
+            ranked.sort(key=lambda x: x["ratio"], reverse=True)
+            result[tag] = ranked[:20]
+        return result
 
     def shutdown(self):
         try:

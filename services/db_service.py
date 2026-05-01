@@ -374,6 +374,29 @@ class DbService:
         )
         return cur.fetchone() is not None
 
+    def get_all_broker_buys_by_date(self, trade_date: str) -> list[dict]:
+        """All broker buy records for a given date, with stock info."""
+        cur = self._cursor()
+        trade_date = _normalize_date(trade_date)
+        cur.execute("""
+            SELECT b.stock_code, s.stock_name, s.close_price, s.total_volume,
+                   b.broker_code, b.broker_name, b.buy_volume, b.sell_volume
+            FROM BrokerDailyStats b
+            JOIN StockDailySummary s
+              ON b.stock_code = s.stock_code AND b.trade_date = s.trade_date
+            WHERE b.trade_date = %s
+            ORDER BY b.stock_code
+        """, (trade_date,))
+        return [
+            {
+                "stock_code": r[0], "stock_name": r[1],
+                "close_price": r[2], "total_volume": r[3],
+                "broker_code": r[4], "broker_name": r[5],
+                "buy_volume": r[6], "sell_volume": r[7],
+            }
+            for r in cur.fetchall()
+        ]
+
     def search_stocks(self, keyword: str) -> list[dict]:
         """Search stocks by code or name. Returns list of {stock_code, stock_name}."""
         cur = self._cursor()
