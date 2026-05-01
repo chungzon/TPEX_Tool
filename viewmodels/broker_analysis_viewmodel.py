@@ -43,6 +43,9 @@ class BrokerAnalysisViewModel(BaseViewModel):
     tag_rankings_loading = ObservableProperty(False)
     tag_rankings_error = ObservableProperty("")
 
+    # Institutional data (三大法人)
+    insti_data = ObservableProperty(None)           # list[dict] | None
+
     def __init__(self):
         super().__init__()
         self._db = DbService()
@@ -68,11 +71,15 @@ class BrokerAnalysisViewModel(BaseViewModel):
         self.selected_stock = {"stock_code": stock_code, "stock_name": stock_name}
         self.selected_broker = None
         self.detail_data = None
+        self.insti_data = None
         try:
             d_min, d_max = self._db.get_stock_date_range(stock_code)
             self.date_min = d_min
             self.date_max = d_max
             self._load_brokers(stock_code, d_min, d_max)
+            # Load institutional data
+            insti = self._db.get_insti_history(stock_code, d_min, d_max)
+            self.insti_data = insti if insti else None
         except Exception as e:
             self.error_text = f"載入錯誤：{e}"
 

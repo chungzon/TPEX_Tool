@@ -316,6 +316,18 @@ class BrokerAnalysisView(ctk.CTkFrame):
             self.holder_card, fg_color="transparent")
         self.holder_chart_frame.pack(fill="x", padx=8, pady=(0, 16))
 
+        # --- Institutional (三大法人) card ---
+        self.insti_card = ctk.CTkFrame(self.container, corner_radius=12)
+
+        insti_hdr = ctk.CTkFrame(self.insti_card, fg_color="transparent")
+        insti_hdr.pack(fill="x", padx=20, pady=(16, 4))
+        ctk.CTkLabel(insti_hdr, text="三大法人 / 自營商避險",
+                      font=ctk.CTkFont(size=16, weight="bold")).pack(side="left")
+
+        self.insti_content_frame = ctk.CTkFrame(
+            self.insti_card, fg_color="transparent")
+        self.insti_content_frame.pack(fill="x", padx=16, pady=(0, 16))
+
         # --- Detail chart area ---
         self.detail_card = ctk.CTkFrame(self.container, corner_radius=12)
 
@@ -464,6 +476,7 @@ class BrokerAnalysisView(ctk.CTkFrame):
         self.vm.bind("correlation_loading", self._on_correlation_loading)
         self.vm.bind("holder_data", self._on_holder_data)
         self.vm.bind("holder_loading", self._on_holder_loading)
+        self.vm.bind("insti_data", self._on_insti_data)
         self.vm.bind("tag_rankings", self._on_tag_rankings)
         self.vm.bind("tag_rankings_loading", self._on_tag_rankings_loading)
         self.vm.bind("tag_rankings_error", self._on_tag_rankings_error)
@@ -493,6 +506,7 @@ class BrokerAnalysisView(ctk.CTkFrame):
                 self.stock_info_card.pack_forget()
                 self.ranking_card.pack_forget()
                 self.holder_card.pack_forget()
+                self.insti_card.pack_forget()
                 self.detail_card.pack_forget()
                 return
             self.stock_title_label.configure(
@@ -507,6 +521,7 @@ class BrokerAnalysisView(ctk.CTkFrame):
             self.stock_info_card.pack(padx=40, pady=8, fill="x")
             self.ranking_card.pack(padx=40, pady=8, fill="x")
             self.holder_card.pack(padx=40, pady=8, fill="x")
+            self.insti_card.pack(padx=40, pady=8, fill="x")
             self.detail_card.pack_forget()
             # Auto-load holder distribution
             self.vm.load_holder_distribution()
@@ -638,6 +653,115 @@ class BrokerAnalysisView(ctk.CTkFrame):
         ax.set_xticklabels(labels, fontsize=11, color=txt, rotation=35, ha="right")
 
         canvas = FigureCanvasTkAgg(fig, self.holder_chart_frame)
+        canvas.draw()
+        canvas.get_tk_widget().pack(fill="x", padx=4, pady=(4, 4))
+
+    def _on_insti_data(self, data):
+        def _u():
+            for w in self.insti_content_frame.winfo_children():
+                w.destroy()
+            if not data:
+                ctk.CTkLabel(
+                    self.insti_content_frame,
+                    text="（尚無三大法人資料，請至系統設定下載）",
+                    font=ctk.CTkFont(size=13), text_color="gray",
+                ).pack(pady=8)
+                return
+
+            # Latest day summary
+            latest = data[-1]
+            kpi_row = ctk.CTkFrame(self.insti_content_frame, fg_color="transparent")
+            kpi_row.pack(fill="x", pady=(4, 4))
+
+            def _lots(v): return _fmt(v // 1000) if v else "0"
+            def _clr(v): return "#ef5350" if v >= 0 else "#26a69a"
+
+            for label, val in [
+                ("外資", latest["foreign_net"]),
+                ("投信", latest["trust_net"]),
+                ("自營(自行)", latest["dealer_self_net"]),
+                ("自營(避險)", latest["dealer_hedge_net"]),
+                ("三大法人", latest["three_insti_net"]),
+            ]:
+                f = ctk.CTkFrame(kpi_row, corner_radius=8, fg_color="#1e1e1e")
+                f.pack(side="left", padx=4, pady=2)
+                ctk.CTkLabel(f, text=label, font=ctk.CTkFont(size=12),
+                              text_color="gray").pack(padx=10, pady=(5, 0))
+                sign = "+" if val > 0 else ""
+                ctk.CTkLabel(
+                    f, text=f"{sign}{_lots(val)}",
+                    font=ctk.CTkFont(size=14, weight="bold"),
+                    text_color=_clr(val),
+                ).pack(padx=10, pady=(0, 5))
+
+            ctk.CTkLabel(
+                self.insti_content_frame,
+                text=f"最新日期：{latest['trade_date']}　單位：張",
+                font=ctk.CTkFont(size=11), text_color="gray",
+            ).pack(anchor="w", padx=8, pady=(0, 4))
+
+            # Trend chart if enough data
+            if len(data) >= 2 and HAS_MPL:
+                self._render_insti_chart(data)
+
+        self.after(0, _u)
+
+    def _render_insti_chart(self, data: list[dict]):
+        from matplotlib.figure import Figure
+        from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
+
+        n = len(data)
+        xs = list(range(n))
+        hedge = [d["dealer_hedge_net"] // 1000 for d in data]
+        foreign = [d["foreign_net"] // 1000 for d in data]
+        trust = [d["trust_net"] // 1000 for d in data]
+        labels = [d["trade_date"][5:] for d in data]
+
+        bg = "#1c1c1e"
+        panel = "#1c1c1e"
+        txt = "#c0c0c0"
+        grid = "#2c2c2e"
+
+        fig = Figure(figsize=(8, 2.5), dpi=100, facecolor=bg)
+        fig.subplots_adjust(left=0.08, right=0.96, top=0.88, bottom=0.18)
+        ax = fig.add_subplot(111)
+        ax.set_facecolor(panel)
+
+        bar_w = 0.55
+        bar_clrs = ["#ef5350" if v >= 0 else "#26a69a" for v in hedge]
+        ax.bar(xs, hedge, width=bar_w, color=bar_clrs, alpha=0.8,
+               label="自營避險(張)")
+
+        ax.plot(xs, foreign, color="#42a5f5", linewidth=1.2,
+                marker="o", markersize=2, label="外資", alpha=0.8)
+        ax.plot(xs, trust, color="#ff9800", linewidth=1.2,
+                marker="s", markersize=2, label="投信", alpha=0.8)
+
+        ax.axhline(0, color=grid, linewidth=0.5)
+        ax.set_ylabel("張", fontsize=10, color=txt)
+        ax.tick_params(axis="both", colors=txt, labelsize=8)
+        for sp in ax.spines.values():
+            sp.set_color(grid)
+        ax.grid(True, axis="y", alpha=0.2, color=grid, linewidth=0.5)
+        ax.legend(loc="upper left", fontsize=9, framealpha=0.5,
+                  facecolor=panel, edgecolor=grid, labelcolor=txt, ncol=3)
+
+        if n <= 15:
+            ticks = xs
+        else:
+            step = max(n // 10, 1)
+            ticks = list(range(0, n, step))
+            if ticks[-1] != n - 1:
+                ticks.append(n - 1)
+        ax.set_xticks(ticks)
+        ax.set_xticklabels([labels[t] for t in ticks],
+                            fontsize=8, color=txt, rotation=35, ha="right")
+        ax.set_xlim(-0.6, n - 0.4)
+
+        ax.yaxis.set_major_formatter(
+            mticker.FuncFormatter(lambda x, _: f"{int(x):,}"))
+
+        canvas = FigureCanvasTkAgg(fig, self.insti_content_frame)
         canvas.draw()
         canvas.get_tk_widget().pack(fill="x", padx=4, pady=(4, 4))
 

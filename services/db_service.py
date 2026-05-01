@@ -206,6 +206,34 @@ CREATE TABLE StockHolderDistribution (
 );
 """
 
+_DDL_INSTI_DAILY = """
+IF NOT EXISTS (
+    SELECT * FROM sys.tables WHERE name = 'InstiDailyTrade'
+)
+CREATE TABLE InstiDailyTrade (
+    id                INT IDENTITY(1,1) PRIMARY KEY,
+    stock_code        NVARCHAR(10)  NOT NULL,
+    trade_date        DATE          NOT NULL,
+    foreign_buy       INT           NOT NULL DEFAULT 0,
+    foreign_sell      INT           NOT NULL DEFAULT 0,
+    foreign_net       INT           NOT NULL DEFAULT 0,
+    trust_buy         INT           NOT NULL DEFAULT 0,
+    trust_sell        INT           NOT NULL DEFAULT 0,
+    trust_net         INT           NOT NULL DEFAULT 0,
+    dealer_self_buy   INT           NOT NULL DEFAULT 0,
+    dealer_self_sell  INT           NOT NULL DEFAULT 0,
+    dealer_self_net   INT           NOT NULL DEFAULT 0,
+    dealer_hedge_buy  INT           NOT NULL DEFAULT 0,
+    dealer_hedge_sell INT           NOT NULL DEFAULT 0,
+    dealer_hedge_net  INT           NOT NULL DEFAULT 0,
+    three_insti_net   INT           NOT NULL DEFAULT 0,
+    created_at        DATETIME      DEFAULT GETDATE(),
+
+    CONSTRAINT UQ_InstiDaily
+        UNIQUE (stock_code, trade_date)
+);
+"""
+
 
 # ---------------------------------------------------------------------------
 # Service
@@ -275,6 +303,7 @@ class DbService:
         cur.execute(_DDL_BROKER_DAILY_STATS)
         cur.execute(_DDL_INDEX)
         cur.execute(_DDL_HOLDER_DISTRIBUTION)
+        cur.execute(_DDL_INSTI_DAILY)
         self._conn.commit()
 
     # -- Write --------------------------------------------------------------
@@ -581,6 +610,76 @@ class DbService:
                 "retail_pct": float(r[1]),
                 "mid_pct": float(r[2]),
                 "big_pct": float(r[3]),
+            }
+            for r in cur.fetchall()
+        ]
+
+    # -- Institutional daily trade ------------------------------------------
+
+    def save_insti_daily_batch(self, rows: list) -> int:
+        """Upsert a batch of InstiDaily records."""
+        cur = self._cursor()
+        count = 0
+        for r in rows:
+            # 15 data fields matching the UPDATE SET and INSERT columns
+            vals = (
+                r.foreign_buy, r.foreign_sell, r.foreign_net,
+                r.trust_buy, r.trust_sell, r.trust_net,
+                r.dealer_self_buy, r.dealer_self_sell, r.dealer_self_net,
+                r.dealer_hedge_buy, r.dealer_hedge_sell, r.dealer_hedge_net,
+                r.three_insti_net,
+            )
+            # USING=2 + UPDATE=13 + INSERT VALUES=2+13 = 30 placeholders
+            cur.execute("""
+                MERGE InstiDailyTrade AS tgt
+                USING (SELECT %s AS stock_code, %s AS trade_date) AS src
+                    ON tgt.stock_code = src.stock_code
+                   AND tgt.trade_date = src.trade_date
+                WHEN MATCHED THEN UPDATE SET
+                    foreign_buy=%s, foreign_sell=%s, foreign_net=%s,
+                    trust_buy=%s, trust_sell=%s, trust_net=%s,
+                    dealer_self_buy=%s, dealer_self_sell=%s, dealer_self_net=%s,
+                    dealer_hedge_buy=%s, dealer_hedge_sell=%s, dealer_hedge_net=%s,
+                    three_insti_net=%s
+                WHEN NOT MATCHED THEN INSERT (
+                    stock_code, trade_date,
+                    foreign_buy, foreign_sell, foreign_net,
+                    trust_buy, trust_sell, trust_net,
+                    dealer_self_buy, dealer_self_sell, dealer_self_net,
+                    dealer_hedge_buy, dealer_hedge_sell, dealer_hedge_net,
+                    three_insti_net
+                ) VALUES (%s, %s, %s,%s,%s, %s,%s,%s, %s,%s,%s, %s,%s,%s, %s);
+            """, (
+                r.stock_code, r.trade_date,
+                *vals,
+                r.stock_code, r.trade_date,
+                *vals,
+            ))
+            count += 1
+        self._conn.commit()
+        return count
+
+    def get_insti_history(self, stock_code: str,
+                          start_date: str, end_date: str) -> list[dict]:
+        """Get institutional daily data for a stock in a date range."""
+        cur = self._cursor()
+        cur.execute("""
+            SELECT trade_date,
+                   foreign_net, trust_net,
+                   dealer_self_net, dealer_hedge_net,
+                   dealer_hedge_buy, dealer_hedge_sell,
+                   three_insti_net
+            FROM InstiDailyTrade
+            WHERE stock_code=%s AND trade_date >= %s AND trade_date <= %s
+            ORDER BY trade_date
+        """, (stock_code, start_date, end_date))
+        return [
+            {
+                "trade_date": str(r[0]),
+                "foreign_net": r[1], "trust_net": r[2],
+                "dealer_self_net": r[3], "dealer_hedge_net": r[4],
+                "dealer_hedge_buy": r[5], "dealer_hedge_sell": r[6],
+                "three_insti_net": r[7],
             }
             for r in cur.fetchall()
         ]

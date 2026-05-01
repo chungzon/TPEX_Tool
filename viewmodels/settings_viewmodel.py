@@ -29,6 +29,10 @@ class SettingsViewModel(BaseViewModel):
     tdcc_status = ObservableProperty("")
     tdcc_loading = ObservableProperty(False)
 
+    # Institutional data
+    insti_status = ObservableProperty("")
+    insti_loading = ObservableProperty(False)
+
     # Live download progress
     progress = ObservableProperty(0.0)
     progress_text = ObservableProperty("")
@@ -163,6 +167,54 @@ class SettingsViewModel(BaseViewModel):
                 log.exception("TDCC batch download failed")
             finally:
                 self.tdcc_loading = False
+
+        threading.Thread(target=_work, daemon=True).start()
+
+    def download_insti(self) -> None:
+        """Download institutional daily trade data for recent trading days."""
+        if self.insti_loading:
+            return
+        self.insti_loading = True
+        self.insti_status = "下載三大法人資料..."
+
+        def _work():
+            try:
+                from services.insti_service import fetch_insti_daily
+                from services.db_service import DbService
+
+                # Download latest trading day
+                from datetime import datetime, timedelta
+                db = DbService()
+                try:
+                    db.connect()
+                    db.ensure_tables()
+
+                    # Try today and last 5 weekdays
+                    saved = 0
+                    for offset in range(6):
+                        d = datetime.now() - timedelta(days=offset)
+                        if d.weekday() >= 5:  # skip weekends
+                            continue
+                        ds = d.strftime("%Y-%m-%d")
+                        self.insti_status = f"下載 {ds}..."
+                        try:
+                            rows = fetch_insti_daily(ds)
+                            if rows:
+                                n = db.save_insti_daily_batch(rows)
+                                saved += n
+                                self.insti_status = f"{ds}：{n} 檔"
+                        except Exception:
+                            pass  # skip non-trading days
+
+                    self.insti_status = f"完成！共寫入 {saved} 筆"
+                    log.info("Insti download: %d records saved", saved)
+                finally:
+                    db.close()
+            except Exception as e:
+                self.insti_status = f"失敗：{e}"
+                log.exception("Insti download failed")
+            finally:
+                self.insti_loading = False
 
         threading.Thread(target=_work, daemon=True).start()
 

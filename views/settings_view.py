@@ -132,6 +132,45 @@ class SettingsView(ctk.CTkFrame):
         self.tdcc_status_label.pack(side="left")
 
         # ============================================================
+        # Institutional (三大法人) card
+        # ============================================================
+        insti_card = ctk.CTkFrame(container, corner_radius=12)
+        insti_card.pack(padx=40, pady=8, fill="x")
+
+        ctk.CTkLabel(
+            insti_card, text="三大法人買賣超（含自營商避險）",
+            font=ctk.CTkFont(size=16, weight="bold"),
+        ).pack(anchor="w", padx=24, pady=(20, 4))
+
+        ctk.CTkLabel(
+            insti_card,
+            text="下載外資、投信、自營商（自行買賣＋避險）每日買賣超，資料來源：櫃買中心",
+            font=ctk.CTkFont(size=11), text_color="gray",
+        ).pack(anchor="w", padx=24, pady=(0, 10))
+
+        insti_btn_row = ctk.CTkFrame(insti_card, fg_color="transparent")
+        insti_btn_row.pack(fill="x", padx=24, pady=(0, 4))
+
+        self.insti_btn = ctk.CTkButton(
+            insti_btn_row, text="下載三大法人資料（近 5 個交易日）",
+            width=310, height=36, corner_radius=8,
+            font=ctk.CTkFont(size=13, weight="bold"),
+            fg_color="#26a69a", hover_color="#1e8c82",
+            command=self._on_download_insti,
+        )
+        self.insti_btn.pack(side="left")
+
+        insti_st_row = ctk.CTkFrame(insti_card, fg_color="transparent")
+        insti_st_row.pack(fill="x", padx=24, pady=(4, 16))
+        ctk.CTkLabel(insti_st_row, text="狀態：",
+                      font=ctk.CTkFont(size=12),
+                      text_color="gray").pack(side="left")
+        self.insti_status_label = ctk.CTkLabel(
+            insti_st_row, text="—",
+            font=ctk.CTkFont(size=12), text_color="#b0b0b0")
+        self.insti_status_label.pack(side="left")
+
+        # ============================================================
         # Scheduler card
         # ============================================================
         card = ctk.CTkFrame(container, corner_radius=12)
@@ -262,6 +301,9 @@ class SettingsView(ctk.CTkFrame):
     def _on_download_tdcc(self):
         self.vm.download_tdcc()
 
+    def _on_download_insti(self):
+        self.vm.download_insti()
+
     def _on_run_now(self):
         self.vm.run_now()
 
@@ -275,6 +317,8 @@ class SettingsView(ctk.CTkFrame):
         self.vm.bind("stock_list_loading", self._on_list_loading)
         self.vm.bind("tdcc_status", self._on_tdcc_status)
         self.vm.bind("tdcc_loading", self._on_tdcc_loading)
+        self.vm.bind("insti_status", self._on_insti_status)
+        self.vm.bind("insti_loading", self._on_insti_loading)
         self.vm.bind("progress", self._on_progress)
         self.vm.bind("progress_text", self._on_progress_text)
         self.vm.bind("log_text", self._on_log)
@@ -314,6 +358,19 @@ class SettingsView(ctk.CTkFrame):
             else:
                 self.tdcc_btn.configure(
                     state="normal", text="下載集保資料（全部股票）")
+        self.after(0, _u)
+
+    def _on_insti_status(self, v: str):
+        self.after(0, lambda: self.insti_status_label.configure(text=v or "—"))
+
+    def _on_insti_loading(self, v: bool):
+        def _u():
+            if v:
+                self.insti_btn.configure(state="disabled", text="下載中...")
+            else:
+                self.insti_btn.configure(
+                    state="normal",
+                    text="下載三大法人資料（近 5 個交易日）")
         self.after(0, _u)
 
     def _on_progress(self, v: float):
