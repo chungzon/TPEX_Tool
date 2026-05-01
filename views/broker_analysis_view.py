@@ -877,6 +877,39 @@ class BrokerAnalysisView(ctk.CTkFrame):
                 text_color=color,
             ).pack(side="left", padx=(6, 10), pady=6)
 
+        # Dealer hedge ratio (自營比) from institutional data
+        insti = self.vm.insti_data
+        if insti and total_vol > 0:
+            # 自營商買超 / 成交量 * 100%
+            hedge_buy = sum(d.get("dealer_hedge_buy", 0) for d in insti)
+            hedge_sell = sum(d.get("dealer_hedge_sell", 0) for d in insti)
+            hedge_net = hedge_buy - hedge_sell
+            hedge_pct = hedge_net / total_vol * 100
+            hedge_clr = "#ef5350" if hedge_net >= 0 else "#26a69a"
+
+            f = ctk.CTkFrame(self.tag_stats_frame, fg_color="#1e1e1e",
+                              corner_radius=8)
+            f.pack(side="left", padx=4, pady=2)
+
+            ctk.CTkLabel(
+                f, text="自", width=22, height=20,
+                font=ctk.CTkFont(size=10, weight="bold"),
+                text_color="#1e1e1e", fg_color="#ab47bc",
+                corner_radius=4,
+            ).pack(side="left", padx=(8, 4), pady=6)
+
+            ctk.CTkLabel(
+                f, text="自營避險佔比",
+                font=ctk.CTkFont(size=12), text_color="#888888",
+            ).pack(side="left", pady=6)
+
+            sign = "+" if hedge_pct > 0 else ""
+            ctk.CTkLabel(
+                f, text=f"{sign}{hedge_pct:.1f}%",
+                font=ctk.CTkFont(size=14, weight="bold"),
+                text_color=hedge_clr,
+            ).pack(side="left", padx=(6, 10), pady=6)
+
     def _render_rank_list(self, tab: str):
         for w in self.rank_list_frame.winfo_children():
             w.destroy()
