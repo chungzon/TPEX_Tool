@@ -426,6 +426,68 @@ class DbService:
             for r in cur.fetchall()
         ]
 
+    def query_strategy_dealer_hedge(self, trade_date: str,
+                                     hedge_pct_min: float = 10.0,
+                                     buy_amount_min: float = 10000000,
+                                     ) -> list[dict]:
+        """Find stocks where dealer hedge buy ratio >= X% and buy amount >= Y.
+
+        hedge ratio = dealer_hedge_buy / total_volume * 100
+        buy amount  = dealer_hedge_buy * close_price (approximate)
+        """
+        cur = self._cursor()
+        trade_date = _normalize_date(trade_date)
+        cur.execute("""
+            SELECT i.stock_code, s.stock_name, s.close_price, s.total_volume,
+                   i.dealer_hedge_buy, i.dealer_hedge_sell, i.dealer_hedge_net,
+                   i.foreign_net, i.trust_net, i.three_insti_net
+            FROM InstiDailyTrade i
+            JOIN StockDailySummary s
+              ON i.stock_code = s.stock_code AND i.trade_date = s.trade_date
+            WHERE i.trade_date = %s
+              AND i.dealer_hedge_buy > 0
+            ORDER BY i.stock_code
+        """, (trade_date,))
+        results = []
+        for r in cur.fetchall():
+            code, name = r[0], r[1]
+            close_raw, vol_raw = r[2], r[3]
+            h_buy, h_sell, h_net = r[4], r[5], r[6]
+            f_net, t_net, three_net = r[7], r[8], r[9]
+
+            try:
+                close = float(str(close_raw).replace(",", ""))
+            except (ValueError, TypeError):
+                continue
+            try:
+                total_vol = int(str(vol_raw).replace(",", ""))
+            except (ValueError, TypeError):
+                continue
+
+            if total_vol <= 0:
+                continue
+
+            hedge_pct = h_buy / total_vol * 100
+            buy_amount = h_buy * close  # in NTD
+
+            if hedge_pct >= hedge_pct_min and buy_amount >= buy_amount_min:
+                results.append({
+                    "stock_code": code,
+                    "stock_name": name,
+                    "close_price": close,
+                    "total_volume": total_vol,
+                    "dealer_hedge_buy": h_buy,
+                    "dealer_hedge_sell": h_sell,
+                    "dealer_hedge_net": h_net,
+                    "hedge_pct": round(hedge_pct, 2),
+                    "buy_amount": round(buy_amount),
+                    "foreign_net": f_net,
+                    "trust_net": t_net,
+                    "three_insti_net": three_net,
+                })
+        results.sort(key=lambda x: x["hedge_pct"], reverse=True)
+        return results
+
     def get_latest_volume(self, stock_code: str) -> list[dict]:
         """Get the last 2 trading days' volume and close price for a stock."""
         cur = self._cursor()

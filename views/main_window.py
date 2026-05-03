@@ -4,10 +4,12 @@ from viewmodels.broker_download_viewmodel import BrokerDownloadViewModel
 from viewmodels.batch_download_viewmodel import BatchDownloadViewModel
 from viewmodels.broker_analysis_viewmodel import BrokerAnalysisViewModel
 from viewmodels.settings_viewmodel import SettingsViewModel
+from viewmodels.strategy_viewmodel import StrategyViewModel
 from views.broker_download_view import BrokerDownloadView
 from views.batch_download_view import BatchDownloadView
 from views.broker_analysis_view import BrokerAnalysisView
 from views.settings_view import SettingsView
+from views.strategy_view import StrategyView
 from services.config_service import ConfigService
 from services.scheduler_service import SchedulerService
 
@@ -78,13 +80,20 @@ class MainWindow(ctk.CTk):
         analysis_view = BrokerAnalysisView(tab3, self.analysis_vm)
         analysis_view.pack(fill="both", expand=True)
 
-        # Tab 4: 系統設定
-        tab4 = self.tabview.add("系統設定")
+        # Tab 4: 策略篩選
+        tab4 = self.tabview.add("策略篩選")
+
+        self.strategy_vm = StrategyViewModel()
+        strategy_view = StrategyView(tab4, self.strategy_vm)
+        strategy_view.pack(fill="both", expand=True)
+
+        # Tab 5: 系統設定
+        tab5 = self.tabview.add("系統設定")
 
         self._config_svc = ConfigService()
         self._scheduler_svc = SchedulerService(self._config_svc)
         self.settings_vm = SettingsViewModel(self._config_svc, self._scheduler_svc)
-        settings_view = SettingsView(tab4, self.settings_vm)
+        settings_view = SettingsView(tab5, self.settings_vm)
         settings_view.pack(fill="both", expand=True)
 
         # Cleanup on close
@@ -110,5 +119,6 @@ class MainWindow(ctk.CTk):
         self.broker_vm.shutdown()
         self.batch_vm.shutdown()
         self.analysis_vm.shutdown()
+        self.strategy_vm.shutdown()
         self.settings_vm.shutdown()
         self.destroy()

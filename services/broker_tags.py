@@ -84,6 +84,22 @@ _add([
 ], TAG_SWING)
 
 
+# Dealer HQ names (自營商總部 — no branch suffix)
+# These broker_names in BrokerDailyStats represent the firm's proprietary desk.
+DEALER_HQ_NAMES = {
+    "元大", "台新", "凱基", "富邦", "統一", "群益", "兆豐", "新光",
+    "永豐金", "合庫", "國票", "國泰綜合", "康和", "宏遠", "亞東", "福邦",
+    "大昌", "大展", "永全", "華南永昌", "日進", "京城", "安泰", "彰銀",
+    "美好", "致和", "高橋", "永興", "光和", "德信", "石橋", "北城", "奔亞",
+    "盈溢", "富隆", "新百王", "寶盛", "福勝", "中農", "日茂", "台企銀",
+}
+
+
+def is_dealer_hq(broker_name: str) -> bool:
+    """Check if a broker name is a dealer HQ (自營商總部)."""
+    return broker_name in DEALER_HQ_NAMES
+
+
 def get_broker_tags(broker_name: str) -> list[str]:
     """Return list of tags for a broker name. Exact match only."""
     tags = _BROKER_TAGS.get(broker_name)
