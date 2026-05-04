@@ -140,6 +140,82 @@ class StrategyViewModel(BaseViewModel):
             }
         return result
 
+    def run_bollinger_strategy(
+        self, trade_date: str,
+        bb_period: int = 20,
+        bb_k: float = 2.0,
+        dealer_buy_min: int = 0,
+    ):
+        """Screen stocks: close > BB upper AND dealer HQ net buy > 0."""
+        trade_date = trade_date.strip()
+        if not trade_date:
+            self.error_text = "請輸入日期"
+            return
+        if self.loading:
+            return
+        self.loading = True
+        self.error_text = ""
+        self.results = None
+        self.status_text = ""
+
+        def _work():
+            try:
+                import numpy as np
+
+                self._db.connect()
+                self._db.ensure_tables()
+
+                # 1. Get recent prices for BB calculation
+                price_map = self._db.get_all_stocks_recent_prices(
+                    trade_date, lookback=bb_period + 5)
+
+                # 2. Get broker data for dealer HQ check
+                broker_rows = self._db.get_all_broker_buys_by_date(trade_date)
+                if not broker_rows:
+                    self.error_text = f"{trade_date} 無分點資料"
+                    self.results = []
+                    return
+
+                stock_stats = self._calc_stock_stats(broker_rows)
+
+                # 3. Filter: close > BB upper AND dealer net buy > threshold
+                filtered = []
+                for code, s in stock_stats.items():
+                    prices = price_map.get(code, [])
+                    if len(prices) < bb_period:
+                        continue
+                    close = s["close_price"]
+                    window = np.array(prices[-bb_period:])
+                    ma = float(np.mean(window))
+                    sd = float(np.std(window))
+                    upper = ma + bb_k * sd
+                    lower = ma - bb_k * sd
+
+                    if close > upper and s["dealer_net"] > dealer_buy_min:
+                        s["bb_upper"] = round(upper, 2)
+                        s["bb_mid"] = round(ma, 2)
+                        s["bb_lower"] = round(lower, 2)
+                        s["bb_diff_pct"] = round(
+                            (close - upper) / upper * 100, 2)
+                        filtered.append(s)
+
+                filtered.sort(key=lambda x: x["bb_diff_pct"], reverse=True)
+
+                if not filtered:
+                    self.error_text = (
+                        f"{trade_date} 無符合條件的標的"
+                        f"（收盤突破布林上軌 + 自營商買超）"
+                    )
+                else:
+                    self.status_text = f"找到 {len(filtered)} 檔符合條件"
+                self.results = filtered
+            except Exception as e:
+                self.error_text = f"查詢錯誤：{e}"
+            finally:
+                self.loading = False
+
+        threading.Thread(target=_work, daemon=True).start()
+
     def shutdown(self):
         try:
             self._db.close()

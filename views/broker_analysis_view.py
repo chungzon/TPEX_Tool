@@ -1379,15 +1379,48 @@ class BrokerAnalysisView(ctk.CTkFrame):
         ax_price = ax.twinx()
         ax_price.plot(xs, c_list, color=price_line_clr, linewidth=1.0,
                        zorder=8)
+
+        # ---- Bollinger Bands (20MA ± 2σ) ----
+        import numpy as _np
+        bb_period = 20
+        bb_k = 2.0
+        c_arr = _np.array(c_list, dtype=float)
+        if n >= bb_period:
+            bb_mid = []
+            bb_upper = []
+            bb_lower = []
+            bb_xs = []
+            for i in range(bb_period - 1, n):
+                window = c_arr[i - bb_period + 1 : i + 1]
+                ma = float(_np.mean(window))
+                sd = float(_np.std(window))
+                bb_mid.append(ma)
+                bb_upper.append(ma + bb_k * sd)
+                bb_lower.append(ma - bb_k * sd)
+                bb_xs.append(i)
+
+            bb_color = "#b0b0b0"
+            ax_price.plot(bb_xs, bb_mid, color="#ffeb3b", linewidth=0.7,
+                           alpha=0.6, linestyle="-", zorder=7, label="BB中軌")
+            ax_price.plot(bb_xs, bb_upper, color=bb_color, linewidth=0.6,
+                           alpha=0.5, linestyle="--", zorder=7, label="BB上軌")
+            ax_price.plot(bb_xs, bb_lower, color=bb_color, linewidth=0.6,
+                           alpha=0.5, linestyle="--", zorder=7)
+            ax_price.fill_between(bb_xs, bb_lower, bb_upper,
+                                   color=bb_color, alpha=0.06, zorder=6)
+
         ax_price.set_ylabel("收盤價", fontsize=11, color=txt, labelpad=4)
         ax_price.tick_params(axis="y", colors=txt, labelsize=7)
         for sp in ax_price.spines.values():
             sp.set_color(grid_clr)
 
-        # Price range
+        # Price range (include BB bands if present)
         p_lo, p_hi = min(c_list), max(c_list)
+        if n >= bb_period:
+            p_lo = min(p_lo, min(bb_lower))
+            p_hi = max(p_hi, max(bb_upper))
         p_rng = p_hi - p_lo if p_hi > p_lo else 1.0
-        ax_price.set_ylim(p_lo - p_rng * 0.15, p_hi + p_rng * 0.15)
+        ax_price.set_ylim(p_lo - p_rng * 0.10, p_hi + p_rng * 0.10)
 
         # avg buy/sell dashed lines on price axis
         if avg_buy is not None:

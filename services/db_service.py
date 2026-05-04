@@ -488,6 +488,39 @@ class DbService:
         results.sort(key=lambda x: x["hedge_pct"], reverse=True)
         return results
 
+    def get_all_stocks_recent_prices(self, trade_date: str,
+                                      lookback: int = 25) -> dict[str, list[float]]:
+        """Get recent close prices (up to lookback days ending at trade_date)
+        for ALL stocks. Returns {stock_code: [oldest..newest close prices]}."""
+        cur = self._cursor()
+        trade_date = _normalize_date(trade_date)
+        cur.execute("""
+            SELECT stock_code, close_price, trade_date
+            FROM StockDailySummary
+            WHERE trade_date <= %s
+            ORDER BY stock_code, trade_date DESC
+        """, (trade_date,))
+
+        result: dict[str, list] = {}
+        counts: dict[str, int] = {}
+        for r in cur.fetchall():
+            code = r[0]
+            if code not in counts:
+                counts[code] = 0
+            if counts[code] >= lookback:
+                continue
+            counts[code] += 1
+            try:
+                price = float(str(r[1]).replace(",", ""))
+            except (ValueError, TypeError):
+                continue
+            result.setdefault(code, []).append(price)
+
+        # Reverse to oldest-first order
+        for code in result:
+            result[code].reverse()
+        return result
+
     def get_latest_volume(self, stock_code: str) -> list[dict]:
         """Get the last 2 trading days' volume and close price for a stock."""
         cur = self._cursor()
