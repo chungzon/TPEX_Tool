@@ -17,6 +17,9 @@ _DEFAULTS = {
     "scheduler_top_n": 300,
     "stock_codes": [],        # saved stock code list
     "stock_list_date": "",    # when the list was last refreshed
+    "shioaji_api_key": "",
+    "shioaji_secret_key": "",
+    "shioaji_person_id": "",
 }
 
 
