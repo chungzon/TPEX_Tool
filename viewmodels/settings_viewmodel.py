@@ -33,16 +33,21 @@ class SettingsViewModel(BaseViewModel):
     insti_status = ObservableProperty("")
     insti_loading = ObservableProperty(False)
 
+    # Shioaji usage
+    shioaji_usage = ObservableProperty(None)  # dict | None
+
     # Live download progress
     progress = ObservableProperty(0.0)
     progress_text = ObservableProperty("")
     log_text = ObservableProperty("")
     is_downloading = ObservableProperty(False)
 
-    def __init__(self, config: ConfigService, scheduler: SchedulerService):
+    def __init__(self, config: ConfigService, scheduler: SchedulerService,
+                 shioaji_svc=None):
         super().__init__()
         self._config = config
         self._scheduler = scheduler
+        self._sj = shioaji_svc
 
         # Load persisted values
         self.scheduler_enabled = config.get("scheduler_enabled")
@@ -236,9 +241,17 @@ class SettingsViewModel(BaseViewModel):
             self.next_run_text = "—"
         self.last_result_text = sched.last_result or "—"
 
+    def refresh_usage(self) -> None:
+        """Refresh Shioaji API usage info."""
+        if self._sj and self._sj.is_logged_in:
+            self.shioaji_usage = self._sj.get_usage()
+        else:
+            self.shioaji_usage = None
+
     def refresh(self) -> None:
         """Called periodically from UI to update live status."""
         self._refresh_status()
+        self.refresh_usage()
         sched = self._scheduler
         self.is_downloading = sched.is_running
         if sched.is_running and sched.active_vm is not None:

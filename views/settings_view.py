@@ -33,6 +33,25 @@ class SettingsView(ctk.CTkFrame):
         ).pack(pady=(0, 24))
 
         # ============================================================
+        # Shioaji API Usage card
+        # ============================================================
+        usage_card = ctk.CTkFrame(container, corner_radius=12)
+        usage_card.pack(padx=40, pady=8, fill="x")
+
+        ctk.CTkLabel(
+            usage_card, text="永豐金 API 流量資訊",
+            font=ctk.CTkFont(size=16, weight="bold"),
+        ).pack(anchor="w", padx=24, pady=(20, 8))
+
+        self.usage_frame = ctk.CTkFrame(usage_card, fg_color="transparent")
+        self.usage_frame.pack(fill="x", padx=24, pady=(0, 16))
+
+        self.usage_not_login = ctk.CTkLabel(
+            self.usage_frame, text="（請先在「下單」分頁登入永豐金帳號）",
+            font=ctk.CTkFont(size=13), text_color="gray")
+        self.usage_not_login.pack(anchor="w")
+
+        # ============================================================
         # Stock list card
         # ============================================================
         list_card = ctk.CTkFrame(container, corner_radius=12)
@@ -315,6 +334,7 @@ class SettingsView(ctk.CTkFrame):
         self.vm.bind("last_result_text", self._on_last_result)
         self.vm.bind("stock_list_info", self._on_list_info)
         self.vm.bind("stock_list_loading", self._on_list_loading)
+        self.vm.bind("shioaji_usage", self._on_usage)
         self.vm.bind("tdcc_status", self._on_tdcc_status)
         self.vm.bind("tdcc_loading", self._on_tdcc_loading)
         self.vm.bind("insti_status", self._on_insti_status)
@@ -346,6 +366,62 @@ class SettingsView(ctk.CTkFrame):
                 self.refresh_list_btn.configure(
                     state="normal",
                     text="更新清單（從 TPEX 取得今日前 N 名）")
+        self.after(0, _u)
+
+    def _on_usage(self, data):
+        def _u():
+            for w in self.usage_frame.winfo_children():
+                w.destroy()
+
+            if not data:
+                ctk.CTkLabel(
+                    self.usage_frame,
+                    text="（請先在「下單」分頁登入永豐金帳號）",
+                    font=ctk.CTkFont(size=13), text_color="gray",
+                ).pack(anchor="w")
+                return
+
+            conns = data.get("connections", 0)
+            used = data.get("bytes_used", 0)
+            limit = data.get("limit_bytes", 0)
+            remain = data.get("remaining_bytes", 0)
+
+            used_mb = used / 1024 / 1024
+            limit_mb = limit / 1024 / 1024
+            remain_mb = remain / 1024 / 1024
+            pct = (used / limit * 100) if limit > 0 else 0
+
+            # KPI row
+            kpi_row = ctk.CTkFrame(self.usage_frame, fg_color="transparent")
+            kpi_row.pack(fill="x", pady=(0, 4))
+
+            for label, value, color in [
+                ("連線數", str(conns), "#c0c0c0"),
+                ("已使用", f"{used_mb:,.1f} MB", "#ff9800" if pct > 70 else "#4ECDC4"),
+                ("剩餘", f"{remain_mb:,.1f} MB", "#ef5350" if pct > 90 else "#26a69a"),
+                ("上限", f"{limit_mb:,.1f} MB", "#c0c0c0"),
+                ("使用率", f"{pct:.1f}%", "#ef5350" if pct > 90 else ("#ff9800" if pct > 70 else "#4ECDC4")),
+            ]:
+                f = ctk.CTkFrame(kpi_row, fg_color="#1e1e1e", corner_radius=8)
+                f.pack(side="left", padx=4, pady=2)
+                ctk.CTkLabel(f, text=label, font=ctk.CTkFont(size=11),
+                              text_color="gray").pack(padx=12, pady=(5, 0))
+                ctk.CTkLabel(f, text=value,
+                              font=ctk.CTkFont(size=14, weight="bold"),
+                              text_color=color).pack(padx=12, pady=(0, 5))
+
+            # Progress bar
+            bar_frame = ctk.CTkFrame(self.usage_frame, fg_color="transparent")
+            bar_frame.pack(fill="x", pady=(2, 0))
+            bar = ctk.CTkProgressBar(bar_frame, width=400)
+            bar.pack(side="left", padx=(0, 8))
+            bar.set(min(pct / 100, 1.0))
+            ctk.CTkLabel(
+                bar_frame, text=f"{pct:.1f}%",
+                font=ctk.CTkFont(size=12, weight="bold"),
+                text_color="#ff9800" if pct > 70 else "#4ECDC4",
+            ).pack(side="left")
+
         self.after(0, _u)
 
     def _on_tdcc_status(self, v: str):

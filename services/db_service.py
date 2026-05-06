@@ -521,6 +521,51 @@ class DbService:
             result[code].reverse()
         return result
 
+    def get_broker_history_range(self, start_date: str, end_date: str) -> list[dict]:
+        """All broker buy/sell records across a date range, for all stocks."""
+        cur = self._cursor()
+        cur.execute("""
+            SELECT b.stock_code, s.stock_name, b.trade_date,
+                   b.broker_code, b.broker_name,
+                   b.buy_volume, b.sell_volume, b.net_volume,
+                   s.close_price, s.total_volume
+            FROM BrokerDailyStats b
+            JOIN StockDailySummary s
+              ON b.stock_code = s.stock_code AND b.trade_date = s.trade_date
+            WHERE b.trade_date >= %s AND b.trade_date <= %s
+            ORDER BY b.trade_date, b.stock_code
+        """, (start_date, end_date))
+        return [
+            {
+                "stock_code": r[0], "stock_name": r[1],
+                "trade_date": str(r[2]),
+                "broker_code": r[3], "broker_name": r[4],
+                "buy_volume": r[5], "sell_volume": r[6], "net_volume": r[7],
+                "close_price": r[8], "total_volume": r[9],
+            }
+            for r in cur.fetchall()
+        ]
+
+    def get_all_prices_range(self, start_date: str, end_date: str) -> dict[str, list[dict]]:
+        """All stock prices in date range grouped by stock_code."""
+        cur = self._cursor()
+        cur.execute("""
+            SELECT stock_code, trade_date, close_price, high_price, low_price
+            FROM StockDailySummary
+            WHERE trade_date >= %s AND trade_date <= %s
+            ORDER BY stock_code, trade_date
+        """, (start_date, end_date))
+        result: dict[str, list[dict]] = {}
+        for r in cur.fetchall():
+            code = r[0]
+            result.setdefault(code, []).append({
+                "trade_date": str(r[1]),
+                "close_price": r[2],
+                "high_price": r[3],
+                "low_price": r[4],
+            })
+        return result
+
     def get_latest_volume(self, stock_code: str) -> list[dict]:
         """Get the last 2 trading days' volume and close price for a stock."""
         cur = self._cursor()

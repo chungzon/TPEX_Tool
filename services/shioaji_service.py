@@ -372,6 +372,22 @@ class ShioajiService:
             log.warning("Get orders failed: %s", e)
             return []
 
+    def get_usage(self) -> dict | None:
+        """Get API usage/traffic status."""
+        if not self._logged_in:
+            return None
+        try:
+            u = self._api.usage(timeout=5000)
+            return {
+                "connections": u.connections,
+                "bytes_used": u.bytes,
+                "limit_bytes": u.limit_bytes,
+                "remaining_bytes": u.remaining_bytes,
+            }
+        except Exception as e:
+            log.warning("Get usage failed: %s", e)
+            return None
+
     def cancel_order(self, order_id: str) -> dict:
         """Cancel an open order by order_id."""
         if not self._logged_in:

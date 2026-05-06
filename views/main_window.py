@@ -6,12 +6,14 @@ from viewmodels.broker_analysis_viewmodel import BrokerAnalysisViewModel
 from viewmodels.settings_viewmodel import SettingsViewModel
 from viewmodels.strategy_viewmodel import StrategyViewModel
 from viewmodels.trading_viewmodel import TradingViewModel
+from viewmodels.signal_viewmodel import SignalViewModel
 from views.broker_download_view import BrokerDownloadView
 from views.batch_download_view import BatchDownloadView
 from views.broker_analysis_view import BrokerAnalysisView
 from views.settings_view import SettingsView
 from views.strategy_view import StrategyView
 from views.trading_view import TradingView
+from views.signal_view import SignalView
 from services.config_service import ConfigService
 from services.scheduler_service import SchedulerService
 
@@ -93,18 +95,28 @@ class MainWindow(ctk.CTk):
         strategy_view = StrategyView(tab4, self.strategy_vm)
         strategy_view.pack(fill="both", expand=True)
 
-        # Tab 5: 下單
-        tab5 = self.tabview.add("下單")
+        # Tab 5: 分點訊號
+        tab5 = self.tabview.add("分點訊號")
+
+        self.signal_vm = SignalViewModel()
+        signal_view = SignalView(tab5, self.signal_vm)
+        signal_view.pack(fill="both", expand=True)
+
+        # Tab 6: 下單
+        tab6 = self.tabview.add("下單")
 
         self.trading_vm = TradingViewModel(self._config_svc)
-        trading_view = TradingView(tab5, self.trading_vm)
+        trading_view = TradingView(tab6, self.trading_vm)
         trading_view.pack(fill="both", expand=True)
 
-        # Tab 6: 系統設定
-        tab6 = self.tabview.add("系統設定")
+        # Tab 7: 系統設定
+        tab7 = self.tabview.add("系統設定")
 
-        self.settings_vm = SettingsViewModel(self._config_svc, self._scheduler_svc)
-        settings_view = SettingsView(tab6, self.settings_vm)
+        self.settings_vm = SettingsViewModel(
+            self._config_svc, self._scheduler_svc,
+            shioaji_svc=self.trading_vm._sj,
+        )
+        settings_view = SettingsView(tab7, self.settings_vm)
         settings_view.pack(fill="both", expand=True)
 
         # Cleanup on close
@@ -131,6 +143,7 @@ class MainWindow(ctk.CTk):
         self.batch_vm.shutdown()
         self.analysis_vm.shutdown()
         self.strategy_vm.shutdown()
+        self.signal_vm.shutdown()
         self.trading_vm.shutdown()
         self.settings_vm.shutdown()
         self.destroy()
