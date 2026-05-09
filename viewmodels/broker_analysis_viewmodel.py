@@ -46,6 +46,9 @@ class BrokerAnalysisViewModel(BaseViewModel):
     tag_rankings_loading = ObservableProperty(False)
     tag_rankings_error = ObservableProperty("")
 
+    # Real next-day-flip ranking
+    real_flip_rankings = ObservableProperty(None)  # list[dict] | None
+
     # Institutional data (三大法人)
     insti_data = ObservableProperty(None)           # list[dict] | None
 
@@ -293,6 +296,219 @@ class BrokerAnalysisViewModel(BaseViewModel):
         threading.Thread(target=_work, daemon=True).start()
 
     # ---- Tag rankings ----
+
+    def load_real_flip_rankings(self, trade_date: str, buy_min_pct: float = 3.0,
+                                sell_min_pct: float = 2.0):
+        """Find brokers that bought on trade_date and have high probability
+        of selling within 2~5 days, based on historical behaviour.
+
+        Logic:
+        1. Find brokers that bought today with buy_net >= buy_min_pct% of volume
+        2. Look back at their history: when they bought similarly, how often
+           did they sell within 2~5 days (sell_net >= sell_min_pct%)?
+        3. Rank stocks by the flip probability of the buying brokers
+        """
+        trade_date = trade_date.strip()
+        if not trade_date:
+            self.tag_rankings_error = "請輸入日期"
+            return
+        if self.tag_rankings_loading:
+            return
+        self.tag_rankings_loading = True
+        self.tag_rankings_error = ""
+        self.real_flip_rankings = None
+
+        def _work():
+            try:
+                self._db.connect()
+
+                # Today's broker data
+                today_rows = self._db.get_all_broker_buys_by_date(trade_date)
+                if not today_rows:
+                    self.tag_rankings_error = f"{trade_date} 無分點資料"
+                    return
+
+                # Historical data (past 60 trading days ~ 90 calendar days)
+                from datetime import datetime as _dt, timedelta
+                dt = _dt.strptime(trade_date, "%Y-%m-%d")
+                hist_start = (dt - timedelta(days=100)).strftime("%Y-%m-%d")
+                hist_end = trade_date
+                hist_rows = self._db.get_broker_history_range(hist_start, hist_end)
+
+                result = self._compute_real_flips(
+                    today_rows, hist_rows, trade_date,
+                    buy_min_pct, sell_min_pct)
+                self.real_flip_rankings = result
+            except Exception as e:
+                self.tag_rankings_error = f"查詢錯誤：{e}"
+            finally:
+                self.tag_rankings_loading = False
+
+        threading.Thread(target=_work, daemon=True).start()
+
+    @staticmethod
+    def _compute_real_flips(
+        today_rows: list[dict], hist_rows: list[dict],
+        trade_date: str, buy_min_pct: float, sell_min_pct: float,
+    ) -> list[dict]:
+        """Find brokers buying today that historically flip within 2~5 days."""
+
+        def _pp(v) -> float:
+            try:
+                return float(str(v).replace(",", ""))
+            except (ValueError, TypeError):
+                return 0.0
+
+        # Today: find brokers with significant buy
+        today_stock_vol: dict[str, int] = defaultdict(int)
+        today_stock_info: dict[str, dict] = {}
+        today_buys: dict[tuple[str, str], int] = {}  # (stock, broker) -> net_buy
+
+        for r in today_rows:
+            code = r["stock_code"]
+            bname = r["broker_name"]
+            bv = r["buy_volume"] or 0
+            sv = r["sell_volume"] or 0
+            today_stock_vol[code] += bv + sv
+            today_stock_info[code] = {
+                "stock_name": r.get("stock_name", ""),
+                "close_price": _pp(r.get("close_price", 0)),
+            }
+            net = bv - sv
+            if net > 0:
+                key = (code, bname)
+                today_buys[key] = today_buys.get(key, 0) + net
+
+        # Filter: only keep significant buys
+        sig_buys: dict[tuple[str, str], float] = {}
+        for (code, bname), net in today_buys.items():
+            tv = today_stock_vol.get(code, 0)
+            if tv > 0:
+                pct = net / tv * 100
+                if pct >= buy_min_pct:
+                    sig_buys[(code, bname)] = pct
+
+        if not sig_buys:
+            return []
+
+        # Build history: per (stock, broker, date) -> net
+        # and per (stock, date) -> total_vol
+        hist_by_date: dict[str, dict[tuple[str, str], int]] = defaultdict(
+            lambda: defaultdict(int))
+        hist_stock_vol: dict[tuple[str, str], int] = defaultdict(int)
+        hist_dates: set[str] = set()
+
+        for r in hist_rows:
+            d = str(r["trade_date"])[:10]
+            if d == trade_date:
+                continue
+            code = r["stock_code"]
+            bname = r["broker_name"]
+            bv = r["buy_volume"] or 0
+            sv = r["sell_volume"] or 0
+            hist_by_date[d][(code, bname)] += (bv - sv)
+            hist_stock_vol[(code, d)] += bv + sv
+            hist_dates.add(d)
+
+        sorted_dates = sorted(hist_dates)
+
+        # For each broker that bought today: check historical flip rate
+        # "flip" = broker bought on day X (>= buy_min_pct%), then sold
+        # within day X+2 to X+5 (>= sell_min_pct%)
+        broker_flip_stats: dict[str, dict] = {}  # broker -> {buys, flips}
+
+        for bname in set(b for (_, b) in sig_buys):
+            stats = {"buy_events": 0, "flip_events": 0}
+            for i, d in enumerate(sorted_dates):
+                # Check all stocks this broker bought on day d
+                for code_key in [k for k in hist_by_date[d]
+                                  if k[1] == bname and hist_by_date[d][k] > 0]:
+                    code = code_key[0]
+                    buy_net = hist_by_date[d][code_key]
+                    stv = hist_stock_vol.get((code, d), 0)
+                    if stv <= 0:
+                        continue
+                    buy_pct = buy_net / stv * 100
+                    if buy_pct < buy_min_pct:
+                        continue
+
+                    stats["buy_events"] += 1
+
+                    # Check D+2 to D+5: did they sell?
+                    flipped = False
+                    for j in range(i + 1, min(i + 6, len(sorted_dates))):
+                        fd = sorted_dates[j]
+                        sell_net_raw = hist_by_date[fd].get((code, bname), 0)
+                        if sell_net_raw >= 0:
+                            continue  # not selling
+                        sell_net = abs(sell_net_raw)
+                        fstv = hist_stock_vol.get((code, fd), 0)
+                        if fstv <= 0:
+                            continue
+                        sell_pct = sell_net / fstv * 100
+                        if sell_pct >= sell_min_pct:
+                            flipped = True
+                            break
+
+                    if flipped:
+                        stats["flip_events"] += 1
+
+            if stats["buy_events"] >= 3:
+                broker_flip_stats[bname] = stats
+
+        # Aggregate per stock: which stocks have high-flip-rate brokers buying today
+        stock_results: dict[str, dict] = {}
+        for (code, bname), buy_pct in sig_buys.items():
+            bs = broker_flip_stats.get(bname)
+            if not bs or bs["buy_events"] < 3:
+                continue
+            flip_rate = bs["flip_events"] / bs["buy_events"]
+            if flip_rate < 0.3:  # at least 30% flip rate
+                continue
+
+            if code not in stock_results:
+                info = today_stock_info.get(code, {})
+                stock_results[code] = {
+                    "stock_code": code,
+                    "stock_name": info.get("stock_name", ""),
+                    "close_price": info.get("close_price", 0),
+                    "flip_brokers": [],
+                    "max_flip_rate": 0,
+                    "avg_flip_rate": 0,
+                    "total_buy_pct": 0,
+                }
+            sr = stock_results[code]
+            sr["flip_brokers"].append({
+                "name": bname,
+                "buy_pct": buy_pct,
+                "flip_rate": flip_rate,
+                "buy_events": bs["buy_events"],
+                "flip_events": bs["flip_events"],
+            })
+            sr["max_flip_rate"] = max(sr["max_flip_rate"], flip_rate)
+            sr["total_buy_pct"] += buy_pct
+
+        # Build final list
+        result = []
+        for code, sr in stock_results.items():
+            brokers = sr["flip_brokers"]
+            avg_rate = sum(b["flip_rate"] for b in brokers) / len(brokers)
+            broker_names = ", ".join(
+                f"{b['name']}({b['flip_rate']:.0%})" for b in
+                sorted(brokers, key=lambda x: x["flip_rate"], reverse=True)[:3]
+            )
+            result.append({
+                "stock_code": sr["stock_code"],
+                "stock_name": sr["stock_name"],
+                "close_price": sr["close_price"],
+                "flip_broker_count": len(brokers),
+                "flip_brokers": broker_names,
+                "max_flip_rate": round(sr["max_flip_rate"] * 100, 1),
+                "avg_flip_rate": round(avg_rate * 100, 1),
+                "total_buy_pct": round(sr["total_buy_pct"], 1),
+            })
+        result.sort(key=lambda x: x["avg_flip_rate"], reverse=True)
+        return result[:20]
 
     def load_tag_rankings(self, trade_date: str):
         trade_date = trade_date.strip()

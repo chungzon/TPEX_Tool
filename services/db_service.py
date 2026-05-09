@@ -521,6 +521,24 @@ class DbService:
             result[code].reverse()
         return result
 
+    def get_broker_buys_two_days(self, date1: str, date2: str) -> tuple[list[dict], list[dict]]:
+        """Get broker data for two consecutive trading days."""
+        r1 = self.get_all_broker_buys_by_date(date1)
+        r2 = self.get_all_broker_buys_by_date(date2)
+        return r1, r2
+
+    def get_prev_trading_date(self, trade_date: str) -> str | None:
+        """Get the trading date immediately before trade_date."""
+        cur = self._cursor()
+        trade_date = _normalize_date(trade_date)
+        cur.execute("""
+            SELECT TOP 1 trade_date FROM StockDailySummary
+            WHERE trade_date < %s
+            ORDER BY trade_date DESC
+        """, (trade_date,))
+        row = cur.fetchone()
+        return str(row[0]) if row else None
+
     def get_broker_history_range(self, start_date: str, end_date: str) -> list[dict]:
         """All broker buy/sell records across a date range, for all stocks."""
         cur = self._cursor()

@@ -153,6 +153,7 @@ class BrokerAnalysisView(ctk.CTkFrame):
         tag_tables.columnconfigure(0, weight=1)
         tag_tables.columnconfigure(1, weight=1)
         tag_tables.columnconfigure(2, weight=1)
+        tag_tables.columnconfigure(3, weight=1)
 
         for col, (tag, title) in enumerate([
             (TAG_DAY, "當沖主力"), (TAG_NEXT, "隔日沖主力"),
@@ -194,6 +195,44 @@ class BrokerAnalysisView(ctk.CTkFrame):
             sb.pack(side="right", fill="y", padx=(0, 4), pady=2)
 
             self._tag_trees[tag] = tree
+
+        # 4th table: Real next-day flip
+        flip_f = ctk.CTkFrame(tag_tables, corner_radius=8)
+        flip_f.grid(row=0, column=3, sticky="nsew", padx=3, pady=2)
+
+        flip_hdr = ctk.CTkFrame(flip_f, fg_color="transparent")
+        flip_hdr.pack(fill="x", padx=10, pady=(8, 2))
+        ctk.CTkLabel(flip_hdr, text="●",
+                      font=ctk.CTkFont(size=12),
+                      text_color="#ff6d00").pack(side="left")
+        ctk.CTkLabel(flip_hdr, text=" 高沖銷機率分點 Top20",
+                      font=ctk.CTkFont(size=12, weight="bold")).pack(side="left")
+
+        flip_tree_f = ctk.CTkFrame(flip_f, fg_color="transparent")
+        flip_tree_f.pack(fill="both", expand=True, padx=4, pady=(0, 6))
+
+        flip_cols = ("rank", "code", "name", "brokers", "flip_rate")
+        self._flip_tree = ttk.Treeview(
+            flip_tree_f, columns=flip_cols, show="headings",
+            style="TagRank.Treeview", height=10)
+        for c, txt, w, anc in [
+            ("rank", "#", 28, "center"), ("code", "代碼", 50, "center"),
+            ("name", "名稱", 55, "w"), ("brokers", "分點(沖率)", 85, "w"),
+            ("flip_rate", "沖率%", 45, "e"),
+        ]:
+            self._flip_tree.heading(c, text=txt)
+            self._flip_tree.column(c, width=w, anchor=anc, stretch=True)
+
+        self._flip_tree.tag_configure("hot", foreground="#ff6d00")
+        self._flip_tree.bind("<<TreeviewSelect>>",
+                              lambda e: self._on_tag_tree_select(self._flip_tree))
+
+        flip_sb = ttk.Scrollbar(flip_tree_f, orient="vertical",
+                                 command=self._flip_tree.yview)
+        self._flip_tree.configure(yscrollcommand=flip_sb.set)
+        self._flip_tree.pack(side="left", fill="both", expand=True,
+                              padx=(4, 0), pady=2)
+        flip_sb.pack(side="right", fill="y", padx=(0, 4), pady=2)
 
         # Ensure dark style for these trees
         self._ensure_tag_tree_style()
@@ -397,7 +436,9 @@ class BrokerAnalysisView(ctk.CTkFrame):
     # ================================================================ Events
 
     def _on_tag_query(self):
-        self.vm.load_tag_rankings(self.tag_date_entry.get().strip())
+        date = self.tag_date_entry.get().strip()
+        self.vm.load_tag_rankings(date)
+        self.vm.load_real_flip_rankings(date)
 
     def _on_tag_tree_select(self, tree: ttk.Treeview):
         sel = tree.selection()
@@ -486,6 +527,7 @@ class BrokerAnalysisView(ctk.CTkFrame):
         self.vm.bind("tag_rankings", self._on_tag_rankings)
         self.vm.bind("tag_rankings_loading", self._on_tag_rankings_loading)
         self.vm.bind("tag_rankings_error", self._on_tag_rankings_error)
+        self.vm.bind("real_flip_rankings", self._on_real_flip_rankings)
 
     def _on_error(self, v):
         self.after(0, lambda: self.error_label.configure(text=v))
@@ -886,6 +928,27 @@ class BrokerAnalysisView(ctk.CTkFrame):
                                 price, f"{r['ratio']:.1f}"),
                         tags=(tag_style,) if tag_style else (),
                     )
+        self.after(0, _u)
+
+    def _on_real_flip_rankings(self, data):
+        def _u():
+            self._flip_tree.delete(*self._flip_tree.get_children())
+            if not data:
+                return
+            for i, r in enumerate(data, 1):
+                rate = r.get("avg_flip_rate", 0)
+                tag = "hot" if rate >= 60 else ""
+                self._flip_tree.insert(
+                    "", "end",
+                    values=(
+                        i,
+                        r["stock_code"],
+                        r["stock_name"],
+                        r["flip_brokers"],
+                        f"{rate:.0f}",
+                    ),
+                    tags=(tag,) if tag else (),
+                )
         self.after(0, _u)
 
     def _on_correlation_loading(self, v):
