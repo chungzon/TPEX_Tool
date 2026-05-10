@@ -76,25 +76,44 @@ class BrokerDataService:
         if not self._ready:
             await self.initialize(on_status)
 
-        _status(f"正在查詢 {stock_code} 分點資料...")
-        try:
-            raw = await self._browser_svc.fetch_broker_data(stock_code)
-        except Exception as e:
-            self._consecutive_errors += 1
-            # If too many consecutive errors, browser is probably stuck
-            if self._consecutive_errors >= 3:
-                _status(f"連續 {self._consecutive_errors} 次失敗，重啟瀏覽器...")
-                await self._restart_browser(on_status)
-                self._consecutive_errors = 0
-                # One more try with fresh browser
-                _status(f"正在重新查詢 {stock_code}...")
+        max_attempts = 3
+        for attempt in range(1, max_attempts + 1):
+            _status(f"正在查詢 {stock_code} 分點資料...")
+            try:
                 raw = await self._browser_svc.fetch_broker_data(stock_code)
-            else:
-                raise
+            except Exception as e:
+                self._consecutive_errors += 1
+                if self._consecutive_errors >= 3:
+                    _status(f"連續失敗，重啟瀏覽器...")
+                    await self._restart_browser(on_status)
+                    self._consecutive_errors = 0
+                    _status(f"正在重新查詢 {stock_code}...")
+                    raw = await self._browser_svc.fetch_broker_data(stock_code)
+                else:
+                    raise
 
-        if raw.get("stat") != "ok":
-            msg = raw.get("stat", "未知錯誤")
-            raise RuntimeError(f"查詢失敗：{msg}")
+            stat = raw.get("stat", "")
+            if stat == "ok":
+                break  # success
+
+            # Handle specific error types
+            if "逾時" in stat or "重新整理" in stat:
+                # Turnstile expired — refresh page and retry
+                _status(f"Turnstile 過期，重新整理頁面（第{attempt}次）...")
+                await self._browser_svc._refresh_page()
+                import asyncio as _aio
+                await _aio.sleep(2)
+                if attempt >= max_attempts:
+                    # Last resort: full browser restart
+                    _status("重啟瀏覽器...")
+                    await self._restart_browser(on_status)
+                continue
+            elif "查無" in stat or "無此" in stat:
+                raise RuntimeError(f"查詢失敗：{stat}（可能非交易日或代碼錯誤）")
+            else:
+                raise RuntimeError(f"查詢失敗：{stat}")
+        else:
+            raise TimeoutError(f"查詢 {stock_code} 失敗（已重試 {max_attempts} 次）")
 
         # Success — reset error counter
         self._consecutive_errors = 0

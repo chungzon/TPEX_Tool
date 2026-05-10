@@ -15,8 +15,10 @@ _DEFAULTS = {
     "scheduler_enabled": False,
     "scheduler_time": "18:00",
     "scheduler_top_n": 300,
-    "stock_codes": [],        # saved stock code list
+    "stock_codes": [],        # saved OTC stock code list
     "stock_list_date": "",    # when the list was last refreshed
+    "twse_stock_codes": [],   # saved TWSE stock code list
+    "twse_stock_list_date": "",
     "shioaji_api_key": "",
     "shioaji_secret_key": "",
     "shioaji_person_id": "",

@@ -64,7 +64,7 @@ class SettingsView(ctk.CTkFrame):
 
         ctk.CTkLabel(
             list_card,
-            text="從 TPEX 取得交易量前 N 名，存入設定檔，之後排程和手動下載都用這份清單",
+            text="從 TPEX（上櫃）+ TWSE（上市）取得交易量前 N 名，存入設定檔",
             font=ctk.CTkFont(size=11), text_color="gray",
         ).pack(anchor="w", padx=24, pady=(0, 10))
 
@@ -102,7 +102,7 @@ class SettingsView(ctk.CTkFrame):
         btn_row.pack(fill="x", padx=24, pady=(4, 16))
 
         self.refresh_list_btn = ctk.CTkButton(
-            btn_row, text="更新清單（從 TPEX 取得今日前 N 名）",
+            btn_row, text="更新清單（上櫃+上市 各前 N 名）",
             width=320, height=36, corner_radius=8,
             font=ctk.CTkFont(size=13, weight="bold"),
             fg_color="#1f6aa5", hover_color="#185a8c",
@@ -227,17 +227,27 @@ class SettingsView(ctk.CTkFrame):
             corner_radius=6, font=ctk.CTkFont(size=12),
             command=self._on_save_time).pack(side="left")
 
-        # Run now button
+        # Manual download buttons (separated by market)
         run_row = ctk.CTkFrame(card, fg_color="transparent")
         run_row.pack(fill="x", padx=24, pady=(10, 4))
-        self.run_now_btn = ctk.CTkButton(
-            run_row, text="立即下載（使用目前清單）",
-            width=260, height=38, corner_radius=8,
+
+        self.run_otc_btn = ctk.CTkButton(
+            run_row, text="手動下載 上櫃分點",
+            width=180, height=38, corner_radius=8,
             font=ctk.CTkFont(size=13, weight="bold"),
             fg_color="#e88a1a", hover_color="#c97616",
-            command=self._on_run_now,
+            command=self._on_run_otc,
         )
-        self.run_now_btn.pack(pady=4)
+        self.run_otc_btn.pack(side="left", padx=(0, 8))
+
+        self.run_twse_btn = ctk.CTkButton(
+            run_row, text="手動下載 上市分點",
+            width=180, height=38, corner_radius=8,
+            font=ctk.CTkFont(size=13, weight="bold"),
+            fg_color="#1f6aa5", hover_color="#185a8c",
+            command=self._on_run_twse,
+        )
+        self.run_twse_btn.pack(side="left")
 
         ctk.CTkFrame(card, height=1, fg_color="#3a3a3a").pack(
             fill="x", padx=24, pady=(12, 12))
@@ -323,8 +333,11 @@ class SettingsView(ctk.CTkFrame):
     def _on_download_insti(self):
         self.vm.download_insti()
 
-    def _on_run_now(self):
-        self.vm.run_now()
+    def _on_run_otc(self):
+        self.vm.run_now(market="otc")
+
+    def _on_run_twse(self):
+        self.vm.run_now(market="twse")
 
     # ---- Bindings ----
 
@@ -365,7 +378,7 @@ class SettingsView(ctk.CTkFrame):
             else:
                 self.refresh_list_btn.configure(
                     state="normal",
-                    text="更新清單（從 TPEX 取得今日前 N 名）")
+                    text="更新清單（上櫃+上市 各前 N 名）")
         self.after(0, _u)
 
     def _on_usage(self, data):
@@ -467,12 +480,15 @@ class SettingsView(ctk.CTkFrame):
     def _on_downloading(self, v: bool):
         def _update():
             if v:
-                self.run_now_btn.configure(state="disabled", text="下載中...")
+                self.run_otc_btn.configure(state="disabled", text="下載中...")
+                self.run_twse_btn.configure(state="disabled", text="下載中...")
                 self.progress_card.pack(padx=40, pady=8, fill="both",
                                          expand=True)
             else:
-                self.run_now_btn.configure(
-                    state="normal", text="立即下載（使用目前清單）")
+                self.run_otc_btn.configure(
+                    state="normal", text="手動下載 上櫃分點")
+                self.run_twse_btn.configure(
+                    state="normal", text="手動下載 上市分點")
         self.after(0, _update)
 
     # ---- Periodic refresh ----

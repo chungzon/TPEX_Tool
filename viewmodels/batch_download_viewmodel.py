@@ -9,6 +9,9 @@ from viewmodels.base_viewmodel import BaseViewModel, ObservableProperty
 from services.broker_data_service import BrokerDataService
 from services.db_service import DbService, _normalize_date
 
+# TWSE port range starts after TPEX
+_TWSE_BASE_CDP_PORT = 9230
+
 # Batch pacing: random delay between queries to look human
 _DELAY_MIN = 5.0    # seconds
 _DELAY_MAX = 12.0
@@ -54,8 +57,14 @@ class BatchDownloadViewModel(BaseViewModel):
             self._thread = threading.Thread(target=self._loop.run_forever, daemon=True)
             self._thread.start()
 
-    def start_batch(self, stock_codes_text: str, skip_existing: bool = True):
-        """Parse stock codes (comma / newline / space separated) and start."""
+    def start_batch(self, stock_codes_text: str, skip_existing: bool = True,
+                     market: str = "otc"):
+        """Parse stock codes and start download.
+
+        Args:
+            market: 'otc' = TPEX上櫃, 'twse' = TWSE上市, 'all' = both
+                    When 'all', codes are split by config lists.
+        """
         if self.is_downloading:
             return
 
@@ -78,7 +87,7 @@ class BatchDownloadViewModel(BaseViewModel):
 
         self._ensure_loop()
         asyncio.run_coroutine_threadsafe(
-            self._do_parallel_batch(codes, skip_existing), self._loop,
+            self._do_parallel_batch(codes, skip_existing, market), self._loop,
         )
 
     def cancel(self):
@@ -92,11 +101,14 @@ class BatchDownloadViewModel(BaseViewModel):
     # Parallel batch
     # ----------------------------------------------------------------
 
-    async def _do_parallel_batch(self, codes: list[str], skip_existing: bool):
+    async def _do_parallel_batch(self, codes: list[str], skip_existing: bool,
+                                  market: str = "otc"):
         total = len(codes)
+        label = {"otc": "上櫃(TPEX)", "twse": "上市(TWSE)", "all": "上櫃+上市"}.get(market, market)
         n_workers = min(self._num_workers, total)
-        self._log(f"共 {total} 檔股票，使用 {n_workers} 個 Worker 平行下載\n")
+        self._log(f"共 {total} 檔股票（{label}），使用 {n_workers} 個 Worker\n")
 
+        all_svcs = []
         try:
             self._db_svc.ensure_tables()
             self._log("資料庫連線成功，資料表已就緒\n")
@@ -107,16 +119,29 @@ class BatchDownloadViewModel(BaseViewModel):
             for i, code in enumerate(codes):
                 chunks[i % n_workers].append(code)
 
-            # Create worker tasks
+            # Create worker tasks with market-appropriate service
             tasks = []
-            broker_svcs: list[BrokerDataService] = []
-            for w_id in range(n_workers):
-                port = _BASE_CDP_PORT + w_id
-                svc = BrokerDataService(cdp_port=port)
-                broker_svcs.append(svc)
+            if market == "twse":
+                # TWSE: single worker (BSR has captcha, parallel is wasteful)
+                from services.twse_broker_service import TwseBrokerService
+                all_codes = []
+                for c in chunks:
+                    all_codes.extend(c)
+                svc = TwseBrokerService(cdp_port=_TWSE_BASE_CDP_PORT)
+                all_svcs.append(svc)
                 tasks.append(
-                    self._worker(w_id, svc, chunks[w_id], skip_existing, total)
+                    self._worker(0, svc, all_codes, skip_existing, total)
                 )
+                self._log("上市(TWSE)：使用 1 個 Worker（BSR 驗證碼限制）\n")
+            else:
+                # OTC (default): parallel workers
+                for w_id in range(n_workers):
+                    port = _BASE_CDP_PORT + w_id
+                    svc = BrokerDataService(cdp_port=port)
+                    all_svcs.append(svc)
+                    tasks.append(
+                        self._worker(w_id, svc, chunks[w_id], skip_existing, total)
+                    )
 
             # Run all workers concurrently
             await asyncio.gather(*tasks, return_exceptions=True)
@@ -136,8 +161,7 @@ class BatchDownloadViewModel(BaseViewModel):
             self.status_text = f"錯誤：{e}"
             self._log(f"\n致命錯誤：{e}\n")
         finally:
-            # Shutdown all browser instances
-            for svc in broker_svcs:
+            for svc in all_svcs:
                 try:
                     await svc.shutdown()
                 except Exception:
@@ -145,7 +169,7 @@ class BatchDownloadViewModel(BaseViewModel):
             self.is_downloading = False
 
     async def _worker(
-        self, w_id: int, broker_svc: BrokerDataService,
+        self, w_id: int, broker_svc,
         codes: list[str], skip_existing: bool, total: int,
     ):
         """One worker: downloads its chunk of stocks sequentially."""

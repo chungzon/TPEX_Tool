@@ -14,6 +14,22 @@ _DAILY_TRADING_URL = (
 )
 
 
+def get_latest_otc_trading_date() -> str:
+    """Get the latest OTC trading date from TPEX API. Returns 'yyyy-mm-dd'."""
+    req = urllib.request.Request(_DAILY_TRADING_URL, headers={
+        "User-Agent": "Mozilla/5.0",
+    })
+    with urllib.request.urlopen(req, timeout=10) as resp:
+        data = json.loads(resp.read().decode("utf-8"))
+    # date format: '115/05/08' (ROC)
+    raw = data.get("date", "")
+    m = re.match(r"^(\d{1,3})/(\d{1,2})/(\d{1,2})$", raw)
+    if m:
+        y = int(m.group(1)) + 1911
+        return f"{y}-{int(m.group(2)):02d}-{int(m.group(3)):02d}"
+    return ""
+
+
 @dataclass
 class StockVolume:
     stock_code: str

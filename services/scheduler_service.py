@@ -65,8 +65,8 @@ class SchedulerService:
         else:
             self._status("排程已停用")
 
-    def run_now(self) -> None:
-        """Trigger an immediate download in a background thread."""
+    def run_now(self, market: str = "all") -> None:
+        """Trigger an immediate download. market='otc'|'twse'|'all'."""
         if self._running:
             self._status("下載正在執行中，請稍候")
             return
@@ -74,10 +74,11 @@ class SchedulerService:
 
         def _manual_run():
             self._running = True
-            self._status("手動下載開始...")
-            log.info("Manual download triggered")
+            label = {"otc": "上櫃", "twse": "上市", "all": "上櫃+上市"}.get(market, market)
+            self._status(f"手動下載開始（{label}）...")
+            log.info("Manual download triggered: %s", market)
             try:
-                self._run_download()
+                self._run_download(market=market)
             except Exception as e:
                 self.last_result = f"錯誤：{e}"
                 self._status(f"下載失敗：{e}")
@@ -131,61 +132,117 @@ class SchedulerService:
             if self._config.get("scheduler_enabled") and not self._cancel_event.is_set():
                 self.start()
 
-    def _run_download(self) -> None:
-        """Download broker data, then verify."""
-        codes = self._config.get("stock_codes") or []
+    def _run_download(self, market: str = "all") -> None:
+        """Download broker data. market='otc'|'twse'|'all'."""
+        self.last_result = ""
+        otc_codes = self._config.get("stock_codes") or []
+        twse_codes = self._config.get("twse_stock_codes") or []
+
+        if market == "otc":
+            codes = otc_codes
+        elif market == "twse":
+            codes = twse_codes
+        else:
+            codes = otc_codes + twse_codes
+
         if not codes:
             self.last_result = "尚未設定股票清單，請先按「更新清單」"
             self._status(self.last_result)
-            log.warning("No stock_codes in config, skipping download")
+            log.warning("No stock_codes for market=%s", market)
             return
 
-        self._status(f"分點資料下載（共 {len(codes)} 檔）...")
-        log.info("Broker data download: %d stocks", len(codes))
+        # Get latest trading date to avoid querying on non-trading days
+        trading_date = ""
+        try:
+            if market in ("otc", "all"):
+                from services.tpex_api_service import get_latest_otc_trading_date
+                trading_date = get_latest_otc_trading_date()
+            if market in ("twse", "all") and not trading_date:
+                from services.twse_api_service import get_latest_twse_trading_date
+                trading_date = get_latest_twse_trading_date()
+            if trading_date:
+                self._status(f"最近交易日：{trading_date}")
+                log.info("Latest trading date: %s", trading_date)
+        except Exception as e:
+            log.warning("Failed to get latest trading date: %s", e)
 
+        label = {"otc": "上櫃", "twse": "上市", "all": "上櫃+上市"}.get(market, market)
+        date_info = f"（交易日 {trading_date}）" if trading_date else ""
+        self._status(f"分點資料下載（{label} {len(codes)} 檔）{date_info}...")
+        log.info("Broker data download: market=%s, %d stocks, date=%s",
+                 market, len(codes), trading_date)
+
+        # Check if we already have data for this trading date
+        if trading_date:
+            from services.db_service import DbService
+            db = DbService()
+            try:
+                db.connect()
+                # Sample check: see if first stock already has data for this date
+                sample = codes[0] if codes else ""
+                if sample and db.stock_exists(sample, trading_date):
+                    self.last_result = f"{trading_date} 資料已存在，跳過"
+                    self._status(self.last_result)
+                    log.info("Data for %s already exists, skipping", trading_date)
+                    return
+            except Exception:
+                pass
+            finally:
+                db.close()
+
+        from viewmodels.batch_download_viewmodel import BatchDownloadViewModel
+
+        # If market="all", run OTC and TWSE sequentially
+        if market == "all":
+            if otc_codes:
+                self._status(f"上櫃分點下載（{len(otc_codes)} 檔）...")
+                self._run_single_batch(otc_codes, "otc")
+            if twse_codes and not self._cancel_event.is_set():
+                self._status(f"上市分點下載（{len(twse_codes)} 檔）...")
+                self._run_single_batch(twse_codes, "twse")
+        else:
+            self._run_single_batch(codes, market)
+
+        self.last_result = (self.last_result or "").strip() or "已完成"
+        self._status(f"完成：{self.last_result}")
+        log.info("Download result: %s", self.last_result)
+
+    def _run_single_batch(self, codes: list[str], market: str):
+        """Run a batch download for one market and wait for completion."""
         from viewmodels.batch_download_viewmodel import BatchDownloadViewModel
 
         vm = BatchDownloadViewModel()
         self.active_vm = vm
-        vm.start_batch(", ".join(codes), skip_existing=True)
+        vm.start_batch(", ".join(codes), skip_existing=True, market=market)
         time.sleep(1)
 
         while vm.is_downloading:
             if self._cancel_event.is_set():
                 vm.cancel()
-                self._status("排程已取消")
+                self._status("已取消")
                 for _ in range(30):
                     if not vm.is_downloading:
                         break
                     time.sleep(1)
-                self.active_vm = None
-                vm.shutdown()
-                return
+                break
             time.sleep(3)
 
-        broker_log = vm.log_text or ""
-        self.active_vm = None
-        vm.shutdown()
-
-        # Verify and auto-retry failures
-        if not self._cancel_event.is_set():
-            self._status("驗證下載結果...")
-            verify_result = self._verify_download(codes, broker_log)
-        else:
-            verify_result = ""
-
-        # Summary
-        broker_summary = ""
-        for line in reversed(broker_log.splitlines()):
+        # Extract result
+        log_text = vm.log_text or ""
+        summary = ""
+        for line in reversed(log_text.splitlines()):
             line = line.strip()
             if line and ("成功" in line or "結束" in line):
-                broker_summary = line
+                summary = line
                 break
 
-        parts = [p for p in [broker_summary, verify_result] if p]
-        self.last_result = "　".join(parts) or "已完成"
-        self._status(f"排程完成：{self.last_result}")
-        log.info("Scheduler result: %s", self.last_result)
+        label = "上櫃" if market == "otc" else "上市"
+        if summary:
+            self._status(f"{label}：{summary}")
+        self.last_result = (self.last_result or "") + f" {label}：{summary or '完成'}"
+
+        self.active_vm = None
+        vm.shutdown()
 
     def _verify_download(self, codes: list[str], broker_log: str) -> str:
         """Check which stocks failed or were missing from today's download."""
