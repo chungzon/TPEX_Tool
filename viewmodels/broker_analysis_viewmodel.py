@@ -37,6 +37,9 @@ class BrokerAnalysisViewModel(BaseViewModel):
     # Volume info (latest trading day)
     volume_info = ObservableProperty(None)          # dict | None
 
+    # Main-force concentration (主力集中度: 20日/5日)
+    concentration_data = ObservableProperty(None)   # dict | None
+
     # Holder distribution
     holder_data = ObservableProperty(None)         # dict | None
     holder_loading = ObservableProperty(False)
@@ -79,6 +82,7 @@ class BrokerAnalysisViewModel(BaseViewModel):
         self.detail_data = None
         self.insti_data = None
         self.volume_info = None
+        self.concentration_data = None
         try:
             d_min, d_max = self._db.get_stock_date_range(stock_code)
             self.date_min = d_min
@@ -91,6 +95,8 @@ class BrokerAnalysisViewModel(BaseViewModel):
             vol_rows = self._db.get_latest_volume(stock_code)
             if vol_rows:
                 self._build_volume_info(vol_rows)
+            # Load main-force concentration (20日/5日 rolling)
+            self._load_concentration(stock_code, d_max)
         except Exception as e:
             self.error_text = f"載入錯誤：{e}"
 
@@ -131,6 +137,134 @@ class BrokerAnalysisViewModel(BaseViewModel):
                     (latest_price - prev_price) / prev_price * 100, 2
                 )
         self.volume_info = info
+
+    def _load_concentration(self, stock_code: str, end_date: str):
+        """Load rolling 20日/5日 main-force concentration for the latest data."""
+        if not end_date:
+            self.concentration_data = None
+            return
+        from datetime import datetime as _dt, timedelta
+        try:
+            end_dt = _dt.strptime(end_date[:10], "%Y-%m-%d")
+        except ValueError:
+            self.concentration_data = None
+            return
+        # ~90 calendar days ≈ 60 trading days — enough history for the
+        # rolling 20日 line plus a few weeks of trend.
+        start_date = (end_dt - timedelta(days=90)).strftime("%Y-%m-%d")
+        rows = self._db.get_all_brokers_daily(stock_code, start_date, end_date)
+        self.concentration_data = self._compute_concentration(rows)
+
+    @staticmethod
+    def _compute_concentration(rows: list[dict]) -> dict | None:
+        """Compute rolling main-force concentration (主力集中度).
+
+        For a given interval, concentration =
+          (買超前15家張數合計 − 賣超前15家張數合計) / 區間成交量
+
+        Returns a dict with per-day rolling 20日/10日/5日 series (aligned to
+        ``labels``/``close``) plus a ``stats`` block summarising the most
+        recent 20-day / 10-day / 5-day windows.
+        """
+        if not rows:
+            return None
+
+        def _pi(v) -> int:
+            try:
+                return int(str(v).replace(",", "").replace(" ", ""))
+            except (ValueError, TypeError):
+                return 0
+
+        def _pf(v):
+            try:
+                return float(str(v).replace(",", "").replace(" ", ""))
+            except (ValueError, TypeError):
+                return None
+
+        # Aggregate per trading day
+        by_date_net: dict[str, dict[str, int]] = defaultdict(
+            lambda: defaultdict(int))
+        vol_by_date: dict[str, int] = {}
+        close_by_date: dict[str, float | None] = {}
+        for r in rows:
+            d = str(r["trade_date"])[:10]
+            net = r.get("net_volume")
+            if net is None:
+                net = (r.get("buy_volume") or 0) - (r.get("sell_volume") or 0)
+            by_date_net[d][r["broker_name"]] += net
+            vol_by_date[d] = _pi(r.get("total_volume"))
+            close_by_date[d] = _pf(r.get("close_price"))
+
+        dates = sorted(by_date_net.keys())
+        if not dates:
+            return None
+
+        def _window(window_dates: list[str]) -> dict:
+            """Aggregate a date window → concentration + summary figures."""
+            broker_net: dict[str, int] = defaultdict(int)
+            total_vol = 0
+            for d in window_dates:
+                for bname, net in by_date_net[d].items():
+                    broker_net[bname] += net
+                total_vol += vol_by_date.get(d, 0)
+            buyers = sorted(
+                (v for v in broker_net.values() if v > 0), reverse=True)
+            sellers = sorted(v for v in broker_net.values() if v < 0)
+            top_buy = sum(buyers[:15])           # 買超前15家張數合計 (股)
+            top_sell = sum(sellers[:15])         # 賣超前15家張數合計 (股, 負值)
+            main_net = top_buy + top_sell        # 主力買賣超 (股)
+            conc = (main_net / total_vol * 100) if total_vol > 0 else 0.0
+            return {
+                "conc": conc,
+                "main_net": main_net,
+                "buyer_cnt": len(buyers),
+                "seller_cnt": len(sellers),
+            }
+
+        n = len(dates)
+        labels: list[str] = []
+        close: list[float | None] = []
+        conc5: list[float | None] = []
+        conc10: list[float | None] = []
+        conc20: list[float | None] = []
+        for i in range(n):
+            labels.append(dates[i])
+            close.append(close_by_date.get(dates[i]))
+            if i >= 4:
+                conc5.append(round(_window(dates[i - 4:i + 1])["conc"], 2))
+            else:
+                conc5.append(None)
+            if i >= 9:
+                conc10.append(round(_window(dates[i - 9:i + 1])["conc"], 2))
+            else:
+                conc10.append(None)
+            if i >= 19:
+                conc20.append(round(_window(dates[i - 19:i + 1])["conc"], 2))
+            else:
+                conc20.append(None)
+
+        # Summary stats for the latest 20-day / 10-day / 5-day windows
+        w20 = _window(dates[-20:])
+        w10 = _window(dates[-10:])
+        w5 = _window(dates[-5:])
+        stats = {
+            "days20": len(dates[-20:]),
+            "days10": len(dates[-10:]),
+            "days5": len(dates[-5:]),
+            "main_net_lots": int(w20["main_net"] / 1000),
+            "broker_diff": w20["buyer_cnt"] - w20["seller_cnt"],
+            "conc5": round(w5["conc"], 2),
+            "conc10": round(w10["conc"], 2),
+            "conc20": round(w20["conc"], 2),
+        }
+        return {
+            "labels": labels,
+            "close": close,
+            "conc5": conc5,
+            "conc10": conc10,
+            "conc20": conc20,
+            "stats": stats,
+        }
 
     def reload_brokers(self, start_date: str, end_date: str):
         """Reload broker summary for the selected stock with given date range."""

@@ -315,6 +315,26 @@ class BrokerAnalysisView(ctk.CTkFrame):
             date_row, text="", font=ctk.CTkFont(size=14), text_color="gray")
         self.date_info_label.pack(side="left", padx=(12, 0))
 
+        # --- Main-force concentration card (主力集中度) ---
+        self.concentration_card = ctk.CTkFrame(self.container, corner_radius=12)
+
+        conc_hdr = ctk.CTkFrame(self.concentration_card, fg_color="transparent")
+        conc_hdr.pack(fill="x", padx=20, pady=(16, 4))
+        ctk.CTkLabel(conc_hdr, text="主力集中度",
+                      font=ctk.CTkFont(size=17, weight="bold")).pack(side="left")
+        ctk.CTkLabel(
+            conc_hdr, text="　20日 / 5日 主力買賣超佔成交量比重 vs 股價走勢",
+            font=ctk.CTkFont(size=13), text_color="gray").pack(side="left")
+
+        conc_body = ctk.CTkFrame(self.concentration_card, fg_color="transparent")
+        conc_body.pack(fill="x", padx=16, pady=(0, 16))
+        self.conc_chart_frame = ctk.CTkFrame(conc_body, fg_color="transparent")
+        self.conc_chart_frame.pack(side="left", fill="both", expand=True)
+        self.conc_stats_frame = ctk.CTkFrame(
+            conc_body, fg_color="transparent", width=210)
+        self.conc_stats_frame.pack(side="right", fill="y", padx=(12, 4))
+        self.conc_stats_frame.pack_propagate(False)
+
         # --- Ranking card (tabbed) ---
         self.ranking_card = ctk.CTkFrame(self.container, corner_radius=12)
 
@@ -521,6 +541,7 @@ class BrokerAnalysisView(ctk.CTkFrame):
         self.vm.bind("correlation_data", self._on_correlation_data)
         self.vm.bind("correlation_loading", self._on_correlation_loading)
         self.vm.bind("volume_info", self._on_volume_info)
+        self.vm.bind("concentration_data", self._on_concentration_data)
         self.vm.bind("holder_data", self._on_holder_data)
         self.vm.bind("holder_loading", self._on_holder_loading)
         self.vm.bind("insti_data", self._on_insti_data)
@@ -552,6 +573,7 @@ class BrokerAnalysisView(ctk.CTkFrame):
         def _u():
             if not stock:
                 self.stock_info_card.pack_forget()
+                self.concentration_card.pack_forget()
                 self.ranking_card.pack_forget()
                 self.holder_card.pack_forget()
                 self.insti_card.pack_forget()
@@ -567,6 +589,7 @@ class BrokerAnalysisView(ctk.CTkFrame):
             self.date_info_label.configure(
                 text=f"資料範圍：{d_min} ~ {d_max}" if d_min else "")
             self.stock_info_card.pack(padx=40, pady=8, fill="x")
+            self.concentration_card.pack(padx=40, pady=8, fill="x")
             self.ranking_card.pack(padx=40, pady=8, fill="x")
             self.holder_card.pack(padx=40, pady=8, fill="x")
             self.insti_card.pack(padx=40, pady=8, fill="x")
@@ -684,6 +707,142 @@ class BrokerAnalysisView(ctk.CTkFrame):
                               font=fsb, text_color=v_clr).pack(side="left")
 
         self.after(0, _u)
+
+    def _on_concentration_data(self, data):
+        self.after(0, lambda: self._render_concentration(data))
+
+    def _render_concentration(self, data: dict | None):
+        for w in self.conc_chart_frame.winfo_children():
+            w.destroy()
+        for w in self.conc_stats_frame.winfo_children():
+            w.destroy()
+
+        if not data:
+            ctk.CTkLabel(
+                self.conc_chart_frame, text="（無集中度資料）",
+                font=ctk.CTkFont(size=14), text_color="gray",
+            ).pack(pady=16)
+            return
+
+        stats = data["stats"]
+
+        # ---- Stats table (right side) ----
+        def _clr(v): return "#ef5350" if v >= 0 else "#26a69a"
+
+        rows = [
+            (f"主力買賣超 ({stats['days20']}日)",
+             f"{stats['main_net_lots']:+,} 張", _clr(stats["main_net_lots"]),
+             "買超前15家 − 賣超前15家"),
+            (f"家數差 ({stats['days20']}日)",
+             f"{stats['broker_diff']:+,} 家", _clr(stats["broker_diff"]),
+             "買超分點數 − 賣超分點數"),
+            ("5日集中度", f"{stats['conc5']:+.2f}%", _clr(stats["conc5"]),
+             "5日主力買賣超 ÷ 區間成交量"),
+            ("10日集中度", f"{stats['conc10']:+.2f}%", _clr(stats["conc10"]),
+             "10日主力買賣超 ÷ 區間成交量"),
+            ("20日集中度", f"{stats['conc20']:+.2f}%", _clr(stats["conc20"]),
+             "20日主力買賣超 ÷ 區間成交量"),
+        ]
+        for label, value, color, hint in rows:
+            f = ctk.CTkFrame(self.conc_stats_frame, fg_color="#1e1e1e",
+                              corner_radius=8)
+            f.pack(fill="x", padx=4, pady=4)
+            ctk.CTkLabel(f, text=label, font=ctk.CTkFont(size=13),
+                          text_color="gray").pack(anchor="w", padx=12,
+                                                  pady=(8, 0))
+            ctk.CTkLabel(f, text=value,
+                          font=ctk.CTkFont(size=19, weight="bold"),
+                          text_color=color).pack(anchor="w", padx=12, pady=0)
+            ctk.CTkLabel(f, text=hint, font=ctk.CTkFont(size=10),
+                          text_color="#666666").pack(anchor="w", padx=12,
+                                                     pady=(0, 8))
+
+        # ---- Chart (left side) ----
+        if not HAS_MPL:
+            ctk.CTkLabel(self.conc_chart_frame, text="（pip install matplotlib）",
+                          font=ctk.CTkFont(size=14),
+                          text_color="gray").pack(pady=16)
+            return
+
+        labels = data["labels"]
+        close = data["close"]
+        conc5 = data["conc5"]
+        conc10 = data["conc10"]
+        conc20 = data["conc20"]
+        n = len(labels)
+        if n == 0:
+            return
+        xs = list(range(n))
+
+        bg = "#1c1c1e"
+        panel = "#1c1c1e"
+        txt = "#c0c0c0"
+        grid = "#2c2c2e"
+
+        fig = Figure(figsize=(7.5, 3.2), dpi=100, facecolor=bg)
+        fig.subplots_adjust(left=0.08, right=0.91, top=0.88, bottom=0.20)
+        ax = fig.add_subplot(111)
+        ax.set_facecolor(panel)
+
+        # Concentration lines (left axis, %)
+        xs20 = [i for i in xs if conc20[i] is not None]
+        ys20 = [conc20[i] for i in xs20]
+        xs10 = [i for i in xs if conc10[i] is not None]
+        ys10 = [conc10[i] for i in xs10]
+        xs5 = [i for i in xs if conc5[i] is not None]
+        ys5 = [conc5[i] for i in xs5]
+
+        ax.axhline(0, color=grid, linewidth=0.6)
+        if xs20:
+            ax.plot(xs20, ys20, color="#ff9800", linewidth=1.6,
+                    label="20日集中度")
+        if xs10:
+            ax.plot(xs10, ys10, color="#ab47bc", linewidth=1.3,
+                    label="10日集中度")
+        if xs5:
+            ax.plot(xs5, ys5, color="#42a5f5", linewidth=1.2,
+                    label="5日集中度")
+        ax.set_ylabel("集中度 %", fontsize=10, color=txt)
+        ax.tick_params(axis="both", colors=txt, labelsize=8)
+        for sp in ax.spines.values():
+            sp.set_color(grid)
+        ax.grid(True, axis="y", alpha=0.2, color=grid, linewidth=0.5)
+
+        # Price line (right axis)
+        ax_p = ax.twinx()
+        pxs = [i for i in xs if close[i] is not None]
+        pys = [close[i] for i in pxs]
+        if pxs:
+            ax_p.plot(pxs, pys, color="#8e8e93", linewidth=1.0,
+                      label="收盤價")
+        ax_p.set_ylabel("收盤價", fontsize=10, color=txt)
+        ax_p.tick_params(axis="y", colors=txt, labelsize=8)
+        for sp in ax_p.spines.values():
+            sp.set_color(grid)
+
+        # Combined legend
+        l1, lab1 = ax.get_legend_handles_labels()
+        l2, lab2 = ax_p.get_legend_handles_labels()
+        ax.legend(l1 + l2, lab1 + lab2, loc="upper left", fontsize=8,
+                  framealpha=0.5, facecolor=panel, edgecolor=grid,
+                  labelcolor=txt, ncol=4)
+
+        # X ticks
+        if n <= 15:
+            ticks = xs
+        else:
+            step = max(n // 10, 1)
+            ticks = list(range(0, n, step))
+            if ticks[-1] != n - 1:
+                ticks.append(n - 1)
+        ax.set_xticks(ticks)
+        ax.set_xticklabels([labels[t][5:] for t in ticks], fontsize=8,
+                            color=txt, rotation=35, ha="right")
+        ax.set_xlim(-0.6, n - 0.4)
+
+        canvas = FigureCanvasTkAgg(fig, self.conc_chart_frame)
+        canvas.draw()
+        canvas.get_tk_widget().pack(fill="both", expand=True, padx=4, pady=4)
 
     def _on_holder_loading(self, v):
         def _u():
