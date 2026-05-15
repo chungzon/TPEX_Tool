@@ -391,6 +391,57 @@ class DbService:
         self._conn.commit()
         return len(agg_list)
 
+    def save_daily_summary_batch(self, rows: list[dict]) -> int:
+        """Upsert a batch of daily market summary rows into StockDailySummary.
+
+        Used for back-filling missed days from the TWSE/TPEX daily-quote APIs.
+        Each row is a dict with keys: stock_code, stock_name, trade_date,
+        total_trades, total_amount, total_volume, open_price, high_price,
+        low_price, close_price. MERGE makes re-running idempotent.
+        """
+        cur = self._cursor()
+        count = 0
+        for row in rows:
+            trade_date = _normalize_date(row.get("trade_date", ""))
+            code = row.get("stock_code", "")
+            if not trade_date or not code:
+                continue
+            name = (re.sub(r"^\d+\s+", "", row.get("stock_name", "")).strip()
+                    or row.get("stock_name", ""))
+            vals = (
+                name, row.get("total_trades", ""), row.get("total_amount", ""),
+                row.get("total_volume", ""), row.get("open_price", ""),
+                row.get("high_price", ""), row.get("low_price", ""),
+                row.get("close_price", ""),
+            )
+            cur.execute("""
+                MERGE StockDailySummary AS tgt
+                USING (SELECT %s AS stock_code, %s AS trade_date) AS src
+                    ON tgt.stock_code = src.stock_code
+                   AND tgt.trade_date = src.trade_date
+                WHEN MATCHED THEN UPDATE SET
+                    stock_name   = %s,
+                    total_trades = %s,
+                    total_amount = %s,
+                    total_volume = %s,
+                    open_price   = %s,
+                    high_price   = %s,
+                    low_price    = %s,
+                    close_price  = %s
+                WHEN NOT MATCHED THEN INSERT (
+                    stock_code, trade_date, stock_name,
+                    total_trades, total_amount, total_volume,
+                    open_price, high_price, low_price, close_price
+                ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s);
+            """, (
+                code, trade_date,
+                *vals,
+                code, trade_date, *vals,
+            ))
+            count += 1
+        self._conn.commit()
+        return count
+
     # -- Read ---------------------------------------------------------------
 
     def stock_exists(self, stock_code: str, trade_date: str) -> bool:

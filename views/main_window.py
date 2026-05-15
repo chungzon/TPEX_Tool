@@ -3,6 +3,7 @@ import customtkinter as ctk
 from viewmodels.broker_download_viewmodel import BrokerDownloadViewModel
 from viewmodels.batch_download_viewmodel import BatchDownloadViewModel
 from viewmodels.broker_analysis_viewmodel import BrokerAnalysisViewModel
+from viewmodels.backfill_viewmodel import BackfillViewModel
 from viewmodels.settings_viewmodel import SettingsViewModel
 from viewmodels.strategy_viewmodel import StrategyViewModel
 from viewmodels.trading_viewmodel import TradingViewModel
@@ -10,6 +11,7 @@ from viewmodels.signal_viewmodel import SignalViewModel
 from views.broker_download_view import BrokerDownloadView
 from views.batch_download_view import BatchDownloadView
 from views.broker_analysis_view import BrokerAnalysisView
+from views.backfill_view import BackfillView
 from views.settings_view import SettingsView
 from views.strategy_view import StrategyView
 from views.trading_view import TradingView
@@ -102,21 +104,28 @@ class MainWindow(ctk.CTk):
         signal_view = SignalView(tab5, self.signal_vm)
         signal_view.pack(fill="both", expand=True)
 
-        # Tab 6: 下單
-        tab6 = self.tabview.add("下單")
+        # Tab 6: 補資料
+        tab6 = self.tabview.add("補資料")
+
+        self.backfill_vm = BackfillViewModel()
+        backfill_view = BackfillView(tab6, self.backfill_vm)
+        backfill_view.pack(fill="both", expand=True)
+
+        # Tab 7: 下單
+        tab7 = self.tabview.add("下單")
 
         self.trading_vm = TradingViewModel(self._config_svc)
-        trading_view = TradingView(tab6, self.trading_vm)
+        trading_view = TradingView(tab7, self.trading_vm)
         trading_view.pack(fill="both", expand=True)
 
-        # Tab 7: 系統設定
-        tab7 = self.tabview.add("系統設定")
+        # Tab 8: 系統設定
+        tab8 = self.tabview.add("系統設定")
 
         self.settings_vm = SettingsViewModel(
             self._config_svc, self._scheduler_svc,
             shioaji_svc=self.trading_vm._sj,
         )
-        settings_view = SettingsView(tab7, self.settings_vm)
+        settings_view = SettingsView(tab8, self.settings_vm)
         settings_view.pack(fill="both", expand=True)
 
         # Cleanup on close
@@ -142,6 +151,7 @@ class MainWindow(ctk.CTk):
         self.broker_vm.shutdown()
         self.batch_vm.shutdown()
         self.analysis_vm.shutdown()
+        self.backfill_vm.shutdown()
         self.strategy_vm.shutdown()
         self.signal_vm.shutdown()
         self.trading_vm.shutdown()
