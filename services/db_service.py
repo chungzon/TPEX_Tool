@@ -665,6 +665,28 @@ class DbService:
         """, (kw, kw))
         return [{"stock_code": r[0], "stock_name": r[1]} for r in cur.fetchall()]
 
+    def get_stock_names(self, codes: list[str]) -> dict[str, str]:
+        """Batched stock_code → stock_name lookup using StockDailySummary.
+
+        Returns the most recent non-null name per code. Empty input → {}.
+        """
+        if not codes:
+            return {}
+        cur = self._cursor()
+        placeholders = ",".join(["%s"] * len(codes))
+        cur.execute(f"""
+            SELECT stock_code, stock_name
+            FROM StockDailySummary
+            WHERE stock_code IN ({placeholders})
+              AND stock_name IS NOT NULL AND stock_name <> ''
+        """, tuple(codes))
+        out: dict[str, str] = {}
+        for r in cur.fetchall():
+            code, name = r[0], r[1]
+            if code not in out and name:
+                out[code] = name
+        return out
+
     def get_stock_date_range(self, stock_code: str) -> tuple[str, str]:
         """Return (min_date, max_date) for a stock as 'yyyy-mm-dd' strings."""
         cur = self._cursor()
