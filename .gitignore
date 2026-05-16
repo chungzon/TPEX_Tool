@@ -5,3 +5,10 @@ __pycache__/
 config.json
 *.tmp
 .claude/
+
+# Debug / scraping artifacts dumped to repo root
+*.log
+bsr_*.html
+twse_*.html
+cap_*.png
+captcha_*.png
