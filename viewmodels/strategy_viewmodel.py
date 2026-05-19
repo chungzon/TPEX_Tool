@@ -216,6 +216,142 @@ class StrategyViewModel(BaseViewModel):
 
         threading.Thread(target=_work, daemon=True).start()
 
+    def run_imminent_cross_strategy(
+        self, trade_date: str,
+        short_window: int = 5,
+        long_window: int = 15,
+        top_n: int = 15,
+        max_gap_pct: float = 2.0,
+        require_narrowing: bool = True,
+        insti_types: set[str] | None = None,
+        insti_min_days: int = 3,
+    ):
+        """篩選「主力短期集中度即將上穿長期集中度」的個股。
+
+        若 ``insti_types`` 非空（{'foreign','trust','dealer'} 子集），
+        進一步要求被勾選的每個法人在訊號日前連續 ``insti_min_days`` 天
+        淨買 > 0（建倉）。三項皆空則略過法人過濾。
+
+        條件、推估天數定義詳見 strategy_eval_service.find_imminent_crossovers。
+        """
+        trade_date = trade_date.strip()
+        if not trade_date:
+            self.error_text = "請輸入日期"
+            return
+        if short_window >= long_window:
+            self.error_text = (
+                f"短期窗口（{short_window}）必須小於長期窗口（{long_window}）"
+            )
+            return
+        if self.loading:
+            return
+        self.loading = True
+        self.error_text = ""
+        self.results = None
+        self.status_text = ""
+
+        def _work():
+            try:
+                from dataclasses import asdict
+                from datetime import datetime as _dt, timedelta
+                from services.strategy_eval_service import (
+                    find_imminent_crossovers, INSTI_TYPES, insti_buy_streak,
+                )
+
+                self._db.connect()
+                self._db.ensure_tables()
+
+                # 需要 long_window + 1 個交易日才能算前後兩個窗口；
+                # 取日曆 long_window * 2 天保險（含週末/休市）
+                try:
+                    end_dt = _dt.strptime(trade_date, "%Y-%m-%d")
+                except ValueError:
+                    self.error_text = "日期格式錯誤，請用 yyyy-mm-dd"
+                    return
+                start = (end_dt - timedelta(days=long_window * 2 + 10)
+                         ).strftime("%Y-%m-%d")
+
+                rows = self._db.get_broker_history_range(start, trade_date)
+                if not rows:
+                    self.error_text = (
+                        f"{trade_date} 之前無分點資料"
+                    )
+                    self.results = []
+                    return
+
+                # 群組 by stock_code
+                grouped: dict[str, list[dict]] = defaultdict(list)
+                for r in rows:
+                    grouped[r["stock_code"]].append(r)
+
+                cands = find_imminent_crossovers(
+                    grouped, trade_date,
+                    short_window=short_window,
+                    long_window=long_window,
+                    top_n=top_n,
+                    max_gap_pct=max_gap_pct,
+                    require_narrowing=require_narrowing,
+                )
+
+                # --- 三大法人 streak（一律計算供顯示；勾選的才作為過濾） ---
+                sel = insti_types or set()
+                min_n = max(1, int(insti_min_days))
+                # 抓夠長的法人歷史以便算 streak
+                insti_start = (end_dt - timedelta(days=max(min_n, 1) * 3 + 14)
+                               ).strftime("%Y-%m-%d")
+                insti_rows = self._db.get_insti_history_range(
+                    insti_start, trade_date)
+                insti_grouped: dict[str, list[dict]] = defaultdict(list)
+                for r in insti_rows:
+                    insti_grouped[r["stock_code"]].append(r)
+
+                result_dicts = []
+                for c in cands:
+                    history = insti_grouped.get(c.stock_code, [])
+                    streaks = {
+                        t: insti_buy_streak(history, trade_date, t)
+                        for t in INSTI_TYPES
+                    }
+                    if sel and not all(streaks[t] >= min_n for t in sel):
+                        continue
+                    d = asdict(c)
+                    d["foreign_streak"] = streaks["foreign"]
+                    d["trust_streak"] = streaks["trust"]
+                    d["dealer_streak"] = streaks["dealer"]
+                    result_dicts.append(d)
+
+                if not result_dicts:
+                    parts = [f"gap≤{max_gap_pct}%"]
+                    if require_narrowing:
+                        parts.append("gap收窄中")
+                    if sel:
+                        names = {"foreign": "外資", "trust": "投信",
+                                 "dealer": "自營"}
+                        labels = " + ".join(names[t] for t in INSTI_TYPES
+                                            if t in sel)
+                        parts.append(f"{labels} 連續買超≥{min_n}天")
+                    self.error_text = (
+                        f"{trade_date} 無符合條件的標的（{'、'.join(parts)}）"
+                    )
+                else:
+                    extra = ""
+                    if sel:
+                        names = {"foreign": "外資", "trust": "投信",
+                                 "dealer": "自營"}
+                        labels = "+".join(names[t] for t in INSTI_TYPES
+                                          if t in sel)
+                        extra = f"，{labels} 連續{min_n}天+"
+                    self.status_text = (
+                        f"找到 {len(result_dicts)} 檔即將黃金交叉{extra}"
+                    )
+                self.results = result_dicts
+            except Exception as e:
+                self.error_text = f"查詢錯誤：{e}"
+            finally:
+                self.loading = False
+
+        threading.Thread(target=_work, daemon=True).start()
+
     def shutdown(self):
         try:
             self._db.close()

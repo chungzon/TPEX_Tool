@@ -908,6 +908,36 @@ class DbService:
         self._conn.commit()
         return count
 
+    def get_insti_history_range(self, start_date: str,
+                                  end_date: str) -> list[dict]:
+        """All InstiDailyTrade rows in a date range, across all stocks.
+
+        Used by strategy filters that need recent net-buy patterns
+        of 三大法人 (外資/投信/自營) for many stocks at once. Sorted
+        ascending by (stock_code, trade_date) so callers can group +
+        iterate without re-sorting.
+        """
+        cur = self._cursor()
+        cur.execute("""
+            SELECT stock_code, trade_date,
+                   foreign_net, trust_net,
+                   dealer_self_net, dealer_hedge_net,
+                   three_insti_net
+            FROM InstiDailyTrade
+            WHERE trade_date >= %s AND trade_date <= %s
+            ORDER BY stock_code, trade_date
+        """, (start_date, end_date))
+        return [
+            {
+                "stock_code": r[0], "trade_date": str(r[1]),
+                "foreign_net": r[2] or 0, "trust_net": r[3] or 0,
+                "dealer_self_net": r[4] or 0,
+                "dealer_hedge_net": r[5] or 0,
+                "three_insti_net": r[6] or 0,
+            }
+            for r in cur.fetchall()
+        ]
+
     def get_insti_history(self, stock_code: str,
                           start_date: str, end_date: str) -> list[dict]:
         """Get institutional daily data for a stock in a date range."""

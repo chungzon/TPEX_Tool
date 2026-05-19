@@ -1,8 +1,8 @@
 """策略效益評估 — 計算「主力集中度突破策略」的歷史報酬。
 
 策略一：5/15 集中度黃金交叉
-- 進場條件：當日 5日集中度 > 0 且 15日集中度 > 0
-  且 5日集中度「上穿」15日集中度（前一日 ≤、當日 >）
+- 進場條件：5日集中度「上穿」15日集中度（前一日 ≤、當日 >）
+  （不限正負 — 兩線皆負時的交叉視為賣壓減弱的反轉訊號）
 - 進場價：訊號日收盤
 - 出場：訊號日後第 N 個交易日收盤（預設 N = 4）
 - 報酬：(出場價 / 進場價 − 1) × 100%
@@ -136,9 +136,8 @@ def detect_breakout_signals(
         cs, cl = conc_s[i], conc_l[i]
         if ps is None or pl is None or cs is None or cl is None:
             continue
-        # 雙正 + 黃金交叉
-        if not (cs > 0 and cl > 0):
-            continue
+        # 黃金交叉（短期上穿長期）— 不限制正負，
+        # 賣壓減弱（兩線皆負時的交叉）也算反轉訊號
         if not (ps <= pl and cs > cl):
             continue
 
@@ -205,3 +204,167 @@ def summarise(signals: list[StrategySignal]) -> dict:
 
 def signals_to_dicts(signals: list[StrategySignal]) -> list[dict]:
     return [asdict(s) for s in signals]
+
+
+# ---------------------------------------------------------------------------
+# Filter: 主力集中度即將黃金交叉（候選掃描）
+# ---------------------------------------------------------------------------
+
+@dataclass
+class ImminentCrossCandidate:
+    """短期集中度即將上穿長期集中度的候選個股。"""
+    stock_code: str
+    stock_name: str
+    trade_date: str
+    close_price: float
+    conc_short: float          # 當日短期集中度 (%)
+    conc_long: float           # 當日長期集中度 (%)
+    gap: float                 # long − short（正值代表還沒交叉）
+    prev_gap: float            # 前一交易日的 gap
+    narrowing: float           # prev_gap − gap（>0 = 縮窄中）
+    eta_days: float | None     # 依 narrowing 速率推估幾日內交叉
+    short_slope: float         # short 較前一日的變化量（正 = 上升）
+
+
+def find_imminent_crossovers(
+    grouped_rows: dict[str, list[dict]],
+    trade_date: str,
+    short_window: int = 5,
+    long_window: int = 15,
+    top_n: int = 15,
+    max_gap_pct: float = 2.0,
+    require_narrowing: bool = True,
+    eta_cap: float = 30.0,
+) -> list[ImminentCrossCandidate]:
+    """掃所有個股，找出當日「短期集中度即將上穿長期集中度」的候選。
+
+    條件：
+      • 當日 short ≤ long（還沒交叉）
+      • gap (= long − short) ≤ max_gap_pct
+      • 當日「最近交易日」必須等於 trade_date（避免拿到停牌的舊資料）
+      • 若 require_narrowing：要求 prev_gap > gap（gap 在收窄）
+
+    集中度本身不限制正負 — 兩線皆負（賣壓中）時的即將交叉也算反轉候選。
+
+    Args:
+        grouped_rows: {stock_code: [broker_row, ...]}，可由
+            ``itertools.groupby`` 或 dict 累積取得。每筆 broker_row 與
+            ``db.get_broker_history_range`` 回傳格式相同。
+        trade_date: 'yyyy-mm-dd'，當日。
+        eta_cap: 推估天數上限，超過就顯示為 cap 值。
+
+    Returns:
+        排序好的候選清單（eta_days 升冪、無 eta 者按 gap 升冪排在後段）。
+    """
+    out: list[ImminentCrossCandidate] = []
+    for code, rows in grouped_rows.items():
+        if not rows:
+            continue
+        dates, by_date_net, vol_by_date, close_by_date = _aggregate_by_date(rows)
+        n = len(dates)
+        if n < long_window + 1:
+            continue
+        # 嚴格要求當日就是 trade_date（避免停牌資料）
+        if dates[-1] != trade_date:
+            continue
+
+        # 取最後一日與前一交易日
+        i = n - 1
+        cur_dates_s = dates[i - short_window + 1: i + 1]
+        cur_dates_l = dates[i - long_window + 1: i + 1]
+        prev_dates_s = dates[i - short_window: i]
+        prev_dates_l = dates[i - long_window: i]
+
+        cs = _window_concentration(cur_dates_s, by_date_net, vol_by_date, top_n)
+        cl = _window_concentration(cur_dates_l, by_date_net, vol_by_date, top_n)
+        ps = _window_concentration(prev_dates_s, by_date_net, vol_by_date, top_n)
+        pl = _window_concentration(prev_dates_l, by_date_net, vol_by_date, top_n)
+
+        if cs > cl:
+            continue  # 已經交叉，不算「即將」
+        gap = cl - cs
+        if gap > max_gap_pct:
+            continue
+        prev_gap = pl - ps
+        narrowing = prev_gap - gap
+        if require_narrowing and narrowing <= 0:
+            continue
+
+        # 推估天數 = 目前 gap / 每日收窄速率
+        eta: float | None = None
+        if narrowing > 0:
+            raw_eta = gap / narrowing
+            eta = round(min(raw_eta, eta_cap), 1)
+
+        name = rows[0].get("stock_name") or code
+        close = close_by_date.get(dates[i]) or 0.0
+        out.append(ImminentCrossCandidate(
+            stock_code=code,
+            stock_name=name,
+            trade_date=dates[i],
+            close_price=round(close, 2),
+            conc_short=round(cs, 2),
+            conc_long=round(cl, 2),
+            gap=round(gap, 2),
+            prev_gap=round(prev_gap, 2),
+            narrowing=round(narrowing, 2),
+            eta_days=eta,
+            short_slope=round(cs - ps, 2),
+        ))
+
+    # 排序：有 eta 的按 eta 升冪，沒 eta 的按 gap 升冪排後面
+    out.sort(key=lambda c: (
+        c.eta_days is None, c.eta_days if c.eta_days is not None else c.gap))
+    return out
+
+
+def candidates_to_dicts(
+    cands: list[ImminentCrossCandidate],
+) -> list[dict]:
+    return [asdict(c) for c in cands]
+
+
+# ---------------------------------------------------------------------------
+# 三大法人連續買超 streak（給策略三搭配集中度過濾使用）
+# ---------------------------------------------------------------------------
+
+INSTI_TYPES = ("foreign", "trust", "dealer")
+INSTI_LABELS = {"foreign": "外資", "trust": "投信", "dealer": "自營"}
+
+
+def _insti_net(row: dict, type_key: str) -> int:
+    """取出指定法人在這筆 row 的當日淨買賣（張數）。
+
+    ``dealer`` = 自營商自行 + 自營商避險（市場慣例的「自營合計」）。
+    """
+    if type_key == "foreign":
+        return row.get("foreign_net") or 0
+    if type_key == "trust":
+        return row.get("trust_net") or 0
+    if type_key == "dealer":
+        return ((row.get("dealer_self_net") or 0)
+                + (row.get("dealer_hedge_net") or 0))
+    return 0
+
+
+def insti_buy_streak(rows_for_stock: list[dict], trade_date: str,
+                      type_key: str) -> int:
+    """指定法人在 trade_date 之前（含當日）連續買超的天數。
+
+    rows_for_stock 必須是同一檔股票的 InstiDailyTrade 列、依日期升冪排序。
+    嚴格要求最後一筆日期 = trade_date —— 否則代表該股當日沒法人資料，
+    回 0（不採信過時 streak）。
+
+    遇到「淨買 ≤ 0」即中斷，從尾巴往前數。
+    """
+    if not rows_for_stock:
+        return 0
+    if str(rows_for_stock[-1]["trade_date"])[:10] != trade_date:
+        return 0
+    streak = 0
+    for r in reversed(rows_for_stock):
+        if _insti_net(r, type_key) > 0:
+            streak += 1
+        else:
+            break
+    return streak

@@ -149,7 +149,8 @@ class StrategyEvalViewModel(BaseViewModel):
             total = len(codes)
             self._log(
                 f"策略：{short_window}日集中度上穿 {long_window}日集中度"
-                f"（雙正），持有 {hold_days} 個交易日，主力取前 {top_n} 家\n"
+                f"（不限正負），持有 {hold_days} 個交易日，"
+                f"主力取前 {top_n} 家\n"
             )
             self._log(f"範圍：{start_date} ~ {end_date}，"
                       f"共 {total} 檔上櫃股票\n")
