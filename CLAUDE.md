@@ -32,9 +32,11 @@ Single MSSQL database (`TSE`), four tables (DDL in `services/db_service.py`):
 - **`StockDailySummary`** — per stock per day OHLC/volume. Populated by `save_result()` (full broker download) and `save_daily_summary_batch()` (backfill from API).
 - **`BrokerDailyStats`** — per stock per day per broker buy/sell/net. The **core** of the analysis features. Populated only by `save_result()` via the scraper.
 - **`InstiDailyTrade`** — 三大法人 daily. Populated from TPEX `insti_service` and TWSE `twse_api_service.fetch_twse_insti_daily`.
-- **`StockHolderDistribution`** — TDCC 集保戶股權分散表.
+- **`StockHolderDistribution`** — TDCC 集保戶股權分散表. `level` is stored as **string** `'1'..'17'`; the 散戶/中實戶/大戶 split is **not a column**, it's a convention baked into the SQL of `get_distribution_history*`: 散戶 = levels 1–5 (< 20 張), 中實戶 = 6–11, 大戶 = 12–15. Any new feature that filters by holder type must reuse the same grouping.
 
 DB credentials are **hardcoded** in `DbService.__init__` defaults; sensitive `config.json` (Shioaji keys, stock lists) is gitignored.
+
+`strategy_eval_service.py` is **dual-purpose** — it backs both the 效益評估 tab's backtest (`detect_breakout_signals`, `summarise`) and the 策略篩選 tab's strategy 3 screening (`find_imminent_crossovers`). They live together because they share the underlying concentration math (`_aggregate_by_date` + `_window_concentration`). Add new strategies in the same file only if they reuse this math; otherwise spin up a fresh service.
 
 ## Data source landscape
 
