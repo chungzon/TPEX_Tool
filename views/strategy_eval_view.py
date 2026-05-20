@@ -69,6 +69,8 @@ class StrategyEvalView(ctk.CTkFrame):
             "集中度 = (買超前 K 家張數 − 賣超前 K 家張數) ÷ 區間成交量",
             "預設：短期 5 日、長期 15 日、持有 4 日、主力 15 家 "
             "（皆可下方自訂）",
+            "可選：籌碼過濾 — 進場訊號當週的 TDCC 集保週報，大戶持股"
+            "比例上升（籌碼向大戶集中；散戶Δ% 仍於結果表顯示供參考）",
         ]:
             ctk.CTkLabel(
                 desc_card, text="• " + line,
@@ -126,6 +128,38 @@ class StrategyEvalView(ctk.CTkFrame):
             param_row, "主力前", VM.DEFAULT_TOP_N)
         ctk.CTkLabel(param_row, text="家", font=ctk.CTkFont(size=13),
                       text_color="#c0c0c0").pack(side="left")
+
+        # Chip-dispersion filter row (大戶減 + 散戶增)
+        chip_row = ctk.CTkFrame(run_card, fg_color="transparent")
+        chip_row.pack(fill="x", padx=20, pady=(2, 6))
+        self.chip_var = ctk.BooleanVar(value=False)
+        ctk.CTkCheckBox(
+            chip_row, text="籌碼過濾：大戶持股增加",
+            variable=self.chip_var,
+            font=ctk.CTkFont(size=13),
+        ).pack(side="left", padx=(0, 8))
+        ctk.CTkLabel(chip_row, text="比較期",
+                      font=ctk.CTkFont(size=13),
+                      text_color="#c0c0c0").pack(side="left", padx=(0, 4))
+        self.chip_weeks_entry = ctk.CTkEntry(
+            chip_row, width=46, font=ctk.CTkFont(size=13), justify="center")
+        self.chip_weeks_entry.pack(side="left")
+        self.chip_weeks_entry.insert(0, "4")
+        ctk.CTkLabel(chip_row, text="週　大戶 ≥ +",
+                      font=ctk.CTkFont(size=13),
+                      text_color="#c0c0c0").pack(side="left", padx=(2, 4))
+        self.chip_big_entry = ctk.CTkEntry(
+            chip_row, width=64, font=ctk.CTkFont(size=13), justify="center")
+        self.chip_big_entry.pack(side="left")
+        self.chip_big_entry.insert(0, "0.0")
+        ctk.CTkLabel(chip_row, text="%（可填小數）　",
+                      font=ctk.CTkFont(size=13),
+                      text_color="#c0c0c0").pack(side="left")
+        ctk.CTkLabel(
+            chip_row,
+            text="（未勾 → 不套用、依賴 TDCC 集保週報資料）",
+            font=ctk.CTkFont(size=11), text_color="gray",
+        ).pack(side="left")
 
         self.error_label = ctk.CTkLabel(
             run_card, text="", font=ctk.CTkFont(size=12),
@@ -191,20 +225,23 @@ class StrategyEvalView(ctk.CTkFrame):
         tree_f = ctk.CTkFrame(tbl_card, fg_color="transparent")
         tree_f.pack(fill="both", expand=True, padx=12, pady=(0, 12))
         columns = ("date", "exit", "code", "name",
-                    "conc_s", "conc_l", "entry", "exit_p", "ret")
+                    "conc_s", "conc_l", "entry", "exit_p", "ret",
+                    "big_d", "retail_d")
         self.tree = ttk.Treeview(
             tree_f, columns=columns, show="headings",
             style="StratEval.Treeview", height=14)
         for c, txt, w, anc in [
-            ("date",   "訊號日",   90, "center"),
-            ("exit",   "出場日",   90, "center"),
-            ("code",   "代碼",     56, "center"),
-            ("name",   "名稱",     90, "w"),
-            ("conc_s", "短期%",    65, "e"),
-            ("conc_l", "長期%",    65, "e"),
-            ("entry",  "進場價",   72, "e"),
-            ("exit_p", "出場價",   72, "e"),
-            ("ret",    "報酬%",    72, "e"),
+            ("date",     "訊號日",   90, "center"),
+            ("exit",     "出場日",   90, "center"),
+            ("code",     "代碼",     56, "center"),
+            ("name",     "名稱",     90, "w"),
+            ("conc_s",   "短期%",    62, "e"),
+            ("conc_l",   "長期%",    62, "e"),
+            ("entry",    "進場價",   70, "e"),
+            ("exit_p",   "出場價",   70, "e"),
+            ("ret",      "報酬%",    70, "e"),
+            ("big_d",    "大戶Δ%",   62, "e"),
+            ("retail_d", "散戶Δ%",   62, "e"),
         ]:
             self.tree.heading(c, text=txt)
             self.tree.column(c, width=w, anchor=anc, stretch=True)
@@ -256,6 +293,9 @@ class StrategyEvalView(ctk.CTkFrame):
             long_window=self.long_entry.get(),
             hold_days=self.hold_entry.get(),
             top_n=self.topn_entry.get(),
+            chip_filter=bool(self.chip_var.get()),
+            chip_weeks=self.chip_weeks_entry.get(),
+            chip_big_gain=self.chip_big_entry.get(),
         )
 
     def _on_cancel(self):
@@ -364,6 +404,9 @@ class StrategyEvalView(ctk.CTkFrame):
             self.signal_count_label.configure(text="")
             return
         self.signal_count_label.configure(text=f"（共 {len(signals)} 筆）")
+        def _delta(v):
+            return f"{v:+.2f}" if v is not None else "—"
+
         for s in signals:
             ret = s["return_pct"]
             tag = "win" if ret > 0 else "loss"
@@ -377,6 +420,8 @@ class StrategyEvalView(ctk.CTkFrame):
                     f"{s['entry_price']:.2f}",
                     f"{s['exit_price']:.2f}",
                     f"{ret:+.2f}",
+                    _delta(s.get("chip_big_delta")),
+                    _delta(s.get("chip_retail_delta")),
                 ),
                 tags=(tag,),
             )

@@ -33,6 +33,11 @@ class StrategySignal:
     entry_price: float
     exit_price: float
     return_pct: float       # 報酬 (%)
+    # --- 籌碼面（可選；啟用 chip 過濾時填寫，否則為 None）---
+    chip_big_delta: float | None = None      # 大戶% 變化 (now − then)
+    chip_retail_delta: float | None = None   # 散戶% 變化
+    chip_latest_date: str | None = None      # 比對所用的最新週報日
+    chip_earlier_date: str | None = None     # 比對所用的較早週報日
 
 
 # ---------------------------------------------------------------------------
@@ -345,6 +350,67 @@ def _insti_net(row: dict, type_key: str) -> int:
         return ((row.get("dealer_self_net") or 0)
                 + (row.get("dealer_hedge_net") or 0))
     return 0
+
+
+def chip_change_at_date(
+    dist_history: list[dict],
+    signal_date: str,
+    lookback_weeks: int = 4,
+) -> dict | None:
+    """比對訊號日附近的 TDCC 週報，回傳大戶/散戶比例變化。
+
+    Args:
+        dist_history: 同一檔股票的週報歷史，需依日期升冪排序。
+            每筆: ``{report_date, retail_pct, big_pct}``。
+        signal_date: 'yyyy-mm-dd'。會用「≤ signal_date 的最後一份週報」
+            作為「現在」。
+        lookback_weeks: 往前看幾份週報當「之前」。
+
+    Returns:
+        ``{big_now, big_then, big_delta, retail_now, retail_then,
+        retail_delta, latest_date, earlier_date}`` 或 None
+        （週報資料不足以比對時）。
+    """
+    if not dist_history or lookback_weeks < 1:
+        return None
+    # 找 ≤ signal_date 的最後一份週報
+    latest_idx = -1
+    for i, snap in enumerate(dist_history):
+        if str(snap["report_date"])[:10] <= signal_date:
+            latest_idx = i
+        else:
+            break
+    if latest_idx < 0:
+        return None
+    earlier_idx = latest_idx - lookback_weeks
+    if earlier_idx < 0:
+        return None
+
+    latest = dist_history[latest_idx]
+    earlier = dist_history[earlier_idx]
+    return {
+        "big_now": latest["big_pct"],
+        "big_then": earlier["big_pct"],
+        "big_delta": round(latest["big_pct"] - earlier["big_pct"], 2),
+        "retail_now": latest["retail_pct"],
+        "retail_then": earlier["retail_pct"],
+        "retail_delta": round(
+            latest["retail_pct"] - earlier["retail_pct"], 2),
+        "latest_date": str(latest["report_date"])[:10],
+        "earlier_date": str(earlier["report_date"])[:10],
+    }
+
+
+def chip_concentration_passes(
+    chip_info: dict,
+    min_big_gain: float = 0.0,
+) -> bool:
+    """檢查「大戶% 上升」條件是否成立（籌碼集中於大戶）。
+
+    門檻為絕對值；例如 min_big_gain=1.0 代表大戶必須上升 ≥ 1%。
+    預設門檻為 0 → 只要 ≥ 0（大戶持股有增加或持平）就過。
+    """
+    return chip_info["big_delta"] >= abs(min_big_gain)
 
 
 def insti_buy_streak(rows_for_stock: list[dict], trade_date: str,

@@ -863,6 +863,39 @@ class DbService:
             for r in cur.fetchall()
         ]
 
+    def get_distribution_summary_for_codes(
+        self, codes: list[str],
+    ) -> dict[str, list[dict]]:
+        """Batched weekly retail/big pct snapshots for many stocks.
+
+        Returns ``{stock_code: [snapshot, ...]}`` with each snapshot dict
+        ``{report_date, retail_pct, big_pct}`` sorted ascending by date.
+        Used by chip-dispersion filters that need to compare TDCC weeks.
+        """
+        if not codes:
+            return {}
+        cur = self._cursor()
+        placeholders = ",".join(["%s"] * len(codes))
+        cur.execute(f"""
+            SELECT stock_code, report_date,
+                SUM(CASE WHEN level IN ('1','2','3','4','5')
+                    THEN pct ELSE 0 END) AS retail_pct,
+                SUM(CASE WHEN level IN ('12','13','14','15')
+                    THEN pct ELSE 0 END) AS big_pct
+            FROM StockHolderDistribution
+            WHERE stock_code IN ({placeholders})
+            GROUP BY stock_code, report_date
+            ORDER BY stock_code, report_date
+        """, tuple(codes))
+        out: dict[str, list[dict]] = {}
+        for r in cur.fetchall():
+            out.setdefault(r[0], []).append({
+                "report_date": str(r[1]),
+                "retail_pct": float(r[2]),
+                "big_pct": float(r[3]),
+            })
+        return out
+
     # -- Institutional daily trade ------------------------------------------
 
     def save_insti_daily_batch(self, rows: list) -> int:

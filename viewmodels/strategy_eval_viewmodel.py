@@ -52,6 +52,9 @@ class StrategyEvalViewModel(BaseViewModel):
         long_window: int | str | None = None,
         hold_days: int | str | None = None,
         top_n: int | str | None = None,
+        chip_filter: bool = False,
+        chip_weeks: int | str | None = None,
+        chip_big_gain: float | str | None = None,
     ) -> None:
         if self.is_running:
             return
@@ -88,6 +91,20 @@ class StrategyEvalViewModel(BaseViewModel):
             self.error_text = f"短期窗口（{sw}）必須小於長期窗口（{lw}）"
             return
 
+        # Chip-concentration filter params (only validated when enabled)
+        cw, big_gain = 4, 0.0
+        if chip_filter:
+            try:
+                cw = self._parse_pos_int(chip_weeks, 4, "比較期週數", 52)
+            except ValueError as ex:
+                self.error_text = str(ex)
+                return
+            try:
+                big_gain = self._parse_pct(chip_big_gain, 0.0, "大戶上升門檻")
+            except ValueError as ex:
+                self.error_text = str(ex)
+                return
+
         otc_codes = self._config.get("stock_codes") or []
         if not otc_codes:
             self.error_text = "尚未設定上櫃股票清單，請至「系統設定」按更新清單"
@@ -104,7 +121,8 @@ class StrategyEvalViewModel(BaseViewModel):
 
         threading.Thread(
             target=self._work,
-            args=(otc_codes, s, e, sw, lw, hd, tn),
+            args=(otc_codes, s, e, sw, lw, hd, tn,
+                   bool(chip_filter), cw, big_gain),
             daemon=True,
         ).start()
 
@@ -125,6 +143,23 @@ class StrategyEvalViewModel(BaseViewModel):
             raise ValueError(f"{name} 不能超過 {upper}")
         return n
 
+    @staticmethod
+    def _parse_pct(v, default: float, name: str,
+                    lower: float = 0.0, upper: float = 100.0) -> float:
+        """空白/None → default；否則必須是 lower..upper 的浮點數。"""
+        if v is None:
+            return default
+        raw = str(v).strip()
+        if raw == "":
+            return default
+        try:
+            n = float(raw)
+        except ValueError:
+            raise ValueError(f"{name} 必須是數字（你輸入：{raw}）")
+        if n < lower or n > upper:
+            raise ValueError(f"{name} 必須介於 {lower}–{upper}")
+        return n
+
     def cancel(self) -> None:
         self._cancel = True
 
@@ -132,10 +167,13 @@ class StrategyEvalViewModel(BaseViewModel):
 
     def _work(self, codes: list[str], start_date: str, end_date: str,
               short_window: int, long_window: int,
-              hold_days: int, top_n: int) -> None:
+              hold_days: int, top_n: int,
+              chip_filter: bool, chip_weeks: int,
+              chip_big_gain: float) -> None:
         from services.db_service import DbService
         from services.strategy_eval_service import (
             detect_breakout_signals, summarise, signals_to_dicts,
+            chip_change_at_date, chip_concentration_passes,
         )
 
         db = DbService()
@@ -152,6 +190,11 @@ class StrategyEvalViewModel(BaseViewModel):
                 f"（不限正負），持有 {hold_days} 個交易日，"
                 f"主力取前 {top_n} 家\n"
             )
+            if chip_filter:
+                self._log(
+                    f"籌碼過濾：大戶 ≥ +{chip_big_gain:g}%"
+                    f"（比對 {chip_weeks} 週前）\n"
+                )
             self._log(f"範圍：{start_date} ~ {end_date}，"
                       f"共 {total} 檔上櫃股票\n")
             self._log("─" * 44 + "\n")
@@ -188,6 +231,36 @@ class StrategyEvalViewModel(BaseViewModel):
 
                 scanned += 1
                 self._update_progress(idx, total)
+
+            # ---- 籌碼過濾（大戶減少 + 散戶增加） ----
+            chip_skipped = 0
+            if chip_filter and all_signals:
+                uniq_codes = list({s.stock_code for s in all_signals})
+                self._log(
+                    f"取得 {len(uniq_codes)} 檔的 TDCC 週報以套用籌碼過濾...\n"
+                )
+                dist_map = db.get_distribution_summary_for_codes(uniq_codes)
+                pre = len(all_signals)
+                kept: list = []
+                for s in all_signals:
+                    hist = dist_map.get(s.stock_code, [])
+                    info = chip_change_at_date(hist, s.signal_date, chip_weeks)
+                    if info is None:
+                        # 沒週報可比對 → 啟用過濾時排除
+                        chip_skipped += 1
+                        continue
+                    if not chip_concentration_passes(info, chip_big_gain):
+                        continue
+                    s.chip_big_delta = info["big_delta"]
+                    s.chip_retail_delta = info["retail_delta"]
+                    s.chip_latest_date = info["latest_date"]
+                    s.chip_earlier_date = info["earlier_date"]
+                    kept.append(s)
+                self._log(
+                    f"籌碼過濾：{pre} → {len(kept)} 筆（其中 "
+                    f"{chip_skipped} 筆缺週報資料）\n"
+                )
+                all_signals = kept
 
             # 排序：最新訊號在前
             all_signals.sort(key=lambda s: s.signal_date, reverse=True)
