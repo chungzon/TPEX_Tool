@@ -236,7 +236,7 @@ class StrategyView(ctk.CTkFrame):
             text="掃描所有個股，找出短期還沒上穿長期、但 gap 已收窄到閾值內"
                  "的候選；集中度不限正負（兩線皆負代表賣壓中即將反轉）；"
                  "依 gap 收窄速率推估距離交叉的天數；可加掛三大法人連續"
-                 "買超天數驗證「建倉」",
+                 "買超驗證「建倉」、TDCC 大戶持股增加驗證「籌碼集中」",
             font=ctk.CTkFont(size=13), text_color="gray",
             wraplength=860, justify="left",
         ).pack(anchor="w", padx=24, pady=(0, 12))
@@ -323,6 +323,38 @@ class StrategyView(ctk.CTkFrame):
         ctk.CTkLabel(
             param3c,
             text="　（三項全未勾 → 不套用法人過濾）",
+            font=ctk.CTkFont(size=12), text_color="gray",
+        ).pack(side="left")
+
+        # Param row 4: 籌碼過濾（大戶持股增加）
+        param3d = ctk.CTkFrame(card3, fg_color="transparent")
+        param3d.pack(fill="x", padx=24, pady=(2, 4))
+        self.ic_chip_var = ctk.BooleanVar(value=False)
+        ctk.CTkCheckBox(
+            param3d, text="籌碼過濾：大戶持股增加",
+            variable=self.ic_chip_var,
+            font=ctk.CTkFont(size=13),
+        ).pack(side="left", padx=(0, 8))
+        ctk.CTkLabel(param3d, text="比較期",
+                      font=ctk.CTkFont(size=13),
+                      text_color="#c0c0c0").pack(side="left", padx=(0, 4))
+        self.ic_chip_weeks_entry = ctk.CTkEntry(
+            param3d, width=46, font=ctk.CTkFont(size=13), justify="center")
+        self.ic_chip_weeks_entry.pack(side="left")
+        self.ic_chip_weeks_entry.insert(0, "4")
+        ctk.CTkLabel(param3d, text="週　大戶 ≥ +",
+                      font=ctk.CTkFont(size=13),
+                      text_color="#c0c0c0").pack(side="left", padx=(2, 4))
+        self.ic_chip_big_entry = ctk.CTkEntry(
+            param3d, width=64, font=ctk.CTkFont(size=13), justify="center")
+        self.ic_chip_big_entry.pack(side="left")
+        self.ic_chip_big_entry.insert(0, "0.0")
+        ctk.CTkLabel(param3d, text="%（可填小數）",
+                      font=ctk.CTkFont(size=13),
+                      text_color="#c0c0c0").pack(side="left")
+        ctk.CTkLabel(
+            param3d,
+            text="　（未勾 → 不套用，依賴 TDCC 集保週報資料）",
             font=ctk.CTkFont(size=12), text_color="gray",
         ).pack(side="left")
 
@@ -414,11 +446,17 @@ class StrategyView(ctk.CTkFrame):
             sel.add("dealer")
         min_days = _pi(self.ic_days_entry, 3)
 
+        chip_on = bool(self.ic_chip_var.get())
+        chip_weeks = _pi(self.ic_chip_weeks_entry, 4)
+        chip_big_gain = _pf(self.ic_chip_big_entry, 0.0)
+
         self.vm.run_imminent_cross_strategy(
             date, short_window=short_w, long_window=long_w,
             top_n=top_n, max_gap_pct=max_gap,
             require_narrowing=require_narrow,
             insti_types=sel, insti_min_days=min_days,
+            chip_filter=chip_on, chip_weeks=chip_weeks,
+            chip_big_gain=chip_big_gain,
         )
 
     # Bindings
@@ -603,7 +641,8 @@ class StrategyView(ctk.CTkFrame):
 
         columns = ("rank", "code", "name", "price",
                    "short", "long", "gap", "narrow", "eta",
-                   "foreign", "trust", "dealer")
+                   "foreign", "trust", "dealer",
+                   "big_d", "retail_d")
         tree = ttk.Treeview(
             self.ic_result_frame, columns=columns, show="headings",
             style="Strategy.Treeview", height=min(len(data), 20))
@@ -614,18 +653,21 @@ class StrategyView(ctk.CTkFrame):
             "short": "短期%", "long": "長期%", "gap": "gap%",
             "narrow": "收窄%", "eta": "預估交叉(日)",
             "foreign": "外資", "trust": "投信", "dealer": "自營",
+            "big_d": "大戶Δ%", "retail_d": "散戶Δ%",
         }
         widths = {
             "rank": 35, "code": 60, "name": 90, "price": 70,
             "short": 65, "long": 65, "gap": 55,
             "narrow": 60, "eta": 95,
             "foreign": 50, "trust": 50, "dealer": 50,
+            "big_d": 60, "retail_d": 60,
         }
         anchors = {
             "rank": "center", "code": "center", "name": "w",
             "price": "e", "short": "e", "long": "e", "gap": "e",
             "narrow": "e", "eta": "e",
             "foreign": "center", "trust": "center", "dealer": "center",
+            "big_d": "e", "retail_d": "e",
         }
 
         for c in columns:
@@ -639,6 +681,9 @@ class StrategyView(ctk.CTkFrame):
 
         def _streak_str(n):
             return f"{n}d" if n and n > 0 else "—"
+
+        def _delta(v):
+            return f"{v:+.2f}" if v is not None else "—"
 
         for i, r in enumerate(data, 1):
             eta = r.get("eta_days")
@@ -660,6 +705,8 @@ class StrategyView(ctk.CTkFrame):
                 _streak_str(r.get("foreign_streak", 0)),
                 _streak_str(r.get("trust_streak", 0)),
                 _streak_str(r.get("dealer_streak", 0)),
+                _delta(r.get("chip_big_delta")),
+                _delta(r.get("chip_retail_delta")),
             ), tags=(tag,))
 
         sb = ttk.Scrollbar(

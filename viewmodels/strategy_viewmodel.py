@@ -225,12 +225,19 @@ class StrategyViewModel(BaseViewModel):
         require_narrowing: bool = True,
         insti_types: set[str] | None = None,
         insti_min_days: int = 3,
+        chip_filter: bool = False,
+        chip_weeks: int = 4,
+        chip_big_gain: float = 0.0,
     ):
         """篩選「主力短期集中度即將上穿長期集中度」的個股。
 
         若 ``insti_types`` 非空（{'foreign','trust','dealer'} 子集），
         進一步要求被勾選的每個法人在訊號日前連續 ``insti_min_days`` 天
         淨買 > 0（建倉）。三項皆空則略過法人過濾。
+
+        若 ``chip_filter`` 為 True，比對 trade_date 當週 TDCC 週報與
+        ``chip_weeks`` 週前，要求大戶% 上升 ≥ ``chip_big_gain``。沒週報
+        資料的候選會被排除。
 
         條件、推估天數定義詳見 strategy_eval_service.find_imminent_crossovers。
         """
@@ -243,6 +250,21 @@ class StrategyViewModel(BaseViewModel):
                 f"短期窗口（{short_window}）必須小於長期窗口（{long_window}）"
             )
             return
+        if chip_filter:
+            try:
+                chip_weeks = int(chip_weeks)
+                if chip_weeks < 1 or chip_weeks > 52:
+                    raise ValueError
+            except (ValueError, TypeError):
+                self.error_text = "籌碼比較期週數需為 1–52 的整數"
+                return
+            try:
+                chip_big_gain = float(chip_big_gain)
+                if chip_big_gain < 0 or chip_big_gain > 100:
+                    raise ValueError
+            except (ValueError, TypeError):
+                self.error_text = "大戶上升門檻需為 0–100 的數字"
+                return
         if self.loading:
             return
         self.loading = True
@@ -256,6 +278,7 @@ class StrategyViewModel(BaseViewModel):
                 from datetime import datetime as _dt, timedelta
                 from services.strategy_eval_service import (
                     find_imminent_crossovers, INSTI_TYPES, insti_buy_streak,
+                    chip_change_at_date, chip_concentration_passes,
                 )
 
                 self._db.connect()
@@ -305,6 +328,14 @@ class StrategyViewModel(BaseViewModel):
                 for r in insti_rows:
                     insti_grouped[r["stock_code"]].append(r)
 
+                # --- 籌碼過濾資料（啟用時才撈） ---
+                dist_map: dict[str, list[dict]] = {}
+                if chip_filter and cands:
+                    cand_codes = list({c.stock_code for c in cands})
+                    dist_map = self._db.get_distribution_summary_for_codes(
+                        cand_codes)
+
+                chip_skipped = 0
                 result_dicts = []
                 for c in cands:
                     history = insti_grouped.get(c.stock_code, [])
@@ -314,10 +345,33 @@ class StrategyViewModel(BaseViewModel):
                     }
                     if sel and not all(streaks[t] >= min_n for t in sel):
                         continue
+
+                    # 籌碼過濾：大戶持股增加
+                    chip_info = None
+                    if chip_filter:
+                        dist_history = dist_map.get(c.stock_code, [])
+                        chip_info = chip_change_at_date(
+                            dist_history, trade_date, chip_weeks)
+                        if chip_info is None:
+                            chip_skipped += 1
+                            continue
+                        if not chip_concentration_passes(
+                                chip_info, chip_big_gain):
+                            continue
+
                     d = asdict(c)
                     d["foreign_streak"] = streaks["foreign"]
                     d["trust_streak"] = streaks["trust"]
                     d["dealer_streak"] = streaks["dealer"]
+                    # 一律附帶籌碼資料供顯示（沒撈或無資料 → None）
+                    if chip_info is not None:
+                        d["chip_big_delta"] = chip_info["big_delta"]
+                        d["chip_retail_delta"] = chip_info["retail_delta"]
+                        d["chip_latest_date"] = chip_info["latest_date"]
+                    else:
+                        d["chip_big_delta"] = None
+                        d["chip_retail_delta"] = None
+                        d["chip_latest_date"] = None
                     result_dicts.append(d)
 
                 if not result_dicts:
@@ -330,8 +384,16 @@ class StrategyViewModel(BaseViewModel):
                         labels = " + ".join(names[t] for t in INSTI_TYPES
                                             if t in sel)
                         parts.append(f"{labels} 連續買超≥{min_n}天")
+                    if chip_filter:
+                        parts.append(
+                            f"大戶≥+{chip_big_gain:g}%（比對 {chip_weeks} 週前）"
+                        )
+                    extra_note = ""
+                    if chip_filter and chip_skipped:
+                        extra_note = f"；其中 {chip_skipped} 檔缺週報"
                     self.error_text = (
-                        f"{trade_date} 無符合條件的標的（{'、'.join(parts)}）"
+                        f"{trade_date} 無符合條件的標的"
+                        f"（{'、'.join(parts)}）{extra_note}"
                     )
                 else:
                     extra = ""
@@ -340,7 +402,9 @@ class StrategyViewModel(BaseViewModel):
                                  "dealer": "自營"}
                         labels = "+".join(names[t] for t in INSTI_TYPES
                                           if t in sel)
-                        extra = f"，{labels} 連續{min_n}天+"
+                        extra += f"，{labels} 連續{min_n}天+"
+                    if chip_filter:
+                        extra += f"，大戶≥+{chip_big_gain:g}%"
                     self.status_text = (
                         f"找到 {len(result_dicts)} 檔即將黃金交叉{extra}"
                     )
