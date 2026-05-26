@@ -380,6 +380,168 @@ class StrategyView(ctk.CTkFrame):
         self.ic_result_frame.pack(fill="both", expand=True,
                                     padx=16, pady=(4, 16))
 
+        # ============================================================
+        # Strategy 4: 放空當沖標的
+        # ============================================================
+        card4 = ctk.CTkFrame(container, corner_radius=12)
+        card4.pack(padx=40, pady=8, fill="x")
+
+        ctk.CTkLabel(
+            card4, text="策略四：放空當沖標的（黑K獵手）",
+            font=ctk.CTkFont(size=16, weight="bold"),
+        ).pack(anchor="w", padx=24, pady=(20, 4))
+
+        ctk.CTkLabel(
+            card4,
+            text="高位階（基期高） + 主力近10日出貨 + 月線下彎 + 短線振幅大"
+                 "（帶寬>20）→ 黑K放空當沖候選。依位階 desc 排序，"
+                 "搭配年線乖離越大代表近期走勢越強、放空風險越高，"
+                 "故僅適合「短空」。",
+            font=ctk.CTkFont(size=13), text_color="gray",
+            wraplength=860, justify="left",
+        ).pack(anchor="w", padx=24, pady=(0, 12))
+
+        # Param row 1: date + 主10 + 帶寬 + 月斜率
+        param4a = ctk.CTkFrame(card4, fg_color="transparent")
+        param4a.pack(fill="x", padx=24, pady=4)
+        ctk.CTkLabel(param4a, text="交易日期：",
+                      font=ctk.CTkFont(size=14)).pack(side="left")
+        self.sd_date_entry = ctk.CTkEntry(
+            param4a, width=130, font=ctk.CTkFont(size=14),
+            placeholder_text="yyyy-mm-dd")
+        self.sd_date_entry.pack(side="left", padx=(4, 16))
+        self.sd_date_entry.insert(0, datetime.now().strftime("%Y-%m-%d"))
+
+        ctk.CTkLabel(param4a, text="主10 <",
+                      font=ctk.CTkFont(size=14)).pack(side="left")
+        self.sd_conc_entry = ctk.CTkEntry(
+            param4a, width=56, font=ctk.CTkFont(size=14), justify="center")
+        self.sd_conc_entry.pack(side="left", padx=(4, 2))
+        self.sd_conc_entry.insert(0, "0")
+        ctk.CTkLabel(param4a, text="%　帶寬 >",
+                      font=ctk.CTkFont(size=14)).pack(side="left")
+        self.sd_band_entry = ctk.CTkEntry(
+            param4a, width=56, font=ctk.CTkFont(size=14), justify="center")
+        self.sd_band_entry.pack(side="left", padx=(4, 2))
+        self.sd_band_entry.insert(0, "20")
+        ctk.CTkLabel(param4a, text="%　月斜率 <",
+                      font=ctk.CTkFont(size=14)).pack(side="left")
+        self.sd_slope_entry = ctk.CTkEntry(
+            param4a, width=56, font=ctk.CTkFont(size=14), justify="center")
+        self.sd_slope_entry.pack(side="left", padx=(4, 2))
+        self.sd_slope_entry.insert(0, "0")
+        ctk.CTkLabel(param4a, text="%",
+                      font=ctk.CTkFont(size=14)).pack(side="left")
+
+        # Param row 2: 位階窗口 + 年線乖離 + 主力家數
+        param4b = ctk.CTkFrame(card4, fg_color="transparent")
+        param4b.pack(fill="x", padx=24, pady=4)
+        ctk.CTkLabel(param4b, text="位階窗口",
+                      font=ctk.CTkFont(size=14)).pack(side="left")
+        self.sd_rank_entry = ctk.CTkEntry(
+            param4b, width=56, font=ctk.CTkFont(size=14), justify="center")
+        self.sd_rank_entry.pack(side="left", padx=(4, 2))
+        self.sd_rank_entry.insert(0, "60")
+        ctk.CTkLabel(param4b, text="日　",
+                      font=ctk.CTkFont(size=14)).pack(side="left")
+        self.sd_bias_use_var = ctk.BooleanVar(value=True)
+        ctk.CTkCheckBox(
+            param4b, text="年線乖離 ≥", variable=self.sd_bias_use_var,
+            font=ctk.CTkFont(size=14),
+        ).pack(side="left")
+        self.sd_bias_entry = ctk.CTkEntry(
+            param4b, width=56, font=ctk.CTkFont(size=14), justify="center")
+        self.sd_bias_entry.pack(side="left", padx=(6, 2))
+        self.sd_bias_entry.insert(0, "10")
+        ctk.CTkLabel(param4b, text="%　主力前",
+                      font=ctk.CTkFont(size=14)).pack(side="left")
+        self.sd_topn_entry = ctk.CTkEntry(
+            param4b, width=56, font=ctk.CTkFont(size=14), justify="center")
+        self.sd_topn_entry.pack(side="left", padx=(4, 2))
+        self.sd_topn_entry.insert(0, "15")
+        ctk.CTkLabel(param4b, text="家",
+                      font=ctk.CTkFont(size=14)).pack(side="left")
+        ctk.CTkLabel(
+            param4b,
+            text="　（勾選才套用；年線乖離越大 = 越強勢，MA250 資料不足者排除）",
+            font=ctk.CTkFont(size=12), text_color="gray",
+        ).pack(side="left", padx=(12, 0))
+
+        # Param row 3: 短中期 MA 乖離弱勢門檻
+        param4c = ctk.CTkFrame(card4, fg_color="transparent")
+        param4c.pack(fill="x", padx=24, pady=4)
+        self.sd_b6_use_var = ctk.BooleanVar(value=True)
+        ctk.CTkCheckBox(
+            param4c, text="周乖離(MA6) ≤", variable=self.sd_b6_use_var,
+            font=ctk.CTkFont(size=14),
+        ).pack(side="left")
+        self.sd_b6_entry = ctk.CTkEntry(
+            param4c, width=56, font=ctk.CTkFont(size=14), justify="center")
+        self.sd_b6_entry.pack(side="left", padx=(6, 2))
+        self.sd_b6_entry.insert(0, "-3")
+        ctk.CTkLabel(param4c, text="%　",
+                      font=ctk.CTkFont(size=14)).pack(side="left")
+        self.sd_b12_use_var = ctk.BooleanVar(value=True)
+        ctk.CTkCheckBox(
+            param4c, text="雙週(MA12) ≤", variable=self.sd_b12_use_var,
+            font=ctk.CTkFont(size=14),
+        ).pack(side="left")
+        self.sd_b12_entry = ctk.CTkEntry(
+            param4c, width=56, font=ctk.CTkFont(size=14), justify="center")
+        self.sd_b12_entry.pack(side="left", padx=(6, 2))
+        self.sd_b12_entry.insert(0, "-4.5")
+        ctk.CTkLabel(param4c, text="%　",
+                      font=ctk.CTkFont(size=14)).pack(side="left")
+        self.sd_b20_use_var = ctk.BooleanVar(value=True)
+        ctk.CTkCheckBox(
+            param4c, text="月線(MA20) ≤", variable=self.sd_b20_use_var,
+            font=ctk.CTkFont(size=14),
+        ).pack(side="left")
+        self.sd_b20_entry = ctk.CTkEntry(
+            param4c, width=56, font=ctk.CTkFont(size=14), justify="center")
+        self.sd_b20_entry.pack(side="left", padx=(6, 2))
+        self.sd_b20_entry.insert(0, "-7")
+        ctk.CTkLabel(param4c, text="%　",
+                      font=ctk.CTkFont(size=14)).pack(side="left")
+        self.sd_b72_use_var = ctk.BooleanVar(value=True)
+        ctk.CTkCheckBox(
+            param4c, text="季線(MA72) ≤", variable=self.sd_b72_use_var,
+            font=ctk.CTkFont(size=14),
+        ).pack(side="left")
+        self.sd_b72_entry = ctk.CTkEntry(
+            param4c, width=56, font=ctk.CTkFont(size=14), justify="center")
+        self.sd_b72_entry.pack(side="left", padx=(6, 2))
+        self.sd_b72_entry.insert(0, "-11")
+        ctk.CTkLabel(param4c, text="%",
+                      font=ctk.CTkFont(size=14)).pack(side="left")
+        ctk.CTkLabel(
+            param4c,
+            text="　（勾選才套用；負乖離越深 = 越弱勢）",
+            font=ctk.CTkFont(size=12), text_color="gray",
+        ).pack(side="left", padx=(12, 0))
+
+        btn4_row = ctk.CTkFrame(card4, fg_color="transparent")
+        btn4_row.pack(fill="x", padx=24, pady=(8, 4))
+        self.sd_run_btn = ctk.CTkButton(
+            btn4_row, text="執行篩選", width=120, height=36,
+            corner_radius=8,
+            font=ctk.CTkFont(size=14, weight="bold"),
+            fg_color="#26a69a", hover_color="#00897b",
+            command=self._on_run_sd)
+        self.sd_run_btn.pack(side="left")
+        self.sd_status_label = ctk.CTkLabel(
+            btn4_row, text="", font=ctk.CTkFont(size=13),
+            text_color="#4ECDC4")
+        self.sd_status_label.pack(side="left", padx=(12, 0))
+        self.sd_error_label = ctk.CTkLabel(
+            btn4_row, text="", font=ctk.CTkFont(size=13),
+            text_color="#FF6B6B")
+        self.sd_error_label.pack(side="left", padx=(12, 0))
+
+        self.sd_result_frame = ctk.CTkFrame(card4, fg_color="transparent")
+        self.sd_result_frame.pack(fill="both", expand=True,
+                                  padx=16, pady=(4, 16))
+
     # Events
 
     def _on_run(self):
@@ -459,6 +621,51 @@ class StrategyView(ctk.CTkFrame):
             chip_big_gain=chip_big_gain,
         )
 
+    def _on_run_sd(self):
+        """執行策略四：放空當沖標的。"""
+        self._active_strategy = 4
+        date = self.sd_date_entry.get().strip()
+
+        def _pf(entry, default):
+            try:
+                return float(entry.get().strip())
+            except ValueError:
+                return default
+
+        def _pi(entry, default):
+            try:
+                v = int(entry.get().strip())
+                return v if v > 0 else default
+            except ValueError:
+                return default
+
+        conc_max = _pf(self.sd_conc_entry, 0.0)
+        band_min = _pf(self.sd_band_entry, 20.0)
+        slope_max = _pf(self.sd_slope_entry, 0.0)
+        rank_window = _pi(self.sd_rank_entry, 60)
+        bias_min = _pf(self.sd_bias_entry, 10.0)
+        top_n = _pi(self.sd_topn_entry, 15)
+        b6 = _pf(self.sd_b6_entry, -3.0)
+        b12 = _pf(self.sd_b12_entry, -4.5)
+        b20 = _pf(self.sd_b20_entry, -7.0)
+        b72 = _pf(self.sd_b72_entry, -11.0)
+        use_bias = bool(self.sd_bias_use_var.get())
+        use_b6 = bool(self.sd_b6_use_var.get())
+        use_b12 = bool(self.sd_b12_use_var.get())
+        use_b20 = bool(self.sd_b20_use_var.get())
+        use_b72 = bool(self.sd_b72_use_var.get())
+
+        self.vm.run_short_daytrade_strategy(
+            date,
+            conc_max=conc_max, band_min=band_min, slope_max=slope_max,
+            rank_window=rank_window, bias_min=bias_min, top_n=top_n,
+            bias6_max=b6, bias12_max=b12,
+            bias20_max=b20, bias72_max=b72,
+            use_bias_min=use_bias,
+            use_bias6=use_b6, use_bias12=use_b12,
+            use_bias20=use_b20, use_bias72=use_b72,
+        )
+
     # Bindings
 
     def _bind_vm(self):
@@ -474,12 +681,15 @@ class StrategyView(ctk.CTkFrame):
                     self.run_btn.configure(state="disabled", text="篩選中...")
                 elif self._active_strategy == 2:
                     self.bb_run_btn.configure(state="disabled", text="篩選中...")
-                else:
+                elif self._active_strategy == 3:
                     self.ic_run_btn.configure(state="disabled", text="篩選中...")
+                else:
+                    self.sd_run_btn.configure(state="disabled", text="篩選中...")
             else:
                 self.run_btn.configure(state="normal", text="執行篩選")
                 self.bb_run_btn.configure(state="normal", text="執行篩選")
                 self.ic_run_btn.configure(state="normal", text="執行篩選")
+                self.sd_run_btn.configure(state="normal", text="執行篩選")
         self.after(0, _u)
 
     def _on_error(self, v):
@@ -488,8 +698,10 @@ class StrategyView(ctk.CTkFrame):
                 self.error_label.configure(text=v)
             elif self._active_strategy == 2:
                 self.bb_error_label.configure(text=v)
-            else:
+            elif self._active_strategy == 3:
                 self.ic_error_label.configure(text=v)
+            else:
+                self.sd_error_label.configure(text=v)
         self.after(0, _u)
 
     def _on_status(self, v):
@@ -498,8 +710,10 @@ class StrategyView(ctk.CTkFrame):
                 self.status_label.configure(text=v)
             elif self._active_strategy == 2:
                 self.bb_status_label.configure(text=v)
-            else:
+            elif self._active_strategy == 3:
                 self.ic_status_label.configure(text=v)
+            else:
+                self.sd_status_label.configure(text=v)
         self.after(0, _u)
 
     def _on_results(self, data):
@@ -508,8 +722,10 @@ class StrategyView(ctk.CTkFrame):
                 self._render_strategy1(data)
             elif self._active_strategy == 2:
                 self._render_strategy2(data)
-            else:
+            elif self._active_strategy == 3:
                 self._render_strategy3(data)
+            else:
+                self._render_strategy4(data)
         self.after(0, _u)
 
     def _render_strategy1(self, data):
@@ -711,6 +927,88 @@ class StrategyView(ctk.CTkFrame):
 
         sb = ttk.Scrollbar(
             self.ic_result_frame, orient="vertical", command=tree.yview)
+        tree.configure(yscrollcommand=sb.set)
+        tree.pack(side="left", fill="both", expand=True,
+                  padx=(4, 0), pady=4)
+        sb.pack(side="right", fill="y", padx=(0, 4), pady=4)
+
+    def _render_strategy4(self, data):
+        for w in self.sd_result_frame.winfo_children():
+            w.destroy()
+
+        if data is None or len(data) == 0:
+            return
+
+        _ensure_style()
+
+        columns = ("rank", "code", "name", "price",
+                   "conc10", "band", "slope", "pos", "amp",
+                   "b6", "b12", "b20", "b72", "b250")
+        tree = ttk.Treeview(
+            self.sd_result_frame, columns=columns, show="headings",
+            style="Strategy.Treeview", height=min(len(data), 20))
+
+        headings = {
+            "rank": "#", "code": "代碼", "name": "名稱",
+            "price": "收盤",
+            "conc10": "主10%", "band": "帶寬%",
+            "slope": "月斜率%", "pos": "位階",
+            "amp": "振幅%",
+            "b6": "周乖%", "b12": "雙週乖%",
+            "b20": "月乖%", "b72": "季乖%",
+            "b250": "年乖%",
+        }
+        widths = {
+            "rank": 35, "code": 60, "name": 90, "price": 70,
+            "conc10": 65, "band": 65,
+            "slope": 70, "pos": 55, "amp": 60,
+            "b6": 55, "b12": 60, "b20": 55, "b72": 55, "b250": 55,
+        }
+        anchors = {
+            "rank": "center", "code": "center", "name": "w",
+            "price": "e", "conc10": "e", "band": "e",
+            "slope": "e", "pos": "e", "amp": "e",
+            "b6": "e", "b12": "e", "b20": "e",
+            "b72": "e", "b250": "e",
+        }
+
+        for c in columns:
+            tree.heading(c, text=headings[c])
+            tree.column(c, width=widths[c], anchor=anchors[c], stretch=True)
+
+        # 位階越高越優先：高位階(>5) = 深綠（強放空候選），中段 = 灰白
+        tree.tag_configure("strong", foreground="#26a69a")
+        tree.tag_configure("mid", foreground="#80cbc4")
+        tree.tag_configure("watch", foreground="#d4d4d4")
+
+        def _bf(v):
+            return f"{v:+.2f}" if v is not None else "—"
+
+        for i, r in enumerate(data, 1):
+            pos = r.get("rank_pos", 0)
+            if pos >= 5:
+                tag = "strong"
+            elif pos >= 0:
+                tag = "mid"
+            else:
+                tag = "watch"
+            tree.insert("", "end", values=(
+                i, r["stock_code"], r["stock_name"],
+                f"{r['close_price']:,.2f}",
+                f"{r['conc_10']:+.2f}",
+                f"{r['bb_bandwidth']:.2f}",
+                f"{r['ma20_slope']:+.2f}",
+                f"{pos:+.2f}",
+                f"{r['amplitude']:.2f}",
+                _bf(r.get("ma6_bias")),
+                _bf(r.get("ma12_bias")),
+                _bf(r.get("ma20_bias")),
+                _bf(r.get("ma72_bias")),
+                _bf(r.get("ma250_bias")),
+            ), tags=(tag,))
+
+        sb = ttk.Scrollbar(
+            self.sd_result_frame, orient="vertical", command=tree.yview)
         tree.configure(yscrollcommand=sb.set)
         tree.pack(side="left", fill="both", expand=True,
                   padx=(4, 0), pady=4)

@@ -416,6 +416,130 @@ class StrategyViewModel(BaseViewModel):
 
         threading.Thread(target=_work, daemon=True).start()
 
+    def run_short_daytrade_strategy(
+        self, trade_date: str,
+        conc_max: float = 0.0,
+        band_min: float = 20.0,
+        slope_max: float = 0.0,
+        rank_window: int = 60,
+        bias_min: float = 10.0,
+        bias6_max: float = -3.0,
+        bias12_max: float = -4.5,
+        bias20_max: float = -7.0,
+        bias72_max: float = -11.0,
+        use_bias_min: bool = True,
+        use_bias6: bool = True,
+        use_bias12: bool = True,
+        use_bias20: bool = True,
+        use_bias72: bool = True,
+        main_window: int = 10,
+        top_n: int = 15,
+    ):
+        """放空當沖標的篩選：
+        主10 < conc_max、帶寬 > band_min、月線斜率 < slope_max；
+        勾選的乖離條件才套用（年線 ≥ / 周/雙週/月/季 ≤ 對應弱勢門檻），
+        依「位階」desc 排序
+        （高位階 + 主力出貨 + 月線下彎 + 帶寬大 + 短中期偏弱 = 黑K放空）。
+        """
+        trade_date = trade_date.strip()
+        if not trade_date:
+            self.error_text = "請輸入日期"
+            return
+        if self.loading:
+            return
+        self.loading = True
+        self.error_text = ""
+        self.results = None
+        self.status_text = ""
+
+        def _work():
+            try:
+                from dataclasses import asdict
+                from datetime import datetime as _dt, timedelta
+                from services.strategy_eval_service import (
+                    find_short_daytrade_candidates,
+                )
+
+                self._db.connect()
+                self._db.ensure_tables()
+
+                try:
+                    end_dt = _dt.strptime(trade_date, "%Y-%m-%d")
+                except ValueError:
+                    self.error_text = "日期格式錯誤，請用 yyyy-mm-dd"
+                    return
+
+                # 1. 分點：覆蓋 main_window 個交易日
+                broker_start = (end_dt - timedelta(days=main_window * 2 + 10)
+                                ).strftime("%Y-%m-%d")
+                broker_rows = self._db.get_broker_history_range(
+                    broker_start, trade_date)
+                if not broker_rows:
+                    self.error_text = f"{trade_date} 之前無分點資料"
+                    self.results = []
+                    return
+
+                grouped: dict[str, list[dict]] = defaultdict(list)
+                for r in broker_rows:
+                    grouped[r["stock_code"]].append(r)
+
+                # 2. 價格：覆蓋 250 交易日年線 + 緩衝（≈ 420 日曆日）
+                price_start = (end_dt - timedelta(days=420)
+                               ).strftime("%Y-%m-%d")
+                price_map = self._db.get_all_prices_range(
+                    price_start, trade_date)
+                if not price_map:
+                    self.error_text = f"{trade_date} 無價格資料"
+                    self.results = []
+                    return
+
+                cands = find_short_daytrade_candidates(
+                    grouped, price_map, trade_date,
+                    main_window=main_window, top_n=top_n,
+                    conc_max=conc_max, band_min=band_min,
+                    slope_max=slope_max, rank_window=rank_window,
+                    bias_min=bias_min,
+                    bias6_max=bias6_max, bias12_max=bias12_max,
+                    bias20_max=bias20_max, bias72_max=bias72_max,
+                    use_bias_min=use_bias_min,
+                    use_bias6=use_bias6, use_bias12=use_bias12,
+                    use_bias20=use_bias20, use_bias72=use_bias72,
+                )
+
+                result_dicts = [asdict(c) for c in cands]
+                if not result_dicts:
+                    parts = [
+                        f"主10<{conc_max:g}",
+                        f"帶寬>{band_min:g}",
+                        f"月斜率<{slope_max:g}",
+                    ]
+                    if use_bias_min:
+                        parts.append(f"年線≥{bias_min:g}%")
+                    if use_bias6:
+                        parts.append(f"周乖≤{bias6_max:g}%")
+                    if use_bias12:
+                        parts.append(f"雙週乖≤{bias12_max:g}%")
+                    if use_bias20:
+                        parts.append(f"月乖≤{bias20_max:g}%")
+                    if use_bias72:
+                        parts.append(f"季乖≤{bias72_max:g}%")
+                    self.error_text = (
+                        f"{trade_date} 無符合條件的標的（{'、'.join(parts)}）"
+                    )
+                else:
+                    self.status_text = (
+                        f"找到 {len(result_dicts)} 檔放空當沖候選"
+                    )
+                self.results = result_dicts
+            except Exception as e:
+                self.error_text = f"查詢錯誤：{e}"
+                import traceback
+                traceback.print_exc()
+            finally:
+                self.loading = False
+
+        threading.Thread(target=_work, daemon=True).start()
+
     def shutdown(self):
         try:
             self._db.close()

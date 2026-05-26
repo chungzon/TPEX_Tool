@@ -330,6 +330,250 @@ def candidates_to_dicts(
 
 
 # ---------------------------------------------------------------------------
+# Filter: 放空當沖候選（高位階 + 主力出貨 + 月線下彎 + 帶寬大）
+# ---------------------------------------------------------------------------
+
+@dataclass
+class ShortDayCandidate:
+    """放空當沖候選個股。
+
+    篩選邏輯：
+      • 主10 (10日主力集中度) < conc_max（預設 0 → 主力近10日淨賣）
+      • 帶寬 (布林通道帶寬 %) > band_min（預設 20 → 振幅大適合當沖）
+      • 月線斜率 (%) < slope_max（預設 0 → 月線下彎）
+      • 年線乖離 ≥ bias_min（預設 10% → 還在年線上方，強勢股）
+      • 周/雙週/月/季 乖離 ≤ 對應弱勢門檻（短中期偏弱 → 黑K機會）
+      • 依「位階」desc 排序（高位階 = 高基期 = 適合放空）
+    """
+    stock_code: str
+    stock_name: str
+    trade_date: str
+    close_price: float
+    conc_10: float              # 主10 (%)
+    bb_bandwidth: float         # 布林帶寬 (%)
+    ma20_slope: float           # 月線斜率 (%)
+    rank_pos: float             # 位階 [-10, +10]
+    amplitude: float            # 當日振幅 (%) = (high − low) / prev_close * 100
+    ma6_bias: float | None      # 周線乖離 (%) — 資料不足回 None
+    ma12_bias: float | None     # 雙週線乖離 (%)
+    ma20_bias: float | None     # 月線乖離 (%)
+    ma72_bias: float | None     # 季線乖離 (%)
+    ma250_bias: float | None    # 年線乖離 (%)
+
+
+def _price_metrics(
+    price_rows: list[dict],
+    bb_period: int = 20,
+    bb_k: float = 2.0,
+    rank_window: int = 60,
+    ma_long: int = 250,
+) -> dict | None:
+    """計算放空當沖所需的價格端指標。
+
+    price_rows 必須依日期升冪排序、最後一筆為 trade_date 當日。
+    需要至少 bb_period + 1 筆才能算 MA 斜率與帶寬。
+    """
+    n = len(price_rows)
+    if n < bb_period + 1:
+        return None
+
+    closes: list[float] = []
+    highs: list[float] = []
+    lows: list[float] = []
+    for p in price_rows:
+        c = _pf(p.get("close_price"))
+        h = _pf(p.get("high_price"))
+        lo = _pf(p.get("low_price"))
+        if c is None:
+            return None
+        closes.append(c)
+        highs.append(h if h is not None else 0.0)
+        lows.append(lo if lo is not None else 0.0)
+
+    today_close = closes[-1]
+    prev_close = closes[-2]
+    if today_close <= 0 or prev_close <= 0:
+        return None
+
+    # 振幅 (%)
+    today_high = highs[-1]
+    today_low = lows[-1]
+    if today_high > 0 and today_low > 0:
+        amp = (today_high - today_low) / prev_close * 100.0
+    else:
+        amp = 0.0
+
+    # 布林通道（period=bb_period, k=bb_k）— 帶寬 = (upper − lower) / mid * 100
+    win = closes[-bb_period:]
+    mid = sum(win) / bb_period
+    if mid <= 0:
+        return None
+    var = sum((x - mid) ** 2 for x in win) / bb_period
+    sd = var ** 0.5
+    bbw = (2 * bb_k * sd) / mid * 100.0
+
+    # 月線斜率 (%) = (MA20[今] − MA20[昨]) / MA20[昨] * 100
+    win_prev = closes[-bb_period - 1: -1]
+    mid_prev = sum(win_prev) / bb_period
+    slope = (mid - mid_prev) / mid_prev * 100.0 if mid_prev > 0 else 0.0
+
+    # 位階 [-10, +10] 於 rank_window 區間
+    rw = min(rank_window, n)
+    rwin = closes[-rw:]
+    hi = max(rwin)
+    lo = min(rwin)
+    if hi > lo:
+        rank_pos = (today_close - lo) / (hi - lo) * 20.0 - 10.0
+    else:
+        rank_pos = 0.0
+
+    # 各週期 MA 乖離 (%)
+    def _bias(period: int) -> float | None:
+        if n < period:
+            return None
+        ma = sum(closes[-period:]) / period
+        if ma <= 0:
+            return None
+        return (today_close - ma) / ma * 100.0
+
+    return {
+        "amp": amp, "bbw": bbw, "slope": slope,
+        "rank_pos": rank_pos,
+        "ma6_bias": _bias(6),
+        "ma12_bias": _bias(12),
+        "ma20_bias": _bias(bb_period),
+        "ma72_bias": _bias(72),
+        "ma250_bias": _bias(ma_long),
+        "today_close": today_close,
+    }
+
+
+def find_short_daytrade_candidates(
+    grouped_broker_rows: dict[str, list[dict]],
+    price_map: dict[str, list[dict]],
+    trade_date: str,
+    main_window: int = 10,
+    top_n: int = 15,
+    conc_max: float = 0.0,
+    band_min: float = 20.0,
+    slope_max: float = 0.0,
+    rank_window: int = 60,
+    bias_min: float = 10.0,
+    bias6_max: float = -3.0,
+    bias12_max: float = -4.5,
+    bias20_max: float = -7.0,
+    bias72_max: float = -11.0,
+    use_bias_min: bool = True,
+    use_bias6: bool = True,
+    use_bias12: bool = True,
+    use_bias20: bool = True,
+    use_bias72: bool = True,
+    bb_period: int = 20,
+    bb_k: float = 2.0,
+    ma_long: int = 250,
+) -> list[ShortDayCandidate]:
+    """掃所有個股，找出放空當沖候選。
+
+    Args:
+        grouped_broker_rows: {stock_code: [broker_row, ...]}，跨足夠的
+            交易日 (≥ main_window) 以便計算 10 日主力集中度。
+        price_map: {stock_code: [price_row, ...]}，依日期升冪、含 OHLC。
+        trade_date: 'yyyy-mm-dd'，當日。
+        main_window: 主力集中度窗口（預設 10 日）。
+        conc_max: 主10 上限（嚴格 <），預設 0。
+        band_min: 帶寬下限（嚴格 >），預設 20。
+        slope_max: 月線斜率上限（嚴格 <），預設 0。
+        rank_window: 位階區間（預設 60 交易日）。
+        bias_min: 年線乖離下限（≥），預設 10%。
+        bias{6,12,20,72}_max: 周/雙週/月/季 乖離上限（≤），代表「弱勢」門檻；
+            預設依市場慣例：-3 / -4.5 / -7 / -11。
+        use_bias_*: 對應乖離條件是否啟用；False 則略過該過濾，
+            該 MA 資料不足也不會剔除候選。
+
+    Returns:
+        依位階 desc 排序的候選清單。
+    """
+    out: list[ShortDayCandidate] = []
+
+    for code, price_rows in price_map.items():
+        if not price_rows:
+            continue
+        # 嚴格要求當日就是 trade_date（避免停牌的舊資料）
+        if str(price_rows[-1]["trade_date"])[:10] != trade_date:
+            continue
+
+        m = _price_metrics(
+            price_rows, bb_period=bb_period, bb_k=bb_k,
+            rank_window=rank_window, ma_long=ma_long)
+        if m is None:
+            continue
+
+        # 帶寬 & 月線斜率（屬便宜計算，先過濾）
+        if not (m["bbw"] > band_min):
+            continue
+        if not (m["slope"] < slope_max):
+            continue
+        # 年線乖離（勾選才套用；None = MA250 資料不足，啟用時視為不符）
+        if use_bias_min:
+            if m["ma250_bias"] is None or m["ma250_bias"] < bias_min:
+                continue
+        # 短中期 MA 乖離弱勢過濾（每條 MA 需勾選才套用）
+        fail_short_bias = False
+        for use, key, thr in (
+            (use_bias6, "ma6_bias", bias6_max),
+            (use_bias12, "ma12_bias", bias12_max),
+            (use_bias20, "ma20_bias", bias20_max),
+            (use_bias72, "ma72_bias", bias72_max),
+        ):
+            if not use:
+                continue
+            if m[key] is None or m[key] > thr:
+                fail_short_bias = True
+                break
+        if fail_short_bias:
+            continue
+
+        # 主10：需要分點資料
+        broker_rows = grouped_broker_rows.get(code, [])
+        if not broker_rows:
+            continue
+        dates, by_date_net, vol_by_date, _ = _aggregate_by_date(broker_rows)
+        if not dates or dates[-1] != trade_date:
+            continue
+        if len(dates) < main_window:
+            continue
+        conc_10 = _window_concentration(
+            dates[-main_window:], by_date_net, vol_by_date, top_n)
+        if not (conc_10 < conc_max):
+            continue
+
+        name = broker_rows[0].get("stock_name") or ""
+        def _r(v):
+            return round(v, 2) if v is not None else None
+
+        out.append(ShortDayCandidate(
+            stock_code=code,
+            stock_name=name,
+            trade_date=trade_date,
+            close_price=round(m["today_close"], 2),
+            conc_10=round(conc_10, 2),
+            bb_bandwidth=round(m["bbw"], 2),
+            ma20_slope=round(m["slope"], 2),
+            rank_pos=round(m["rank_pos"], 2),
+            amplitude=round(m["amp"], 2),
+            ma6_bias=_r(m["ma6_bias"]),
+            ma12_bias=_r(m["ma12_bias"]),
+            ma20_bias=_r(m["ma20_bias"]),
+            ma72_bias=_r(m["ma72_bias"]),
+            ma250_bias=_r(m["ma250_bias"]),
+        ))
+
+    # 排序：位階 desc（高基期優先）
+    out.sort(key=lambda c: c.rank_pos, reverse=True)
+    return out
+
+
+# ---------------------------------------------------------------------------
 # 三大法人連續買超 streak（給策略三搭配集中度過濾使用）
 # ---------------------------------------------------------------------------
 
