@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import threading
+
 import customtkinter as ctk
 from tkinter import ttk
 from datetime import datetime
@@ -289,6 +291,8 @@ class SignalView(ctk.CTkFrame):
             tree = ttk.Treeview(
                 self.alpha_frame, columns=columns, show="headings",
                 style="Alpha.Treeview", height=min(len(data), 20))
+            # iid -> (broker_code, broker_name) so the popup can query
+            broker_lookup: dict[str, tuple[str, str]] = {}
 
             hdrs = {
                 "rank": "#", "name": "分點", "signals": "訊號數",
@@ -322,7 +326,9 @@ class SignalView(ctk.CTkFrame):
                 else:
                     tag = "weak"
 
-                tree.insert("", "end", values=(
+                iid = f"alpha-{i}"
+                broker_lookup[iid] = (a.broker_code, a.broker_name)
+                tree.insert("", "end", iid=iid, values=(
                     i, a.broker_name, a.buy_signals,
                     a.d1_win_count,
                     f"{a.win_rate:.0%}",
@@ -333,6 +339,19 @@ class SignalView(ctk.CTkFrame):
                     f"{a.alpha_score:.3f}",
                 ), tags=(tag,))
 
+            def _on_double(event, tv=tree, lookup=broker_lookup):
+                iid = tv.identify_row(event.y)
+                if not iid:
+                    return
+                info = lookup.get(iid)
+                if not info:
+                    return
+                self._open_broker_detail(*info)
+            tree.bind("<Double-1>", _on_double)
+            tree.bind("<Return>", lambda e, tv=tree, lookup=broker_lookup:
+                      self._open_broker_detail(*lookup[tv.focus()])
+                      if tv.focus() in lookup else None)
+
             sb = ttk.Scrollbar(
                 self.alpha_frame, orient="vertical", command=tree.yview)
             tree.configure(yscrollcommand=sb.set)
@@ -341,3 +360,138 @@ class SignalView(ctk.CTkFrame):
             sb.pack(side="right", fill="y", padx=(0, 8), pady=8)
 
         self.after(0, _u)
+
+    def _open_broker_detail(self, broker_code: str, broker_name: str):
+        start = self.vm.current_hist_start
+        end = self.vm.current_trade_date
+        if not start or not end:
+            return
+
+        win = ctk.CTkToplevel(self)
+        win.title(f"{broker_name} — {start} ~ {end} 買賣明細")
+        win.geometry("820x520")
+        win.transient(self.winfo_toplevel())
+
+        header = ctk.CTkFrame(win, fg_color="transparent")
+        header.pack(fill="x", padx=16, pady=(14, 6))
+        ctk.CTkLabel(
+            header,
+            text=f"{broker_code}  {broker_name}".strip(),
+            font=ctk.CTkFont(size=16, weight="bold"),
+        ).pack(anchor="w")
+        summary_label = ctk.CTkLabel(
+            header, text=f"區間：{start} ~ {end}　載入中…",
+            font=ctk.CTkFont(size=12), text_color="#888")
+        summary_label.pack(anchor="w", pady=(2, 0))
+
+        body = ctk.CTkFrame(win, corner_radius=10)
+        body.pack(fill="both", expand=True, padx=16, pady=(6, 14))
+
+        loading_label = ctk.CTkLabel(
+            body, text="查詢中…",
+            font=ctk.CTkFont(size=13), text_color="gray")
+        loading_label.pack(pady=24)
+
+        def _populate(rows: list[dict]):
+            loading_label.destroy()
+            if not rows:
+                ctk.CTkLabel(
+                    body, text="（此分點區間內無買賣紀錄）",
+                    font=ctk.CTkFont(size=13), text_color="gray",
+                ).pack(pady=24)
+                summary_label.configure(text=f"區間：{start} ~ {end}　無資料")
+                return
+
+            _ensure_style()
+
+            cols = ("rank", "code", "name", "buy", "sell",
+                    "net", "avg_buy", "avg_sell", "pnl")
+            hdrs = {
+                "rank": "#", "code": "代碼", "name": "名稱",
+                "buy": "買進(張)", "sell": "賣出(張)",
+                "net": "淨(張)", "avg_buy": "均買價",
+                "avg_sell": "均賣價", "pnl": "損益(萬)",
+            }
+            widths = {
+                "rank": 36, "code": 60, "name": 110,
+                "buy": 70, "sell": 70, "net": 70,
+                "avg_buy": 70, "avg_sell": 70, "pnl": 100,
+            }
+            anchors = {
+                "rank": "center", "code": "center", "name": "w",
+                "buy": "e", "sell": "e", "net": "e",
+                "avg_buy": "e", "avg_sell": "e", "pnl": "e",
+            }
+
+            tv = ttk.Treeview(
+                body, columns=cols, show="headings",
+                style="Alpha.Treeview", height=min(len(rows), 18))
+            for c in cols:
+                tv.heading(c, text=hdrs[c])
+                tv.column(c, width=widths[c], anchor=anchors[c], stretch=True)
+
+            tv.tag_configure("buy", foreground="#ef5350")
+            tv.tag_configure("sell", foreground="#26a69a")
+            tv.tag_configure("flat", foreground="#888888")
+
+            total_buy_lots = 0
+            total_sell_lots = 0
+            total_pnl = 0.0
+            for i, r in enumerate(rows, 1):
+                bv = r["buy_volume"]
+                sv = r["sell_volume"]
+                nv = r["net_volume"]
+                abp = r["avg_buy_price"]
+                asp = r["avg_sell_price"]
+                buy_cost = r["buy_cost"]      # 元
+                sell_rev = r["sell_revenue"]  # 元
+
+                # PnL per user spec:
+                #   買超 (net > 0): 買進成本 - 賣出金額
+                #   賣超 (net <= 0): 賣出金額 - 買進成本
+                if nv > 0:
+                    pnl_ntd = buy_cost - sell_rev
+                else:
+                    pnl_ntd = sell_rev - buy_cost
+                total_pnl += pnl_ntd
+
+                total_buy_lots += bv // 1000
+                total_sell_lots += sv // 1000
+
+                if nv > 0:
+                    tag = "buy"
+                elif nv < 0:
+                    tag = "sell"
+                else:
+                    tag = "flat"
+
+                tv.insert("", "end", values=(
+                    i, r["stock_code"], r["stock_name"],
+                    _lots(bv), _lots(sv), _lots(nv),
+                    f"{abp:.2f}" if abp is not None else "—",
+                    f"{asp:.2f}" if asp is not None else "—",
+                    f"{pnl_ntd/10000:+,.1f}",
+                ), tags=(tag,))
+
+            sb = ttk.Scrollbar(body, orient="vertical", command=tv.yview)
+            tv.configure(yscrollcommand=sb.set)
+            tv.pack(side="left", fill="both", expand=True, padx=(8, 0), pady=8)
+            sb.pack(side="right", fill="y", padx=(0, 8), pady=8)
+
+            summary_label.configure(
+                text=(f"區間：{start} ~ {end}　共 {len(rows)} 檔　"
+                      f"總買 {_fmt(total_buy_lots)} 張 / "
+                      f"總賣 {_fmt(total_sell_lots)} 張　"
+                      f"合計損益 {total_pnl/10000:+,.1f} 萬"))
+
+        def _work():
+            try:
+                _, _, rows = self.vm.fetch_broker_trades(broker_code, broker_name)
+            except Exception as e:
+                rows = []
+                err = str(e)
+                self.after(0, lambda: summary_label.configure(
+                    text=f"查詢失敗：{err}", text_color="#FF6B6B"))
+            self.after(0, lambda: _populate(rows))
+
+        threading.Thread(target=_work, daemon=True).start()

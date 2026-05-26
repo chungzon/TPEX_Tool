@@ -26,6 +26,8 @@ class SignalViewModel(BaseViewModel):
     def __init__(self):
         super().__init__()
         self._db = DbService()
+        self.current_trade_date: str = ""
+        self.current_hist_start: str = ""
 
     def run_analysis(self, trade_date: str, lookback_days: int = 60):
         """Full pipeline: anomaly detection → alpha → clustering → composite score."""
@@ -100,6 +102,8 @@ class SignalViewModel(BaseViewModel):
 
                 self.signals = signals
                 self.branch_alphas = branch_alphas
+                self.current_trade_date = trade_date
+                self.current_hist_start = hist_start
                 self.status_text = f"完成！{len(signals)} 筆訊號"
 
             except Exception as e:
@@ -199,6 +203,24 @@ class SignalViewModel(BaseViewModel):
                 ))
 
         return all_signals
+
+    def fetch_broker_trades(
+        self, broker_code: str, broker_name: str,
+    ) -> tuple[str, str, list[dict]]:
+        """Synchronous lookup — meant to be called from a worker thread.
+
+        Returns (start_date, end_date, rows) aggregated across the same
+        history window that the analysis used. Empty dates mean no
+        analysis has been run yet.
+        """
+        end = self.current_trade_date
+        start = self.current_hist_start
+        if not end or not start:
+            return "", "", []
+        self._db.connect()
+        rows = self._db.get_broker_trades_in_range(
+            broker_code, broker_name, start, end)
+        return start, end, rows
 
     def shutdown(self):
         try:

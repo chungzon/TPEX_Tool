@@ -761,6 +761,61 @@ class DbService:
             for r in cur.fetchall()
         ]
 
+    def get_broker_trades_in_range(
+        self, broker_code: str, broker_name: str,
+        start_date: str, end_date: str,
+    ) -> list[dict]:
+        """A broker's per-stock buy/sell aggregates across a date range.
+
+        For each stock the broker touched in [start_date, end_date], returns
+        cumulative buy/sell volumes plus weighted avg prices and the realised
+        cash totals (buy_cost / sell_revenue) used to compute P/L.
+        """
+        cur = self._cursor()
+        start_date = _normalize_date(start_date)
+        end_date = _normalize_date(end_date)
+        cur.execute("""
+            SELECT b.stock_code,
+                   MAX(s.stock_name) AS stock_name,
+                   SUM(b.buy_volume)  AS buy_vol,
+                   SUM(b.sell_volume) AS sell_vol,
+                   SUM(b.buy_volume) - SUM(b.sell_volume) AS net_vol,
+                   SUM(CASE WHEN b.buy_volume > 0 AND b.avg_buy_price IS NOT NULL
+                            THEN b.avg_buy_price * b.buy_volume
+                            ELSE 0 END) AS buy_cost,
+                   SUM(CASE WHEN b.sell_volume > 0 AND b.avg_sell_price IS NOT NULL
+                            THEN b.avg_sell_price * b.sell_volume
+                            ELSE 0 END) AS sell_revenue
+            FROM BrokerDailyStats b
+            LEFT JOIN StockDailySummary s
+              ON b.stock_code = s.stock_code AND b.trade_date = s.trade_date
+            WHERE b.trade_date >= %s AND b.trade_date <= %s
+              AND b.broker_code = %s
+              AND b.broker_name = %s
+            GROUP BY b.stock_code
+            HAVING SUM(b.buy_volume) > 0 OR SUM(b.sell_volume) > 0
+            ORDER BY SUM(b.buy_volume) DESC
+        """, (start_date, end_date, broker_code, broker_name))
+        out: list[dict] = []
+        for r in cur.fetchall():
+            bv = int(r[2] or 0)
+            sv = int(r[3] or 0)
+            nv = int(r[4] or 0)
+            buy_cost = float(r[5] or 0)
+            sell_rev = float(r[6] or 0)
+            out.append({
+                "stock_code": r[0],
+                "stock_name": r[1] or "",
+                "buy_volume": bv,
+                "sell_volume": sv,
+                "net_volume": nv,
+                "avg_buy_price": (buy_cost / bv) if bv > 0 else None,
+                "avg_sell_price": (sell_rev / sv) if sv > 0 else None,
+                "buy_cost": buy_cost,
+                "sell_revenue": sell_rev,
+            })
+        return out
+
     def get_stock_prices(
         self, stock_code: str, start_date: str, end_date: str,
     ) -> list[dict]:
