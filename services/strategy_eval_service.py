@@ -574,6 +574,171 @@ def find_short_daytrade_candidates(
 
 
 # ---------------------------------------------------------------------------
+# Backtest: 策略四（放空當沖）回測
+# ---------------------------------------------------------------------------
+
+@dataclass
+class ShortDayBacktestSignal:
+    """放空當沖回測單一進場訊號 + 後續報酬。
+
+    報酬定義（放空）：
+      • 進場：訊號日收盤 (借券放空)
+      • 出場：訊號日後第 N 個交易日收盤 (回補)
+      • return_pct = (entry − exit) / entry × 100
+        — 正值代表股價下跌 → 放空獲利
+    """
+    stock_code: str
+    stock_name: str
+    signal_date: str
+    exit_date: str
+    hold_days: int
+    rank_pos: float
+    conc_10: float
+    bb_bandwidth: float
+    ma20_slope: float
+    ma20_bias: float | None
+    ma250_bias: float | None
+    entry_price: float
+    exit_price: float
+    return_pct: float
+
+
+def backtest_short_daytrade(
+    all_broker_grouped: dict[str, list[dict]],
+    all_price_map: dict[str, list[dict]],
+    trading_dates: list[str],
+    hold_days: int = 1,
+    main_window: int = 10,
+    top_n: int = 15,
+    conc_max: float = 0.0,
+    band_min: float = 20.0,
+    slope_max: float = 0.0,
+    rank_window: int = 60,
+    bias_min: float = 10.0,
+    bias6_max: float = -3.0,
+    bias12_max: float = -4.5,
+    bias20_max: float = -7.0,
+    bias72_max: float = -11.0,
+    use_bias_min: bool = True,
+    use_bias6: bool = True,
+    use_bias12: bool = True,
+    use_bias20: bool = True,
+    use_bias72: bool = True,
+    cancel_flag=None,
+    progress_cb=None,
+) -> list[ShortDayBacktestSignal]:
+    """對每個交易日跑策略四 → 收集所有訊號 → 算放空後續報酬。
+
+    Args:
+        all_broker_grouped: {stock_code: [broker_row, ...]} 跨足整個回測
+            範圍（含進場端的歷史回溯）。每筆 row 需有 trade_date / broker_name /
+            buy_volume / sell_volume / total_volume / stock_name。
+        all_price_map: {stock_code: [price_row, ...]} 同上，依日期升冪排序。
+            每筆需有 trade_date / close_price / high_price / low_price。
+        trading_dates: 要回測的交易日清單，升冪排序，僅含 [start, end] 區間
+            內的日期。
+        hold_days: 持有交易日數（D → D+N），預設 1（隔日回補）。
+        其餘策略參數同 ``find_short_daytrade_candidates``。
+        cancel_flag: 可選的 callable，回 True 即停止。
+        progress_cb: 可選的 callable(done, total)，每完成一個交易日呼叫。
+
+    Returns:
+        所有訊號的 list（依訊號日升冪排序；caller 視需要再排序）。
+    """
+    results: list[ShortDayBacktestSignal] = []
+
+    # 預建 code → {date: idx} 以便快速找 D+N 出場價
+    price_date_idx: dict[str, dict[str, int]] = {}
+    for code, prices in all_price_map.items():
+        price_date_idx[code] = {
+            str(p["trade_date"])[:10]: i for i, p in enumerate(prices)
+        }
+
+    # 每檔股票一個遊標，沿著 trading_dates 一路推進，O(N+M+D)
+    broker_ptrs: dict[str, int] = {code: 0 for code in all_broker_grouped}
+    price_ptrs: dict[str, int] = {code: 0 for code in all_price_map}
+
+    n_dates = len(trading_dates)
+    for i, D in enumerate(trading_dates):
+        if cancel_flag and cancel_flag():
+            break
+
+        # 推進 broker 遊標：把 trade_date ≤ D 的全收進來
+        grouped_D: dict[str, list[dict]] = {}
+        for code, rows in all_broker_grouped.items():
+            p = broker_ptrs[code]
+            while p < len(rows) and str(rows[p]["trade_date"])[:10] <= D:
+                p += 1
+            broker_ptrs[code] = p
+            if p > 0:
+                grouped_D[code] = rows[:p]
+
+        # 推進 price 遊標
+        price_D: dict[str, list[dict]] = {}
+        for code, prices in all_price_map.items():
+            p = price_ptrs[code]
+            while p < len(prices) and str(prices[p]["trade_date"])[:10] <= D:
+                p += 1
+            price_ptrs[code] = p
+            if p > 0:
+                price_D[code] = prices[:p]
+
+        cands = find_short_daytrade_candidates(
+            grouped_D, price_D, D,
+            main_window=main_window, top_n=top_n,
+            conc_max=conc_max, band_min=band_min,
+            slope_max=slope_max, rank_window=rank_window,
+            bias_min=bias_min,
+            bias6_max=bias6_max, bias12_max=bias12_max,
+            bias20_max=bias20_max, bias72_max=bias72_max,
+            use_bias_min=use_bias_min,
+            use_bias6=use_bias6, use_bias12=use_bias12,
+            use_bias20=use_bias20, use_bias72=use_bias72,
+        )
+
+        # 對每個候選算出場價
+        for c in cands:
+            idx_map = price_date_idx.get(c.stock_code, {})
+            D_idx = idx_map.get(D)
+            if D_idx is None:
+                continue
+            exit_idx = D_idx + hold_days
+            prices = all_price_map[c.stock_code]
+            if exit_idx >= len(prices):
+                continue  # 出場日尚未到（資料不夠）
+            exit_row = prices[exit_idx]
+            exit_price = _pf(exit_row.get("close_price"))
+            if exit_price is None or exit_price <= 0:
+                continue
+            entry_price = c.close_price
+            if entry_price <= 0:
+                continue
+            # 放空報酬：股價下跌 → 正值
+            ret = (entry_price - exit_price) / entry_price * 100.0
+            results.append(ShortDayBacktestSignal(
+                stock_code=c.stock_code,
+                stock_name=c.stock_name,
+                signal_date=D,
+                exit_date=str(exit_row["trade_date"])[:10],
+                hold_days=hold_days,
+                rank_pos=c.rank_pos,
+                conc_10=c.conc_10,
+                bb_bandwidth=c.bb_bandwidth,
+                ma20_slope=c.ma20_slope,
+                ma20_bias=c.ma20_bias,
+                ma250_bias=c.ma250_bias,
+                entry_price=round(entry_price, 2),
+                exit_price=round(exit_price, 2),
+                return_pct=round(ret, 2),
+            ))
+
+        if progress_cb:
+            progress_cb(i + 1, n_dates)
+
+    return results
+
+
+# ---------------------------------------------------------------------------
 # 三大法人連續買超 streak（給策略三搭配集中度過濾使用）
 # ---------------------------------------------------------------------------
 

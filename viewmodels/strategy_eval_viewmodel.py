@@ -27,6 +27,7 @@ class StrategyEvalViewModel(BaseViewModel):
     error_text = ObservableProperty("")
     signals_data = ObservableProperty(None)    # list[dict] | None
     summary_data = ObservableProperty(None)    # dict | None
+    eval_kind = ObservableProperty("breakout") # "breakout" | "short"
 
     # 策略參數預設值（也是 UI 預填值）
     DEFAULT_SHORT_WINDOW = 5
@@ -118,11 +119,87 @@ class StrategyEvalViewModel(BaseViewModel):
         self.summary_data = None
         self.progress = 0.0
         self.progress_text = ""
+        self.eval_kind = "breakout"
 
         threading.Thread(
             target=self._work,
             args=(otc_codes, s, e, sw, lw, hd, tn,
                    bool(chip_filter), cw, big_gain),
+            daemon=True,
+        ).start()
+
+    # ------------------------------------------------------------------
+    # 策略四：放空當沖 回測
+    # ------------------------------------------------------------------
+
+    def start_short_eval(
+        self, start_date: str, end_date: str,
+        hold_days=None,
+        conc_max=None, band_min=None, slope_max=None,
+        rank_window=None, bias_min=None, top_n=None,
+        bias6_max=None, bias12_max=None,
+        bias20_max=None, bias72_max=None,
+        use_bias_min: bool = True,
+        use_bias6: bool = True,
+        use_bias12: bool = True,
+        use_bias20: bool = True,
+        use_bias72: bool = True,
+    ) -> None:
+        if self.is_running:
+            return
+        s = (start_date or "").strip()
+        e = (end_date or "").strip()
+        if not (re.match(r"^\d{4}-\d{2}-\d{2}$", s)
+                and re.match(r"^\d{4}-\d{2}-\d{2}$", e)):
+            self.error_text = "日期格式錯誤，請用 yyyy-mm-dd"
+            return
+        try:
+            sdt = datetime.strptime(s, "%Y-%m-%d")
+            edt = datetime.strptime(e, "%Y-%m-%d")
+        except ValueError:
+            self.error_text = "日期無效"
+            return
+        if sdt > edt:
+            self.error_text = "起始日不能晚於結束日"
+            return
+
+        try:
+            hd = self._parse_pos_int(hold_days, 1, "持有日數", self._MAX_HOLD)
+            tn = self._parse_pos_int(top_n, 15, "主力家數", self._MAX_TOP_N)
+            rw = self._parse_pos_int(rank_window, 60, "位階窗口", 500)
+            cm = self._parse_signed_float(conc_max, 0.0, "主10 上限")
+            bm = self._parse_signed_float(band_min, 20.0, "帶寬下限", 0.0)
+            sm = self._parse_signed_float(slope_max, 0.0, "月斜率上限")
+            bmin = self._parse_signed_float(bias_min, 10.0, "年線乖離下限")
+            b6 = self._parse_signed_float(bias6_max, -3.0, "周乖離上限")
+            b12 = self._parse_signed_float(bias12_max, -4.5, "雙週乖離上限")
+            b20 = self._parse_signed_float(bias20_max, -7.0, "月乖離上限")
+            b72 = self._parse_signed_float(bias72_max, -11.0, "季乖離上限")
+        except ValueError as ex:
+            self.error_text = str(ex)
+            return
+
+        otc_codes = self._config.get("stock_codes") or []
+        if not otc_codes:
+            self.error_text = "尚未設定上櫃股票清單，請至「系統設定」按更新清單"
+            return
+
+        self.error_text = ""
+        self.is_running = True
+        self._cancel = False
+        self.log_text = ""
+        self.signals_data = None
+        self.summary_data = None
+        self.progress = 0.0
+        self.progress_text = ""
+        self.eval_kind = "short"
+
+        threading.Thread(
+            target=self._work_short,
+            args=(otc_codes, s, e, hd, cm, bm, sm, rw, bmin, tn,
+                  b6, b12, b20, b72,
+                  bool(use_bias_min), bool(use_bias6), bool(use_bias12),
+                  bool(use_bias20), bool(use_bias72)),
             daemon=True,
         ).start()
 
@@ -141,6 +218,23 @@ class StrategyEvalViewModel(BaseViewModel):
             raise ValueError(f"{name} 必須 ≥ 1")
         if n > upper:
             raise ValueError(f"{name} 不能超過 {upper}")
+        return n
+
+    @staticmethod
+    def _parse_signed_float(v, default: float, name: str,
+                             lower: float = -1e9, upper: float = 1e9) -> float:
+        """空白/None → default；接受負號，範圍預設不卡。"""
+        if v is None:
+            return default
+        raw = str(v).strip()
+        if raw == "":
+            return default
+        try:
+            n = float(raw)
+        except ValueError:
+            raise ValueError(f"{name} 必須是數字（你輸入：{raw}）")
+        if n < lower or n > upper:
+            raise ValueError(f"{name} 必須介於 {lower:g}–{upper:g}")
         return n
 
     @staticmethod
@@ -293,6 +387,161 @@ class StrategyEvalViewModel(BaseViewModel):
             self.status_text = f"錯誤：{e}"
             self._log(f"\n致命錯誤：{e}\n")
             log.exception("Strategy eval failed")
+        finally:
+            try:
+                db.close()
+            except Exception:
+                pass
+            self.is_running = False
+
+    # ------------------------------------------------------------------
+
+    def _work_short(self, codes: list[str], start_date: str, end_date: str,
+                     hold_days: int, conc_max: float, band_min: float,
+                     slope_max: float, rank_window: int, bias_min: float,
+                     top_n: int,
+                     bias6_max: float, bias12_max: float,
+                     bias20_max: float, bias72_max: float,
+                     use_bias_min: bool, use_bias6: bool, use_bias12: bool,
+                     use_bias20: bool, use_bias72: bool) -> None:
+        from collections import defaultdict
+        from dataclasses import asdict
+        from services.db_service import DbService
+        from services.strategy_eval_service import (
+            backtest_short_daytrade, summarise,
+        )
+
+        db = DbService()
+        try:
+            db.connect()
+            self._log("策略四（放空當沖）回測\n")
+            self._log(
+                f"持有 {hold_days} 日；主10<{conc_max:g}、"
+                f"帶寬>{band_min:g}、月斜率<{slope_max:g}\n"
+            )
+            bias_lines = []
+            if use_bias_min:
+                bias_lines.append(f"年線≥{bias_min:g}%")
+            if use_bias6:
+                bias_lines.append(f"周乖≤{bias6_max:g}%")
+            if use_bias12:
+                bias_lines.append(f"雙週乖≤{bias12_max:g}%")
+            if use_bias20:
+                bias_lines.append(f"月乖≤{bias20_max:g}%")
+            if use_bias72:
+                bias_lines.append(f"季乖≤{bias72_max:g}%")
+            if bias_lines:
+                self._log(f"乖離條件：{'、'.join(bias_lines)}\n")
+            else:
+                self._log("乖離條件：（未啟用）\n")
+            self._log(
+                f"範圍：{start_date} ~ {end_date}，共 {len(codes)} 檔上櫃股票\n"
+            )
+            self._log("─" * 44 + "\n")
+
+            # 算回溯範圍
+            sdt = datetime.strptime(start_date, "%Y-%m-%d")
+            edt = datetime.strptime(end_date, "%Y-%m-%d")
+            broker_start = (sdt - timedelta(days=20)).strftime("%Y-%m-%d")
+            price_start = (sdt - timedelta(days=420)).strftime("%Y-%m-%d")
+            # 出場端：end_date + 持有交易日 * 1.6 緩衝
+            exit_end = (edt + timedelta(days=hold_days * 2 + 7)
+                        ).strftime("%Y-%m-%d")
+
+            codes_set = set(codes)
+            name_map = db.get_stock_names(codes)
+
+            self.status_text = "載入分點歷史..."
+            broker_rows = db.get_broker_history_range(broker_start, end_date)
+            if not broker_rows:
+                self.error_text = "查無分點資料"
+                return
+            broker_grouped: dict[str, list[dict]] = defaultdict(list)
+            for r in broker_rows:
+                if r["stock_code"] in codes_set:
+                    if not r.get("stock_name"):
+                        r["stock_name"] = name_map.get(
+                            r["stock_code"], r["stock_code"])
+                    broker_grouped[r["stock_code"]].append(r)
+            self._log(
+                f"分點資料：{len(broker_rows):,} 筆 → "
+                f"{len(broker_grouped)} 檔\n"
+            )
+
+            self.status_text = "載入價格歷史..."
+            price_map_raw = db.get_all_prices_range(price_start, exit_end)
+            price_map = {c: p for c, p in price_map_raw.items()
+                         if c in codes_set}
+            if not price_map:
+                self.error_text = "查無價格資料"
+                return
+            n_price = sum(len(p) for p in price_map.values())
+            self._log(f"價格資料：{n_price:,} 筆\n")
+
+            # 算 [start, end] 內的交易日（從價格資料找）
+            all_dates = set()
+            for prices in price_map.values():
+                for p in prices:
+                    d = str(p["trade_date"])[:10]
+                    if start_date <= d <= end_date:
+                        all_dates.add(d)
+            trading_dates = sorted(all_dates)
+            self._log(f"交易日：{len(trading_dates)} 天\n")
+            self._log("─" * 44 + "\n")
+
+            if self._cancel:
+                self._log("（已取消）\n")
+                self.status_text = "已取消"
+                return
+
+            def _progress(done, total):
+                self.progress = done / total if total else 1.0
+                self.progress_text = f"{done} / {total}"
+                self.status_text = f"回測中 {done}/{total} 個交易日"
+
+            def _cancelled():
+                return self._cancel
+
+            results = backtest_short_daytrade(
+                broker_grouped, price_map, trading_dates,
+                hold_days=hold_days,
+                top_n=top_n,
+                conc_max=conc_max, band_min=band_min,
+                slope_max=slope_max, rank_window=rank_window,
+                bias_min=bias_min,
+                bias6_max=bias6_max, bias12_max=bias12_max,
+                bias20_max=bias20_max, bias72_max=bias72_max,
+                use_bias_min=use_bias_min,
+                use_bias6=use_bias6, use_bias12=use_bias12,
+                use_bias20=use_bias20, use_bias72=use_bias72,
+                cancel_flag=_cancelled, progress_cb=_progress,
+            )
+
+            results.sort(key=lambda s: s.signal_date, reverse=True)
+            summary = summarise(results)
+
+            self._log("─" * 44 + "\n")
+            self._log(
+                f"完成：訊號 {summary['count']} 筆，勝率 "
+                f"{summary['win_rate']}%，平均報酬 "
+                f"{summary['avg_return']:+.2f}%\n"
+            )
+            self._log(
+                f"最佳 {summary['best']:+.2f}%　最差 "
+                f"{summary['worst']:+.2f}%　期望值 "
+                f"{summary['expectancy']:+.2f}%\n"
+            )
+
+            self.signals_data = [asdict(s) for s in results]
+            self.summary_data = summary
+            self.status_text = (
+                "完成" if not self._cancel else "已取消"
+            )
+        except Exception as e:
+            self.error_text = str(e)
+            self.status_text = f"錯誤：{e}"
+            self._log(f"\n致命錯誤：{e}\n")
+            log.exception("Short eval failed")
         finally:
             try:
                 db.close()
