@@ -81,11 +81,15 @@ class BackfillView(ctk.CTkFrame):
                       font=ctk.CTkFont(size=14)).pack(side="left", padx=(0, 8))
         self.market_var = ctk.BooleanVar(value=True)
         self.insti_var = ctk.BooleanVar(value=True)
+        self.margin_var = ctk.BooleanVar(value=True)
         ctk.CTkCheckBox(kind_row, text="每日行情（開高低收／量）",
                          variable=self.market_var,
                          font=ctk.CTkFont(size=13)).pack(side="left", padx=4)
         ctk.CTkCheckBox(kind_row, text="三大法人",
                          variable=self.insti_var,
+                         font=ctk.CTkFont(size=13)).pack(side="left", padx=4)
+        ctk.CTkCheckBox(kind_row, text="融資融券",
+                         variable=self.margin_var,
                          font=ctk.CTkFont(size=13)).pack(side="left", padx=4)
 
         # Error label
@@ -142,6 +146,7 @@ class BackfillView(ctk.CTkFrame):
             do_twse=self.twse_var.get(),
             do_market=self.market_var.get(),
             do_insti=self.insti_var.get(),
+            do_margin=self.margin_var.get(),
         )
 
     # ---------------------------------------------------------- Bindings

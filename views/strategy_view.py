@@ -526,9 +526,9 @@ class StrategyView(ctk.CTkFrame):
         ctk.CTkLabel(
             legend4,
             text=("▼助空：隔=隔日沖大買、外N=外資連賣 N 天、自=自營大賣、"
-                  "戶+=集保戶數爆增　　"
+                  "戶+=集保戶數爆增、資追=融資逆勢追高（散戶套牢）　　"
                   "▲警訊：投=投信第一天買、大=大戶持股增加、"
-                  "戶-=集保戶數下降"),
+                  "戶-=集保戶數下降、軋=券資比≥30% 軋空風險"),
             font=ctk.CTkFont(size=11), text_color="#888",
             wraplength=860, justify="left",
         ).pack(anchor="w")
@@ -978,7 +978,7 @@ class StrategyView(ctk.CTkFrame):
             "conc10": 60, "band": 58,
             "slope": 64, "pos": 52, "amp": 56,
             "b6": 52, "b12": 56, "b20": 52, "b72": 52, "b250": 52,
-            "bear": 84, "bull": 70,
+            "bear": 100, "bull": 84,
         }
         anchors = {
             "rank": "center", "code": "center", "name": "w",
@@ -1004,8 +1004,10 @@ class StrategyView(ctk.CTkFrame):
         def _icons(sig: dict | None) -> tuple[str, str]:
             """組「助空」與「警訊」字串。
             符號定義：
-              ▼隔=隔日沖大買、▼外=外資連賣、▼自=自營大賣、▼戶+=戶數爆增
-              ▲投=投信第一天買、▲大=大戶持股增加、▲戶-=戶數下降
+              ▼隔=隔日沖大買、▼外=外資連賣、▼自=自營大賣、
+              ▼戶+=戶數爆增、▼資追=融資逆勢追高
+              ▲投=投信第一天買、▲大=大戶持股增加、
+              ▲戶-=戶數下降、▲軋=券資比≥30%軋空風險
             """
             if not sig:
                 return "", ""
@@ -1019,6 +1021,8 @@ class StrategyView(ctk.CTkFrame):
                 bear.append("自")
             if sig.get("bearish_holder_surge"):
                 bear.append("戶+")
+            if sig.get("bearish_margin_chasing"):
+                bear.append("資追")
             bull = []
             if sig.get("bullish_trust_first_buy"):
                 bull.append("投")
@@ -1026,6 +1030,8 @@ class StrategyView(ctk.CTkFrame):
                 bull.append("大")
             if sig.get("bullish_holder_drop"):
                 bull.append("戶-")
+            if sig.get("bullish_short_squeeze_risk"):
+                bull.append("軋")
             return " ".join(bear), " ".join(bull)
 
         for i, r in enumerate(data, 1):

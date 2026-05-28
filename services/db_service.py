@@ -206,6 +206,30 @@ CREATE TABLE StockHolderDistribution (
 );
 """
 
+_DDL_MARGIN_DAILY = """
+IF NOT EXISTS (
+    SELECT * FROM sys.tables WHERE name = 'MarginDailyTrade'
+)
+CREATE TABLE MarginDailyTrade (
+    id              INT IDENTITY(1,1) PRIMARY KEY,
+    stock_code      NVARCHAR(10)  NOT NULL,
+    trade_date      DATE          NOT NULL,
+    margin_buy      INT           NOT NULL DEFAULT 0,
+    margin_sell     INT           NOT NULL DEFAULT 0,
+    margin_cash     INT           NOT NULL DEFAULT 0,
+    margin_balance  INT           NOT NULL DEFAULT 0,
+    short_sell      INT           NOT NULL DEFAULT 0,
+    short_cover     INT           NOT NULL DEFAULT 0,
+    short_cash      INT           NOT NULL DEFAULT 0,
+    short_balance   INT           NOT NULL DEFAULT 0,
+    offset_volume   INT           NOT NULL DEFAULT 0,
+    created_at      DATETIME      DEFAULT GETDATE(),
+
+    CONSTRAINT UQ_MarginDaily
+        UNIQUE (stock_code, trade_date)
+);
+"""
+
 _DDL_INSTI_DAILY = """
 IF NOT EXISTS (
     SELECT * FROM sys.tables WHERE name = 'InstiDailyTrade'
@@ -304,6 +328,7 @@ class DbService:
         cur.execute(_DDL_INDEX)
         cur.execute(_DDL_HOLDER_DISTRIBUTION)
         cur.execute(_DDL_INSTI_DAILY)
+        cur.execute(_DDL_MARGIN_DAILY)
         self._conn.commit()
 
     # -- Write --------------------------------------------------------------
@@ -976,6 +1001,84 @@ class DbService:
                 "report_date": str(r[1]),
                 "retail_pct": float(r[2]),
                 "big_pct": float(r[3]),
+            })
+        return out
+
+    # -- Margin daily trade (融資融券) --------------------------------------
+
+    def save_margin_daily_batch(self, rows: list[dict]) -> int:
+        """Upsert a batch of MarginDailyTrade records.
+
+        Each row must be a dict with keys matching the MarginDailyTrade
+        columns (stock_code / trade_date / margin_* / short_* / offset_volume).
+        """
+        cur = self._cursor()
+        count = 0
+        for r in rows:
+            vals = (
+                int(r.get("margin_buy") or 0),
+                int(r.get("margin_sell") or 0),
+                int(r.get("margin_cash") or 0),
+                int(r.get("margin_balance") or 0),
+                int(r.get("short_sell") or 0),
+                int(r.get("short_cover") or 0),
+                int(r.get("short_cash") or 0),
+                int(r.get("short_balance") or 0),
+                int(r.get("offset_volume") or 0),
+            )
+            cur.execute("""
+                MERGE MarginDailyTrade AS tgt
+                USING (SELECT %s AS stock_code, %s AS trade_date) AS src
+                    ON tgt.stock_code = src.stock_code
+                   AND tgt.trade_date = src.trade_date
+                WHEN MATCHED THEN UPDATE SET
+                    margin_buy=%s, margin_sell=%s, margin_cash=%s,
+                    margin_balance=%s,
+                    short_sell=%s, short_cover=%s, short_cash=%s,
+                    short_balance=%s, offset_volume=%s
+                WHEN NOT MATCHED THEN INSERT (
+                    stock_code, trade_date,
+                    margin_buy, margin_sell, margin_cash, margin_balance,
+                    short_sell, short_cover, short_cash, short_balance,
+                    offset_volume
+                ) VALUES (%s, %s, %s,%s,%s,%s, %s,%s,%s,%s, %s);
+            """, (
+                r["stock_code"], _normalize_date(r["trade_date"]),
+                *vals,
+                r["stock_code"], _normalize_date(r["trade_date"]),
+                *vals,
+            ))
+            count += 1
+        self._conn.commit()
+        return count
+
+    def get_margin_history_range(
+        self, start_date: str, end_date: str,
+    ) -> dict[str, list[dict]]:
+        """All margin rows in a date range, grouped by stock_code (升冪)."""
+        cur = self._cursor()
+        cur.execute("""
+            SELECT stock_code, trade_date,
+                   margin_buy, margin_sell, margin_cash, margin_balance,
+                   short_sell, short_cover, short_cash, short_balance,
+                   offset_volume
+            FROM MarginDailyTrade
+            WHERE trade_date >= %s AND trade_date <= %s
+            ORDER BY stock_code, trade_date
+        """, (start_date, end_date))
+        out: dict[str, list[dict]] = {}
+        for r in cur.fetchall():
+            out.setdefault(r[0], []).append({
+                "trade_date": str(r[1]),
+                "margin_buy": r[2] or 0,
+                "margin_sell": r[3] or 0,
+                "margin_cash": r[4] or 0,
+                "margin_balance": r[5] or 0,
+                "short_sell": r[6] or 0,
+                "short_cover": r[7] or 0,
+                "short_cash": r[8] or 0,
+                "short_balance": r[9] or 0,
+                "offset_volume": r[10] or 0,
             })
         return out
 

@@ -589,9 +589,11 @@ class ShortSetupSignals:
     bearish_foreign_sell_streak: int  # 外資連賣天數（≥ min_streak 才算）
     bearish_dealer_dump: bool         # 自營當日大賣（自行+避險）
     bearish_holder_surge: bool        # 集保戶數週增加
+    bearish_margin_chasing: bool      # 融資逆勢追高（主力賣 + 融資增）
     bullish_trust_first_buy: bool     # 投信第一天買（追價警訊）
     bullish_big_pct_rising: bool      # 大戶持股增加（籌碼集中向大戶）
     bullish_holder_drop: bool         # 集保戶數週下降
+    bullish_short_squeeze_risk: bool  # 券資比 ≥ 30%（軋空風險）
 
 
 # ---- broker_tags 延後 import：strategy_eval_service 不該強制連到 broker_tags
@@ -680,6 +682,47 @@ def _dealer_dump_today(
     return net <= -min_shares
 
 
+def _margin_chasing_up(
+    margin_history: list[dict], signal_date: str,
+    lookback_days: int = 5, min_growth_pct: float = 5.0,
+) -> bool:
+    """近 N 個交易日融資餘額增加 ≥ min_growth_pct%。
+
+    margin_history：該股的融資融券歷史（升冪），需含 trade_date、margin_balance。
+    最後一筆日期必須等於 signal_date 才採信。
+    """
+    if not margin_history:
+        return False
+    if str(margin_history[-1].get("trade_date"))[:10] != signal_date:
+        return False
+    if len(margin_history) < lookback_days + 1:
+        return False
+    base = margin_history[-lookback_days - 1].get("margin_balance") or 0
+    now = margin_history[-1].get("margin_balance") or 0
+    if base <= 0:
+        return False
+    return (now - base) / base * 100.0 >= min_growth_pct
+
+
+def _short_squeeze_ratio(
+    margin_history: list[dict], signal_date: str,
+    ratio_min: float = 30.0,
+) -> bool:
+    """當日券資比 ≥ ratio_min %。
+    券資比 = short_balance / margin_balance × 100。
+    """
+    if not margin_history:
+        return False
+    if str(margin_history[-1].get("trade_date"))[:10] != signal_date:
+        return False
+    r = margin_history[-1]
+    margin = r.get("margin_balance") or 0
+    short = r.get("short_balance") or 0
+    if margin <= 0:
+        return False
+    return (short / margin * 100.0) >= ratio_min
+
+
 def _holder_count_change_pct(
     holder_count_history: list[dict], signal_date: str,
     lookback_weeks: int = 1,
@@ -710,6 +753,7 @@ def compute_short_setup_signals(
     holder_pct_history: list[dict],
     holder_count_history: list[dict],
     signal_date: str,
+    margin_history: list[dict] | None = None,
     *,
     next_flip_share_min: float = 2.0,
     foreign_sell_min_streak: int = 3,
@@ -719,6 +763,9 @@ def compute_short_setup_signals(
     holder_drop_pct: float = 0.5,
     big_rising_pct: float = 0.0,
     big_rising_weeks: int = 4,
+    margin_chase_days: int = 5,
+    margin_chase_pct: float = 5.0,
+    short_squeeze_ratio_min: float = 30.0,
 ) -> ShortSetupSignals:
     """計算放空輔助訊號。
 
@@ -752,6 +799,7 @@ def compute_short_setup_signals(
                   and chip_info["big_delta"] >= big_rising_pct
                   and chip_info["big_delta"] > 0)
 
+    margin = margin_history or []
     return ShortSetupSignals(
         bearish_next_flip_buy=_bearish_next_flip_buy(
             broker_rows, signal_date, next_flip_share_min),
@@ -760,10 +808,14 @@ def compute_short_setup_signals(
         bearish_dealer_dump=_dealer_dump_today(
             insti_history, signal_date, dealer_dump_shares_min),
         bearish_holder_surge=holder_surge,
+        bearish_margin_chasing=_margin_chasing_up(
+            margin, signal_date, margin_chase_days, margin_chase_pct),
         bullish_trust_first_buy=_trust_first_buy(
             insti_history, signal_date, trust_first_buy_lookback),
         bullish_big_pct_rising=big_rising,
         bullish_holder_drop=holder_drop,
+        bullish_short_squeeze_risk=_short_squeeze_ratio(
+            margin, signal_date, short_squeeze_ratio_min),
     )
 
 

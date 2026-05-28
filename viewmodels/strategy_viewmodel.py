@@ -528,6 +528,15 @@ class StrategyViewModel(BaseViewModel):
                     holder_map = self._db.get_holder_count_history_for_codes(
                         cand_codes)
 
+                    # 融資融券（近 10 交易日；用於散戶追高 & 券資比警訊）
+                    margin_start = (end_dt - timedelta(days=20)
+                                    ).strftime("%Y-%m-%d")
+                    margin_map_all = self._db.get_margin_history_range(
+                        margin_start, trade_date)
+                    margin_map = {c: rows
+                                  for c, rows in margin_map_all.items()
+                                  if c in set(cand_codes)}
+
                     enriched: list[dict] = []
                     for c in cands:
                         sig = compute_short_setup_signals(
@@ -536,6 +545,7 @@ class StrategyViewModel(BaseViewModel):
                             pct_map.get(c.stock_code, []),
                             holder_map.get(c.stock_code, []),
                             trade_date,
+                            margin_history=margin_map.get(c.stock_code, []),
                         )
                         d = _asdict(c)
                         d["signals"] = _asdict(sig)

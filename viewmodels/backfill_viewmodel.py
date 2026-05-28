@@ -27,7 +27,8 @@ class BackfillViewModel(BaseViewModel):
     error_text = ObservableProperty("")
 
     def start_backfill(self, date_str: str, do_otc: bool, do_twse: bool,
-                       do_market: bool, do_insti: bool) -> None:
+                       do_market: bool, do_insti: bool,
+                       do_margin: bool = False) -> None:
         """驗證輸入後在背景執行緒補抓資料。"""
         if self.is_running:
             return
@@ -47,8 +48,10 @@ class BackfillViewModel(BaseViewModel):
         if not (do_otc or do_twse):
             self.error_text = "請至少勾選一個市場（上市／上櫃）"
             return
-        if not (do_market or do_insti):
-            self.error_text = "請至少勾選一種資料（每日行情／三大法人）"
+        if not (do_market or do_insti or do_margin):
+            self.error_text = (
+                "請至少勾選一種資料（每日行情／三大法人／融資融券）"
+            )
             return
 
         self.error_text = ""
@@ -61,14 +64,14 @@ class BackfillViewModel(BaseViewModel):
 
         threading.Thread(
             target=self._work,
-            args=(date_str, do_otc, do_twse, do_market, do_insti),
+            args=(date_str, do_otc, do_twse, do_market, do_insti, do_margin),
             daemon=True,
         ).start()
 
     # ------------------------------------------------------------------
 
     def _work(self, date_str: str, do_otc: bool, do_twse: bool,
-              do_market: bool, do_insti: bool) -> None:
+              do_market: bool, do_insti: bool, do_margin: bool = False) -> None:
         from services.db_service import DbService
 
         tasks: list[tuple[str, callable]] = []
@@ -80,6 +83,10 @@ class BackfillViewModel(BaseViewModel):
             tasks.append(("上櫃三大法人", self._fill_otc_insti))
         if do_insti and do_twse:
             tasks.append(("上市三大法人", self._fill_twse_insti))
+        if do_margin and do_otc:
+            tasks.append(("上櫃融資融券", self._fill_otc_margin))
+        if do_margin and do_twse:
+            tasks.append(("上市融資融券", self._fill_twse_margin))
 
         db = DbService()
         total = len(tasks)
@@ -169,6 +176,24 @@ class BackfillViewModel(BaseViewModel):
         note = self._date_note(objs[0].trade_date, date_str)
         saved = db.save_insti_daily_batch(objs)
         return saved, len(objs), note
+
+    def _fill_otc_margin(self, db, date_str: str):
+        from services.margin_service import fetch_otc_margin
+        rows = fetch_otc_margin(date_str)
+        if not rows:
+            return 0, 0, "無資料（可能非交易日）"
+        note = self._date_note(rows[0]["trade_date"], date_str)
+        saved = db.save_margin_daily_batch(rows)
+        return saved, len(rows), note
+
+    def _fill_twse_margin(self, db, date_str: str):
+        from services.margin_service import fetch_twse_margin
+        rows = fetch_twse_margin(date_str)
+        if not rows:
+            return 0, 0, "無資料（可能非交易日）"
+        note = self._date_note(rows[0]["trade_date"], date_str)
+        saved = db.save_margin_daily_batch(rows)
+        return saved, len(rows), note
 
     # ------------------------------------------------------------------
 
