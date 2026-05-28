@@ -506,7 +506,44 @@ class StrategyViewModel(BaseViewModel):
                     use_bias20=use_bias20, use_bias72=use_bias72,
                 )
 
-                result_dicts = [asdict(c) for c in cands]
+                # 取得候選的 insti + TDCC 資料以計算助空/警訊 icon
+                if cands:
+                    self.status_text = "計算輔助訊號..."
+                    from services.strategy_eval_service import (
+                        compute_short_setup_signals,
+                    )
+                    from dataclasses import asdict as _asdict
+
+                    cand_codes = list({c.stock_code for c in cands})
+                    insti_start = (end_dt - timedelta(days=20)
+                                   ).strftime("%Y-%m-%d")
+                    insti_rows = self._db.get_insti_history_range(
+                        insti_start, trade_date)
+                    insti_grouped: dict[str, list[dict]] = defaultdict(list)
+                    for r in insti_rows:
+                        insti_grouped[r["stock_code"]].append(r)
+
+                    pct_map = self._db.get_distribution_summary_for_codes(
+                        cand_codes)
+                    holder_map = self._db.get_holder_count_history_for_codes(
+                        cand_codes)
+
+                    enriched: list[dict] = []
+                    for c in cands:
+                        sig = compute_short_setup_signals(
+                            grouped.get(c.stock_code, []),
+                            insti_grouped.get(c.stock_code, []),
+                            pct_map.get(c.stock_code, []),
+                            holder_map.get(c.stock_code, []),
+                            trade_date,
+                        )
+                        d = _asdict(c)
+                        d["signals"] = _asdict(sig)
+                        enriched.append(d)
+                    result_dicts = enriched
+                else:
+                    result_dicts = []
+
                 if not result_dicts:
                     parts = [
                         f"主10<{conc_max:g}",

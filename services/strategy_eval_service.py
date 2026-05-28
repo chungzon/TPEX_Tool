@@ -574,6 +574,200 @@ def find_short_daytrade_candidates(
 
 
 # ---------------------------------------------------------------------------
+# 放空候選的輔助訊號（icon 用）
+# ---------------------------------------------------------------------------
+
+
+@dataclass
+class ShortSetupSignals:
+    """放空候選的輔助訊號 — 顯示於策略四結果表的圖示欄。
+
+    bearish_*：助空訊號（放空可能性 ↑）
+    bullish_*：反向警訊（放空可能性 ↓，可能被反彈軋到）
+    """
+    bearish_next_flip_buy: bool       # 隔日沖分點當日大買進場
+    bearish_foreign_sell_streak: int  # 外資連賣天數（≥ min_streak 才算）
+    bearish_dealer_dump: bool         # 自營當日大賣（自行+避險）
+    bearish_holder_surge: bool        # 集保戶數週增加
+    bullish_trust_first_buy: bool     # 投信第一天買（追價警訊）
+    bullish_big_pct_rising: bool      # 大戶持股增加（籌碼集中向大戶）
+    bullish_holder_drop: bool         # 集保戶數週下降
+
+
+# ---- broker_tags 延後 import：strategy_eval_service 不該強制連到 broker_tags
+#      若 import 失敗（極不常見），全部隔日沖判斷會回 False，不影響主流程 ----
+try:
+    from services.broker_tags import TAG_NEXT, get_broker_tags
+    _HAS_BROKER_TAGS = True
+except Exception:  # pragma: no cover
+    _HAS_BROKER_TAGS = False
+    TAG_NEXT = ""
+    def get_broker_tags(_name):  # type: ignore
+        return []
+
+
+def _bearish_next_flip_buy(
+    broker_rows: list[dict], signal_date: str,
+    vol_share_min: float,
+) -> bool:
+    """隔日沖分點當日淨買 / 成交量 ≥ vol_share_min%。"""
+    if not _HAS_BROKER_TAGS:
+        return False
+    total_vol = 0
+    next_net = 0
+    for r in broker_rows:
+        if str(r.get("trade_date"))[:10] != signal_date:
+            continue
+        tv = r.get("total_volume") or 0
+        if tv > total_vol:
+            total_vol = tv
+        if TAG_NEXT in get_broker_tags(r.get("broker_name") or ""):
+            bv = r.get("buy_volume") or 0
+            sv = r.get("sell_volume") or 0
+            next_net += bv - sv
+    if total_vol <= 0 or next_net <= 0:
+        return False
+    return (next_net / total_vol * 100.0) >= vol_share_min
+
+
+def _foreign_sell_streak(
+    insti_history: list[dict], signal_date: str,
+) -> int:
+    """外資在 signal_date（含當日）之前連續 net < 0 的天數。
+    insti_history 升冪；最後一筆必須等於 signal_date 才採信。"""
+    if not insti_history:
+        return 0
+    if str(insti_history[-1].get("trade_date"))[:10] != signal_date:
+        return 0
+    streak = 0
+    for r in reversed(insti_history):
+        if (r.get("foreign_net") or 0) < 0:
+            streak += 1
+        else:
+            break
+    return streak
+
+
+def _trust_first_buy(
+    insti_history: list[dict], signal_date: str, lookback: int,
+) -> bool:
+    """投信當日 net > 0，且前 lookback 個交易日的 net 都 ≤ 0。"""
+    if not insti_history:
+        return False
+    if str(insti_history[-1].get("trade_date"))[:10] != signal_date:
+        return False
+    if (insti_history[-1].get("trust_net") or 0) <= 0:
+        return False
+    prev = insti_history[-lookback - 1: -1]
+    if len(prev) < lookback:
+        return False  # 資料不足，不主張「第一天」
+    for r in prev:
+        if (r.get("trust_net") or 0) > 0:
+            return False
+    return True
+
+
+def _dealer_dump_today(
+    insti_history: list[dict], signal_date: str, min_shares: int,
+) -> bool:
+    """自營（自行 + 避險）當日合計淨賣 ≥ min_shares 股。"""
+    if not insti_history:
+        return False
+    if str(insti_history[-1].get("trade_date"))[:10] != signal_date:
+        return False
+    r = insti_history[-1]
+    net = (r.get("dealer_self_net") or 0) + (r.get("dealer_hedge_net") or 0)
+    return net <= -min_shares
+
+
+def _holder_count_change_pct(
+    holder_count_history: list[dict], signal_date: str,
+    lookback_weeks: int = 1,
+) -> float | None:
+    """近 lookback_weeks 週的戶數變化 (%)。資料不足回 None。"""
+    if not holder_count_history:
+        return None
+    latest_idx = -1
+    for i, h in enumerate(holder_count_history):
+        if str(h.get("report_date"))[:10] <= signal_date:
+            latest_idx = i
+        else:
+            break
+    earlier_idx = latest_idx - lookback_weeks
+    if latest_idx < 1 or earlier_idx < 0:
+        return None
+    latest = holder_count_history[latest_idx]
+    earlier = holder_count_history[earlier_idx]
+    base = earlier.get("total_holders") or 0
+    if base <= 0:
+        return None
+    return (latest["total_holders"] - base) / base * 100.0
+
+
+def compute_short_setup_signals(
+    broker_rows: list[dict],
+    insti_history: list[dict],
+    holder_pct_history: list[dict],
+    holder_count_history: list[dict],
+    signal_date: str,
+    *,
+    next_flip_share_min: float = 2.0,
+    foreign_sell_min_streak: int = 3,
+    trust_first_buy_lookback: int = 5,
+    dealer_dump_shares_min: int = 200_000,
+    holder_surge_pct: float = 1.0,
+    holder_drop_pct: float = 0.5,
+    big_rising_pct: float = 0.0,
+    big_rising_weeks: int = 4,
+) -> ShortSetupSignals:
+    """計算放空輔助訊號。
+
+    Args:
+        broker_rows: 該股的 broker 歷史（含 signal_date 當日）。
+        insti_history: 該股的 InstiDailyTrade 升冪。
+        holder_pct_history: 該股的 TDCC 週報（升冪），含 retail_pct / big_pct。
+        holder_count_history: 該股的 TDCC 戶數總和週報（升冪），含 total_holders。
+        signal_date: 'yyyy-mm-dd'。
+        next_flip_share_min: 隔日沖分點淨買佔成交量 ≥ X%。
+        foreign_sell_min_streak: 外資連賣 ≥ N 天才算助空。
+        trust_first_buy_lookback: 投信第一天買要求前 N 天皆 ≤ 0。
+        dealer_dump_shares_min: 自營單日合計淨賣 ≥ N 股（200,000 股 = 200 張）。
+        holder_surge_pct: 戶數週變化 ≥ +X% 算助空（爆增）。
+        holder_drop_pct: 戶數週變化 ≤ −X% 算反向警訊（穩定）。
+        big_rising_pct: 大戶比例上升門檻；搭配 big_rising_weeks 比對。
+        big_rising_weeks: 大戶比例比對的週期。
+    """
+    foreign_streak = _foreign_sell_streak(insti_history, signal_date)
+
+    # 戶數變化（一次取，雙向判斷）
+    hc_change = _holder_count_change_pct(
+        holder_count_history, signal_date, lookback_weeks=1)
+    holder_surge = hc_change is not None and hc_change >= holder_surge_pct
+    holder_drop = hc_change is not None and hc_change <= -abs(holder_drop_pct)
+
+    # 大戶比例上升（沿用既有 chip_change_at_date）
+    chip_info = chip_change_at_date(
+        holder_pct_history, signal_date, big_rising_weeks)
+    big_rising = (chip_info is not None
+                  and chip_info["big_delta"] >= big_rising_pct
+                  and chip_info["big_delta"] > 0)
+
+    return ShortSetupSignals(
+        bearish_next_flip_buy=_bearish_next_flip_buy(
+            broker_rows, signal_date, next_flip_share_min),
+        bearish_foreign_sell_streak=(
+            foreign_streak if foreign_streak >= foreign_sell_min_streak else 0),
+        bearish_dealer_dump=_dealer_dump_today(
+            insti_history, signal_date, dealer_dump_shares_min),
+        bearish_holder_surge=holder_surge,
+        bullish_trust_first_buy=_trust_first_buy(
+            insti_history, signal_date, trust_first_buy_lookback),
+        bullish_big_pct_rising=big_rising,
+        bullish_holder_drop=holder_drop,
+    )
+
+
+# ---------------------------------------------------------------------------
 # Backtest: 策略四（放空當沖）回測
 # ---------------------------------------------------------------------------
 

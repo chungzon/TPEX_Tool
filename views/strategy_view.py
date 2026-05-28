@@ -520,6 +520,19 @@ class StrategyView(ctk.CTkFrame):
             font=ctk.CTkFont(size=12), text_color="gray",
         ).pack(side="left", padx=(12, 0))
 
+        # Legend：助空 / 警訊 圖示說明
+        legend4 = ctk.CTkFrame(card4, fg_color="transparent")
+        legend4.pack(fill="x", padx=24, pady=(2, 4))
+        ctk.CTkLabel(
+            legend4,
+            text=("▼助空：隔=隔日沖大買、外N=外資連賣 N 天、自=自營大賣、"
+                  "戶+=集保戶數爆增　　"
+                  "▲警訊：投=投信第一天買、大=大戶持股增加、"
+                  "戶-=集保戶數下降"),
+            font=ctk.CTkFont(size=11), text_color="#888",
+            wraplength=860, justify="left",
+        ).pack(anchor="w")
+
         btn4_row = ctk.CTkFrame(card4, fg_color="transparent")
         btn4_row.pack(fill="x", padx=24, pady=(8, 4))
         self.sd_run_btn = ctk.CTkButton(
@@ -943,7 +956,8 @@ class StrategyView(ctk.CTkFrame):
 
         columns = ("rank", "code", "name", "price",
                    "conc10", "band", "slope", "pos", "amp",
-                   "b6", "b12", "b20", "b72", "b250")
+                   "b6", "b12", "b20", "b72", "b250",
+                   "bear", "bull")
         tree = ttk.Treeview(
             self.sd_result_frame, columns=columns, show="headings",
             style="Strategy.Treeview", height=min(len(data), 20))
@@ -957,12 +971,14 @@ class StrategyView(ctk.CTkFrame):
             "b6": "周乖%", "b12": "雙週乖%",
             "b20": "月乖%", "b72": "季乖%",
             "b250": "年乖%",
+            "bear": "▼助空", "bull": "▲警訊",
         }
         widths = {
-            "rank": 35, "code": 60, "name": 90, "price": 70,
-            "conc10": 65, "band": 65,
-            "slope": 70, "pos": 55, "amp": 60,
-            "b6": 55, "b12": 60, "b20": 55, "b72": 55, "b250": 55,
+            "rank": 32, "code": 56, "name": 80, "price": 62,
+            "conc10": 60, "band": 58,
+            "slope": 64, "pos": 52, "amp": 56,
+            "b6": 52, "b12": 56, "b20": 52, "b72": 52, "b250": 52,
+            "bear": 84, "bull": 70,
         }
         anchors = {
             "rank": "center", "code": "center", "name": "w",
@@ -970,6 +986,7 @@ class StrategyView(ctk.CTkFrame):
             "slope": "e", "pos": "e", "amp": "e",
             "b6": "e", "b12": "e", "b20": "e",
             "b72": "e", "b250": "e",
+            "bear": "center", "bull": "center",
         }
 
         for c in columns:
@@ -984,6 +1001,33 @@ class StrategyView(ctk.CTkFrame):
         def _bf(v):
             return f"{v:+.2f}" if v is not None else "—"
 
+        def _icons(sig: dict | None) -> tuple[str, str]:
+            """組「助空」與「警訊」字串。
+            符號定義：
+              ▼隔=隔日沖大買、▼外=外資連賣、▼自=自營大賣、▼戶+=戶數爆增
+              ▲投=投信第一天買、▲大=大戶持股增加、▲戶-=戶數下降
+            """
+            if not sig:
+                return "", ""
+            bear = []
+            if sig.get("bearish_next_flip_buy"):
+                bear.append("隔")
+            fss = sig.get("bearish_foreign_sell_streak") or 0
+            if fss > 0:
+                bear.append(f"外{fss}")
+            if sig.get("bearish_dealer_dump"):
+                bear.append("自")
+            if sig.get("bearish_holder_surge"):
+                bear.append("戶+")
+            bull = []
+            if sig.get("bullish_trust_first_buy"):
+                bull.append("投")
+            if sig.get("bullish_big_pct_rising"):
+                bull.append("大")
+            if sig.get("bullish_holder_drop"):
+                bull.append("戶-")
+            return " ".join(bear), " ".join(bull)
+
         for i, r in enumerate(data, 1):
             pos = r.get("rank_pos", 0)
             if pos >= 5:
@@ -992,6 +1036,7 @@ class StrategyView(ctk.CTkFrame):
                 tag = "mid"
             else:
                 tag = "watch"
+            bear_txt, bull_txt = _icons(r.get("signals"))
             tree.insert("", "end", values=(
                 i, r["stock_code"], r["stock_name"],
                 f"{r['close_price']:,.2f}",
@@ -1005,6 +1050,7 @@ class StrategyView(ctk.CTkFrame):
                 _bf(r.get("ma20_bias")),
                 _bf(r.get("ma72_bias")),
                 _bf(r.get("ma250_bias")),
+                bear_txt, bull_txt,
             ), tags=(tag,))
 
         sb = ttk.Scrollbar(

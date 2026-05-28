@@ -918,6 +918,34 @@ class DbService:
             for r in cur.fetchall()
         ]
 
+    def get_holder_count_history_for_codes(
+        self, codes: list[str],
+    ) -> dict[str, list[dict]]:
+        """Batched weekly total holder count per stock (TDCC 集保戶數).
+
+        Returns ``{stock_code: [{report_date, total_holders}, ...]}`` sorted
+        ascending by date. ``total_holders`` is SUM(holders) across all 17
+        levels for that report week.
+        """
+        if not codes:
+            return {}
+        cur = self._cursor()
+        placeholders = ",".join(["%s"] * len(codes))
+        cur.execute(f"""
+            SELECT stock_code, report_date, SUM(holders) AS total_holders
+            FROM StockHolderDistribution
+            WHERE stock_code IN ({placeholders})
+            GROUP BY stock_code, report_date
+            ORDER BY stock_code, report_date
+        """, tuple(codes))
+        out: dict[str, list[dict]] = {}
+        for r in cur.fetchall():
+            out.setdefault(r[0], []).append({
+                "report_date": str(r[1]),
+                "total_holders": int(r[2] or 0),
+            })
+        return out
+
     def get_distribution_summary_for_codes(
         self, codes: list[str],
     ) -> dict[str, list[dict]]:
