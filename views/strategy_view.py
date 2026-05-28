@@ -51,6 +51,8 @@ class StrategyView(ctk.CTkFrame):
         self.vm = viewmodel
         self._tree: ttk.Treeview | None = None
         self._active_strategy = 1
+        # 策略四：快取上一次結果以便 icon checkbox 切換時即時重繪
+        self._sd_last_data: list | None = None
         self._build_ui()
         self._bind_vm()
 
@@ -444,7 +446,8 @@ class StrategyView(ctk.CTkFrame):
         self.sd_rank_entry.insert(0, "60")
         ctk.CTkLabel(param4b, text="日　",
                       font=ctk.CTkFont(size=14)).pack(side="left")
-        self.sd_bias_use_var = ctk.BooleanVar(value=True)
+        # 乖離條件預設僅勾雙週(MA12)，其餘需手動勾
+        self.sd_bias_use_var = ctk.BooleanVar(value=False)
         ctk.CTkCheckBox(
             param4b, text="年線乖離 ≥", variable=self.sd_bias_use_var,
             font=ctk.CTkFont(size=14),
@@ -470,7 +473,7 @@ class StrategyView(ctk.CTkFrame):
         # Param row 3: 短中期 MA 乖離弱勢門檻
         param4c = ctk.CTkFrame(card4, fg_color="transparent")
         param4c.pack(fill="x", padx=24, pady=4)
-        self.sd_b6_use_var = ctk.BooleanVar(value=True)
+        self.sd_b6_use_var = ctk.BooleanVar(value=False)
         ctk.CTkCheckBox(
             param4c, text="周乖離(MA6) ≤", variable=self.sd_b6_use_var,
             font=ctk.CTkFont(size=14),
@@ -492,7 +495,7 @@ class StrategyView(ctk.CTkFrame):
         self.sd_b12_entry.insert(0, "-4.5")
         ctk.CTkLabel(param4c, text="%　",
                       font=ctk.CTkFont(size=14)).pack(side="left")
-        self.sd_b20_use_var = ctk.BooleanVar(value=True)
+        self.sd_b20_use_var = ctk.BooleanVar(value=False)
         ctk.CTkCheckBox(
             param4c, text="月線(MA20) ≤", variable=self.sd_b20_use_var,
             font=ctk.CTkFont(size=14),
@@ -503,7 +506,7 @@ class StrategyView(ctk.CTkFrame):
         self.sd_b20_entry.insert(0, "-7")
         ctk.CTkLabel(param4c, text="%　",
                       font=ctk.CTkFont(size=14)).pack(side="left")
-        self.sd_b72_use_var = ctk.BooleanVar(value=True)
+        self.sd_b72_use_var = ctk.BooleanVar(value=False)
         ctk.CTkCheckBox(
             param4c, text="季線(MA72) ≤", variable=self.sd_b72_use_var,
             font=ctk.CTkFont(size=14),
@@ -520,45 +523,79 @@ class StrategyView(ctk.CTkFrame):
             font=ctk.CTkFont(size=12), text_color="gray",
         ).pack(side="left", padx=(12, 0))
 
-        # Param row 4: 訊號門檻
+        # Param row 4: 訊號門檻（勾選 = 該訊號 icon 會顯示在列表上）
+        # 不是過濾條件 — 候選列表不會因此被剔除，只控制 ▼助空/▲警訊 欄的圖示
         param4d = ctk.CTkFrame(card4, fg_color="transparent")
         param4d.pack(fill="x", padx=24, pady=(2, 4))
         ctk.CTkLabel(param4d, text="訊號門檻：",
                       font=ctk.CTkFont(size=14)).pack(side="left", padx=(0, 8))
-        ctk.CTkLabel(param4d, text="隔日沖佔比 ≥",
-                      font=ctk.CTkFont(size=13),
-                      text_color="#c0c0c0").pack(side="left", padx=(0, 4))
+
+        # 隔日沖佔比
+        self.sd_show_nflip_var = ctk.BooleanVar(value=True)
+        ctk.CTkCheckBox(
+            param4d, text="隔日沖佔比 ≥", variable=self.sd_show_nflip_var,
+            font=ctk.CTkFont(size=13),
+            command=self._on_sd_show_toggle,
+        ).pack(side="left")
         self.sd_sig_nflip_entry = ctk.CTkEntry(
             param4d, width=46, font=ctk.CTkFont(size=13), justify="center")
-        self.sd_sig_nflip_entry.pack(side="left")
+        self.sd_sig_nflip_entry.pack(side="left", padx=(6, 2))
         self.sd_sig_nflip_entry.insert(0, "2")
-        ctk.CTkLabel(param4d, text="%　外資連賣 ≥",
-                      font=ctk.CTkFont(size=13),
-                      text_color="#c0c0c0").pack(side="left", padx=(2, 4))
+        ctk.CTkLabel(param4d, text="%　", font=ctk.CTkFont(size=13),
+                      text_color="#c0c0c0").pack(side="left")
+
+        # 外資連賣
+        self.sd_show_fstreak_var = ctk.BooleanVar(value=True)
+        ctk.CTkCheckBox(
+            param4d, text="外資連賣 ≥", variable=self.sd_show_fstreak_var,
+            font=ctk.CTkFont(size=13),
+            command=self._on_sd_show_toggle,
+        ).pack(side="left")
         self.sd_sig_fstreak_entry = ctk.CTkEntry(
             param4d, width=40, font=ctk.CTkFont(size=13), justify="center")
-        self.sd_sig_fstreak_entry.pack(side="left")
+        self.sd_sig_fstreak_entry.pack(side="left", padx=(6, 2))
         self.sd_sig_fstreak_entry.insert(0, "3")
-        ctk.CTkLabel(param4d, text="天　自營賣 ≥",
-                      font=ctk.CTkFont(size=13),
-                      text_color="#c0c0c0").pack(side="left", padx=(2, 4))
+        ctk.CTkLabel(param4d, text="天　", font=ctk.CTkFont(size=13),
+                      text_color="#c0c0c0").pack(side="left")
+
+        # 自營賣
+        self.sd_show_dump_var = ctk.BooleanVar(value=True)
+        ctk.CTkCheckBox(
+            param4d, text="自營賣 ≥", variable=self.sd_show_dump_var,
+            font=ctk.CTkFont(size=13),
+            command=self._on_sd_show_toggle,
+        ).pack(side="left")
         self.sd_sig_dump_entry = ctk.CTkEntry(
             param4d, width=46, font=ctk.CTkFont(size=13), justify="center")
-        self.sd_sig_dump_entry.pack(side="left")
+        self.sd_sig_dump_entry.pack(side="left", padx=(6, 2))
         self.sd_sig_dump_entry.insert(0, "200")
-        ctk.CTkLabel(param4d, text="張　融資增 ≥",
-                      font=ctk.CTkFont(size=13),
-                      text_color="#c0c0c0").pack(side="left", padx=(2, 4))
+        ctk.CTkLabel(param4d, text="張　", font=ctk.CTkFont(size=13),
+                      text_color="#c0c0c0").pack(side="left")
+
+        # 融資增
+        self.sd_show_mchase_var = ctk.BooleanVar(value=True)
+        ctk.CTkCheckBox(
+            param4d, text="融資增 ≥", variable=self.sd_show_mchase_var,
+            font=ctk.CTkFont(size=13),
+            command=self._on_sd_show_toggle,
+        ).pack(side="left")
         self.sd_sig_mchase_entry = ctk.CTkEntry(
             param4d, width=46, font=ctk.CTkFont(size=13), justify="center")
-        self.sd_sig_mchase_entry.pack(side="left")
+        self.sd_sig_mchase_entry.pack(side="left", padx=(6, 2))
         self.sd_sig_mchase_entry.insert(0, "5")
-        ctk.CTkLabel(param4d, text="%　券資比 ≥",
-                      font=ctk.CTkFont(size=13),
-                      text_color="#c0c0c0").pack(side="left", padx=(2, 4))
+        ctk.CTkLabel(param4d, text="%　", font=ctk.CTkFont(size=13),
+                      text_color="#c0c0c0").pack(side="left")
+
+        # 券資比
+        self.sd_show_squeeze_var = ctk.BooleanVar(value=True)
+        ctk.CTkCheckBox(
+            param4d, text="券資比 ≥", variable=self.sd_show_squeeze_var,
+            font=ctk.CTkFont(size=13),
+            command=self._on_sd_show_toggle,
+        ).pack(side="left")
         self.sd_sig_sratio_entry = ctk.CTkEntry(
             param4d, width=46, font=ctk.CTkFont(size=13), justify="center")
-        self.sd_sig_sratio_entry.pack(side="left")
+        self.sd_sig_sratio_entry.pack(side="left", padx=(6, 2))
         self.sd_sig_sratio_entry.insert(0, "30")
         ctk.CTkLabel(param4d, text="%",
                       font=ctk.CTkFont(size=13),
@@ -1000,7 +1037,14 @@ class StrategyView(ctk.CTkFrame):
                   padx=(4, 0), pady=4)
         sb.pack(side="right", fill="y", padx=(0, 4), pady=4)
 
+    def _on_sd_show_toggle(self):
+        """訊號 checkbox 切換 → 用快取資料即時重繪策略四結果表。"""
+        if self._sd_last_data is not None:
+            self._render_strategy4(self._sd_last_data)
+
     def _render_strategy4(self, data):
+        # 快取最後一次資料，方便 toggle checkbox 後重繪
+        self._sd_last_data = data
         for w in self.sd_result_frame.winfo_children():
             w.destroy()
 
@@ -1033,7 +1077,7 @@ class StrategyView(ctk.CTkFrame):
             "conc10": 60, "band": 58,
             "slope": 64, "pos": 52, "amp": 56,
             "b6": 52, "b12": 56, "b20": 52, "b72": 52, "b250": 52,
-            "bear": 100, "bull": 84,
+            "bear": 130, "bull": 110,
         }
         anchors = {
             "rank": "center", "code": "center", "name": "w",
@@ -1056,37 +1100,44 @@ class StrategyView(ctk.CTkFrame):
         def _bf(v):
             return f"{v:+.2f}" if v is not None else "—"
 
+        # 讀取 checkbox 狀態，未勾的訊號不顯示
+        show_nflip = self.sd_show_nflip_var.get()
+        show_fstreak = self.sd_show_fstreak_var.get()
+        show_dump = self.sd_show_dump_var.get()
+        show_mchase = self.sd_show_mchase_var.get()
+        show_squeeze = self.sd_show_squeeze_var.get()
+
         def _icons(sig: dict | None) -> tuple[str, str]:
-            """組「助空」與「警訊」字串。
-            符號定義：
-              ▼隔=隔日沖大買、▼外=外資連賣、▼自=自營大賣、
+            """組「助空」與「警訊」字串，前綴 ▼/▲ 視覺強化。
+            符號：
+              ▼隔=隔日沖大買、▼外N=外資連賣 N 天、▼自=自營大賣、
               ▼戶+=戶數爆增、▼資追=融資逆勢追高
               ▲投=投信第一天買、▲大=大戶持股增加、
-              ▲戶-=戶數下降、▲軋=券資比≥30%軋空風險
+              ▲戶-=戶數下降、▲軋=券資比過高軋空風險
             """
             if not sig:
                 return "", ""
             bear = []
-            if sig.get("bearish_next_flip_buy"):
-                bear.append("隔")
+            if show_nflip and sig.get("bearish_next_flip_buy"):
+                bear.append("▼隔")
             fss = sig.get("bearish_foreign_sell_streak") or 0
-            if fss > 0:
-                bear.append(f"外{fss}")
-            if sig.get("bearish_dealer_dump"):
-                bear.append("自")
+            if show_fstreak and fss > 0:
+                bear.append(f"▼外{fss}")
+            if show_dump and sig.get("bearish_dealer_dump"):
+                bear.append("▼自")
             if sig.get("bearish_holder_surge"):
-                bear.append("戶+")
-            if sig.get("bearish_margin_chasing"):
-                bear.append("資追")
+                bear.append("▼戶+")
+            if show_mchase and sig.get("bearish_margin_chasing"):
+                bear.append("▼資追")
             bull = []
             if sig.get("bullish_trust_first_buy"):
-                bull.append("投")
+                bull.append("▲投")
             if sig.get("bullish_big_pct_rising"):
-                bull.append("大")
+                bull.append("▲大")
             if sig.get("bullish_holder_drop"):
-                bull.append("戶-")
-            if sig.get("bullish_short_squeeze_risk"):
-                bull.append("軋")
+                bull.append("▲戶-")
+            if show_squeeze and sig.get("bullish_short_squeeze_risk"):
+                bull.append("▲軋")
             return " ".join(bear), " ".join(bull)
 
         for i, r in enumerate(data, 1):
