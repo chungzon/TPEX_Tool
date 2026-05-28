@@ -434,6 +434,12 @@ class StrategyViewModel(BaseViewModel):
         use_bias72: bool = True,
         main_window: int = 10,
         top_n: int = 15,
+        # 助空/警訊 icon 門檻
+        sig_next_flip_pct: float = 2.0,
+        sig_foreign_streak: int = 3,
+        sig_dealer_dump_lots: int = 200,
+        sig_margin_chase_pct: float = 5.0,
+        sig_short_ratio: float = 30.0,
     ):
         """放空當沖標的篩選：
         主10 < conc_max、帶寬 > band_min、月線斜率 < slope_max；
@@ -546,6 +552,11 @@ class StrategyViewModel(BaseViewModel):
                             holder_map.get(c.stock_code, []),
                             trade_date,
                             margin_history=margin_map.get(c.stock_code, []),
+                            next_flip_share_min=sig_next_flip_pct,
+                            foreign_sell_min_streak=sig_foreign_streak,
+                            dealer_dump_shares_min=sig_dealer_dump_lots * 1000,
+                            margin_chase_pct=sig_margin_chase_pct,
+                            short_squeeze_ratio_min=sig_short_ratio,
                         )
                         d = _asdict(c)
                         d["signals"] = _asdict(sig)

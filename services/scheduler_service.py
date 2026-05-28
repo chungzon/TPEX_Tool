@@ -172,6 +172,14 @@ class SchedulerService:
         log.info("Broker data download: market=%s, %d stocks, date=%s",
                  market, len(codes), trading_date)
 
+        # 補助資料：三大法人 + 融資融券（兩端都支援歷史日期，自動補齊）
+        if trading_date:
+            try:
+                self._download_aux(trading_date, market)
+            except Exception as e:
+                log.warning("Aux data download failed: %s", e)
+                self._status(f"輔助資料下載失敗（不影響主流程）：{e}")
+
         # Check if we already have data for this trading date
         if trading_date:
             from services.db_service import DbService
@@ -206,6 +214,74 @@ class SchedulerService:
         self.last_result = (self.last_result or "").strip() or "已完成"
         self._status(f"完成：{self.last_result}")
         log.info("Download result: %s", self.last_result)
+
+    def _download_aux(self, trading_date: str, market: str) -> None:
+        """下載三大法人 + 融資融券，依 market 決定上櫃/上市/兩者。
+
+        兩種資料都支援歷史日期，使用 MERGE 寫入 → 重跑不會出錯。
+        """
+        from services.db_service import DbService
+
+        do_otc = market in ("otc", "all")
+        do_twse = market in ("twse", "all")
+
+        db = DbService()
+        try:
+            db.connect()
+            db.ensure_tables()
+
+            # --- 三大法人 ---
+            if do_otc:
+                try:
+                    from services.insti_service import fetch_insti_daily
+                    rows = fetch_insti_daily(trading_date)
+                    if rows:
+                        n = db.save_insti_daily_batch(rows)
+                        self._status(f"上櫃三大法人：寫入 {n} 筆")
+                        log.info("OTC insti %s: %d rows", trading_date, n)
+                except Exception as e:
+                    log.warning("OTC insti download failed: %s", e)
+
+            if do_twse:
+                try:
+                    from services.twse_api_service import fetch_twse_insti_daily
+                    from services.insti_service import InstiDaily
+                    raw = fetch_twse_insti_daily(trading_date)
+                    if raw:
+                        objs = [InstiDaily(**r) for r in raw]
+                        n = db.save_insti_daily_batch(objs)
+                        self._status(f"上市三大法人：寫入 {n} 筆")
+                        log.info("TWSE insti %s: %d rows", trading_date, n)
+                except Exception as e:
+                    log.warning("TWSE insti download failed: %s", e)
+
+            # --- 融資融券 ---
+            if do_otc:
+                try:
+                    from services.margin_service import fetch_otc_margin
+                    rows = fetch_otc_margin(trading_date)
+                    if rows:
+                        n = db.save_margin_daily_batch(rows)
+                        self._status(f"上櫃融資融券：寫入 {n} 筆")
+                        log.info("OTC margin %s: %d rows", trading_date, n)
+                except Exception as e:
+                    log.warning("OTC margin download failed: %s", e)
+
+            if do_twse:
+                try:
+                    from services.margin_service import fetch_twse_margin
+                    rows = fetch_twse_margin(trading_date)
+                    if rows:
+                        n = db.save_margin_daily_batch(rows)
+                        self._status(f"上市融資融券：寫入 {n} 筆")
+                        log.info("TWSE margin %s: %d rows", trading_date, n)
+                except Exception as e:
+                    log.warning("TWSE margin download failed: %s", e)
+        finally:
+            try:
+                db.close()
+            except Exception:
+                pass
 
     def _run_single_batch(self, codes: list[str], market: str):
         """Run a batch download for one market and wait for completion."""

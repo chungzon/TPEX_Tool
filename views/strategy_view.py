@@ -520,6 +520,50 @@ class StrategyView(ctk.CTkFrame):
             font=ctk.CTkFont(size=12), text_color="gray",
         ).pack(side="left", padx=(12, 0))
 
+        # Param row 4: 訊號門檻
+        param4d = ctk.CTkFrame(card4, fg_color="transparent")
+        param4d.pack(fill="x", padx=24, pady=(2, 4))
+        ctk.CTkLabel(param4d, text="訊號門檻：",
+                      font=ctk.CTkFont(size=14)).pack(side="left", padx=(0, 8))
+        ctk.CTkLabel(param4d, text="隔日沖佔比 ≥",
+                      font=ctk.CTkFont(size=13),
+                      text_color="#c0c0c0").pack(side="left", padx=(0, 4))
+        self.sd_sig_nflip_entry = ctk.CTkEntry(
+            param4d, width=46, font=ctk.CTkFont(size=13), justify="center")
+        self.sd_sig_nflip_entry.pack(side="left")
+        self.sd_sig_nflip_entry.insert(0, "2")
+        ctk.CTkLabel(param4d, text="%　外資連賣 ≥",
+                      font=ctk.CTkFont(size=13),
+                      text_color="#c0c0c0").pack(side="left", padx=(2, 4))
+        self.sd_sig_fstreak_entry = ctk.CTkEntry(
+            param4d, width=40, font=ctk.CTkFont(size=13), justify="center")
+        self.sd_sig_fstreak_entry.pack(side="left")
+        self.sd_sig_fstreak_entry.insert(0, "3")
+        ctk.CTkLabel(param4d, text="天　自營賣 ≥",
+                      font=ctk.CTkFont(size=13),
+                      text_color="#c0c0c0").pack(side="left", padx=(2, 4))
+        self.sd_sig_dump_entry = ctk.CTkEntry(
+            param4d, width=46, font=ctk.CTkFont(size=13), justify="center")
+        self.sd_sig_dump_entry.pack(side="left")
+        self.sd_sig_dump_entry.insert(0, "200")
+        ctk.CTkLabel(param4d, text="張　融資增 ≥",
+                      font=ctk.CTkFont(size=13),
+                      text_color="#c0c0c0").pack(side="left", padx=(2, 4))
+        self.sd_sig_mchase_entry = ctk.CTkEntry(
+            param4d, width=46, font=ctk.CTkFont(size=13), justify="center")
+        self.sd_sig_mchase_entry.pack(side="left")
+        self.sd_sig_mchase_entry.insert(0, "5")
+        ctk.CTkLabel(param4d, text="%　券資比 ≥",
+                      font=ctk.CTkFont(size=13),
+                      text_color="#c0c0c0").pack(side="left", padx=(2, 4))
+        self.sd_sig_sratio_entry = ctk.CTkEntry(
+            param4d, width=46, font=ctk.CTkFont(size=13), justify="center")
+        self.sd_sig_sratio_entry.pack(side="left")
+        self.sd_sig_sratio_entry.insert(0, "30")
+        ctk.CTkLabel(param4d, text="%",
+                      font=ctk.CTkFont(size=13),
+                      text_color="#c0c0c0").pack(side="left")
+
         # Legend：助空 / 警訊 圖示說明
         legend4 = ctk.CTkFrame(card4, fg_color="transparent")
         legend4.pack(fill="x", padx=24, pady=(2, 4))
@@ -528,7 +572,7 @@ class StrategyView(ctk.CTkFrame):
             text=("▼助空：隔=隔日沖大買、外N=外資連賣 N 天、自=自營大賣、"
                   "戶+=集保戶數爆增、資追=融資逆勢追高（散戶套牢）　　"
                   "▲警訊：投=投信第一天買、大=大戶持股增加、"
-                  "戶-=集保戶數下降、軋=券資比≥30% 軋空風險"),
+                  "戶-=集保戶數下降、軋=券資比過高軋空風險"),
             font=ctk.CTkFont(size=11), text_color="#888",
             wraplength=860, justify="left",
         ).pack(anchor="w")
@@ -668,6 +712,12 @@ class StrategyView(ctk.CTkFrame):
         use_b20 = bool(self.sd_b20_use_var.get())
         use_b72 = bool(self.sd_b72_use_var.get())
 
+        sig_nflip = _pf(self.sd_sig_nflip_entry, 2.0)
+        sig_fstreak = _pi(self.sd_sig_fstreak_entry, 3)
+        sig_dump = _pi(self.sd_sig_dump_entry, 200)
+        sig_mchase = _pf(self.sd_sig_mchase_entry, 5.0)
+        sig_sratio = _pf(self.sd_sig_sratio_entry, 30.0)
+
         self.vm.run_short_daytrade_strategy(
             date,
             conc_max=conc_max, band_min=band_min, slope_max=slope_max,
@@ -677,6 +727,11 @@ class StrategyView(ctk.CTkFrame):
             use_bias_min=use_bias,
             use_bias6=use_b6, use_bias12=use_b12,
             use_bias20=use_b20, use_bias72=use_b72,
+            sig_next_flip_pct=sig_nflip,
+            sig_foreign_streak=sig_fstreak,
+            sig_dealer_dump_lots=sig_dump,
+            sig_margin_chase_pct=sig_mchase,
+            sig_short_ratio=sig_sratio,
         )
 
     # Bindings

@@ -87,14 +87,31 @@ def fetch_otc_margin(date_str: str) -> list[dict]:
       15 註記      (略過)
     單位：張（已是張數，不需除 1000）
     """
-    url = ("https://www.tpex.org.tw/www/zh-tw/marginTrading/marginBalance"
-           f"?response=json&date={date_str.replace('-', '/')}")
-    try:
-        data = _http_json(url)
-    except Exception as e:
-        raise RuntimeError(f"TPEX 連線失敗：{e}")
-    if data.get("stat") != "ok":
-        raise RuntimeError(f"TPEX 回傳：{data.get('stat', '未知')}")
+    # TPEX 近幾年改版頻繁，依序嘗試多個已知端點
+    candidates = [
+        ("https://www.tpex.org.tw/www/zh-tw/marginTrading/marginBalance"
+         f"?response=json&date={date_str.replace('-', '/')}"),
+        ("https://www.tpex.org.tw/www/zh-tw/margin/balance"
+         f"?response=json&date={date_str.replace('-', '/')}"),
+        ("https://www.tpex.org.tw/web/stock/margin_trading/margin_balance/"
+         f"margin_bal_result.php?l=zh-tw&d={date_str.replace('-', '/')}"
+         "&s=0,asc&o=json"),
+    ]
+    data = None
+    last_err = None
+    for url in candidates:
+        try:
+            data = _http_json(url)
+            if data.get("stat") == "ok" or data.get("stat") == "OK":
+                break
+            last_err = f"TPEX 回傳：{data.get('stat', '未知')}"
+        except Exception as e:
+            last_err = str(e)
+            continue
+    if data is None:
+        raise RuntimeError(f"TPEX 連線失敗：{last_err}")
+    if data.get("stat") not in ("ok", "OK"):
+        raise RuntimeError(last_err or f"TPEX 回傳：{data.get('stat', '未知')}")
 
     api_date = _normalize_api_date(data.get("date", "")) or date_str
 
