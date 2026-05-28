@@ -612,7 +612,11 @@ def _bearish_next_flip_buy(
     broker_rows: list[dict], signal_date: str,
     vol_share_min: float,
 ) -> bool:
-    """隔日沖分點當日淨買 / 成交量 ≥ vol_share_min%。"""
+    """隔日沖分點當日淨買 / 成交量 ≥ vol_share_min%。
+
+    注意：``total_volume`` 在 DB schema 是 NVARCHAR（從 StockDailySummary
+    join 過來，可能含千分位逗號），必須先用 _pi 解析成 int。
+    """
     if not _HAS_BROKER_TAGS:
         return False
     total_vol = 0
@@ -620,12 +624,12 @@ def _bearish_next_flip_buy(
     for r in broker_rows:
         if str(r.get("trade_date"))[:10] != signal_date:
             continue
-        tv = r.get("total_volume") or 0
+        tv = _pi(r.get("total_volume"))
         if tv > total_vol:
             total_vol = tv
         if TAG_NEXT in get_broker_tags(r.get("broker_name") or ""):
-            bv = r.get("buy_volume") or 0
-            sv = r.get("sell_volume") or 0
+            bv = _pi(r.get("buy_volume"))
+            sv = _pi(r.get("sell_volume"))
             next_net += bv - sv
     if total_vol <= 0 or next_net <= 0:
         return False
