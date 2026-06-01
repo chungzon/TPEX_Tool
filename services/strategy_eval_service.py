@@ -412,10 +412,10 @@ def _price_metrics(
     sd = var ** 0.5
     bbw = (2 * bb_k * sd) / mid * 100.0
 
-    # 月線斜率 (%) = (MA20[今] − MA20[昨]) / MA20[昨] * 100
+    # 月線斜率 = MA20[今] / MA20[昨] − 1（決策上等同布林中軌的日相對變化率）
     win_prev = closes[-bb_period - 1: -1]
     mid_prev = sum(win_prev) / bb_period
-    slope = (mid - mid_prev) / mid_prev * 100.0 if mid_prev > 0 else 0.0
+    slope = (mid / mid_prev) - 1 if mid_prev > 0 else 0.0
 
     # 位階：K 棒在布林通道內的相對位置
     #   上軌 (mid + k*sd) = +10、中軌 (mid) = 0、下軌 (mid - k*sd) = -10

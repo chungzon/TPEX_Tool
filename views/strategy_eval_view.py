@@ -261,7 +261,8 @@ class StrategyEvalView(ctk.CTkFrame):
             p4a, width=52, font=ctk.CTkFont(size=14), justify="center")
         self.sd_slope_entry.pack(side="left")
         self.sd_slope_entry.insert(0, "0")
-        ctk.CTkLabel(p4a, text="%　主力前",
+        # 月斜率 = MA20[今]/MA20[昨]−1，無單位
+        ctk.CTkLabel(p4a, text="　主力前",
                       font=ctk.CTkFont(size=13),
                       text_color="#c0c0c0").pack(side="left", padx=(2, 4))
         self.sd_topn_entry = ctk.CTkEntry(
@@ -420,7 +421,7 @@ class StrategyEvalView(ctk.CTkFrame):
                 ("name",   "名稱",    90, "w"),
                 ("pos",    "位階",    52, "e"),
                 ("c10",    "主10%",   60, "e"),
-                ("slope",  "月斜%",   58, "e"),
+                ("slope",  "月斜",    58, "e"),
                 ("b20",    "月乖%",   58, "e"),
                 ("b250",   "年乖%",   58, "e"),
                 ("entry",  "放空價",  70, "e"),
@@ -654,7 +655,7 @@ class StrategyEvalView(ctk.CTkFrame):
                         s["stock_code"], s["stock_name"],
                         f"{s['rank_pos']:+.2f}",
                         f"{s['conc_10']:+.2f}",
-                        f"{s['ma20_slope']:+.2f}",
+                        f"{s['ma20_slope']:+.4f}",
                         _delta(s.get("ma20_bias")),
                         _delta(s.get("ma250_bias")),
                         f"{s['entry_price']:.2f}",
