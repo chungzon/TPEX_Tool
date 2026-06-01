@@ -432,7 +432,8 @@ class StrategyView(ctk.CTkFrame):
             param4a, width=56, font=ctk.CTkFont(size=14), justify="center")
         self.sd_slope_entry.pack(side="left", padx=(4, 2))
         self.sd_slope_entry.insert(0, "0")
-        # 月斜率 = MA20[今]/MA20[昨]−1，無單位（值在 ±0.01 量級）
+        ctk.CTkLabel(param4a, text="%",
+                      font=ctk.CTkFont(size=14)).pack(side="left")
 
         # Param row 2: 年線乖離 + 主力家數
         # 註：位階改以布林通道為基準（上軌=+10、中軌=0、下軌=-10），
@@ -1057,7 +1058,7 @@ class StrategyView(ctk.CTkFrame):
             "rank": "#", "code": "代碼", "name": "名稱",
             "price": "收盤",
             "conc10": "主10%", "band": "帶寬%",
-            "slope": "月斜率", "pos": "位階",
+            "slope": "月斜率%", "pos": "位階",
             "amp": "振幅%",
             "b6": "周乖%", "b12": "雙週乖%",
             "b20": "月乖%", "b72": "季乖%",
@@ -1147,7 +1148,7 @@ class StrategyView(ctk.CTkFrame):
                 f"{r['close_price']:,.2f}",
                 f"{r['conc_10']:+.2f}",
                 f"{r['bb_bandwidth']:.2f}",
-                f"{r['ma20_slope']:+.4f}",
+                f"{r['ma20_slope']:+.2f}",
                 f"{pos:+.2f}",
                 f"{r['amplitude']:.2f}",
                 _bf(r.get("ma6_bias")),
