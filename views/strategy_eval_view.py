@@ -234,7 +234,8 @@ class StrategyEvalView(ctk.CTkFrame):
                       font=ctk.CTkFont(size=13),
                       text_color="#c0c0c0").pack(side="left")
 
-        # 硬性條件：主10 / 帶寬 / 月斜率 / 位階窗口 / 主力家數
+        # 硬性條件：主10 / 帶寬 / 月斜率 / 主力家數
+        # 位階改以布林通道為基準（上軌=+10、中軌=0、下軌=-10），無需窗口
         p4a = ctk.CTkFrame(run4_card, fg_color="transparent")
         p4a.pack(fill="x", padx=20, pady=(2, 4))
         ctk.CTkLabel(p4a, text="條件：",
@@ -260,14 +261,7 @@ class StrategyEvalView(ctk.CTkFrame):
             p4a, width=52, font=ctk.CTkFont(size=14), justify="center")
         self.sd_slope_entry.pack(side="left")
         self.sd_slope_entry.insert(0, "0")
-        ctk.CTkLabel(p4a, text="%　位階窗口",
-                      font=ctk.CTkFont(size=13),
-                      text_color="#c0c0c0").pack(side="left", padx=(2, 4))
-        self.sd_rank_entry = ctk.CTkEntry(
-            p4a, width=52, font=ctk.CTkFont(size=14), justify="center")
-        self.sd_rank_entry.pack(side="left")
-        self.sd_rank_entry.insert(0, "60")
-        ctk.CTkLabel(p4a, text="日　主力前",
+        ctk.CTkLabel(p4a, text="%　主力前",
                       font=ctk.CTkFont(size=13),
                       text_color="#c0c0c0").pack(side="left", padx=(2, 4))
         self.sd_topn_entry = ctk.CTkEntry(
@@ -504,7 +498,6 @@ class StrategyEvalView(ctk.CTkFrame):
             conc_max=self.sd_conc_entry.get(),
             band_min=self.sd_band_entry.get(),
             slope_max=self.sd_slope_entry.get(),
-            rank_window=self.sd_rank_entry.get(),
             bias_min=self.sd_bias_entry.get(),
             top_n=self.sd_topn_entry.get(),
             bias6_max=self.sd_b6_entry.get(),

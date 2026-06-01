@@ -417,13 +417,15 @@ def _price_metrics(
     mid_prev = sum(win_prev) / bb_period
     slope = (mid - mid_prev) / mid_prev * 100.0 if mid_prev > 0 else 0.0
 
-    # 位階 [-10, +10] 於 rank_window 區間
-    rw = min(rank_window, n)
-    rwin = closes[-rw:]
-    hi = max(rwin)
-    lo = min(rwin)
-    if hi > lo:
-        rank_pos = (today_close - lo) / (hi - lo) * 20.0 - 10.0
+    # 位階：K 棒在布林通道內的相對位置
+    #   上軌 (mid + k*sd) = +10、中軌 (mid) = 0、下軌 (mid - k*sd) = -10
+    #   位階 = (close - mid) / (k*sd) * 10
+    #   ≥ 8 為近期強勢，≤ -8 為近期弱勢；收盤跑出通道時可超出 ±10
+    # 註：rank_window 參數已棄用，保留簽名以維持向後相容
+    _ = rank_window  # noqa: F841 — 保留參數，但實際以 BB 計算
+    band_half = bb_k * sd
+    if band_half > 0:
+        rank_pos = (today_close - mid) / band_half * 10.0
     else:
         rank_pos = 0.0
 
@@ -483,7 +485,8 @@ def find_short_daytrade_candidates(
         conc_max: 主10 上限（嚴格 <），預設 0。
         band_min: 帶寬下限（嚴格 >），預設 20。
         slope_max: 月線斜率上限（嚴格 <），預設 0。
-        rank_window: 位階區間（預設 60 交易日）。
+        rank_window: 已棄用 — 位階改以布林通道上下軌為基準
+            （上軌=+10、月線=0、下軌=-10）。參數保留以維持簽名相容。
         bias_min: 年線乖離下限（≥），預設 10%。
         bias{6,12,20,72}_max: 周/雙週/月/季 乖離上限（≤），代表「弱勢」門檻；
             預設依市場慣例：-3 / -4.5 / -7 / -11。

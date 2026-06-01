@@ -435,17 +435,11 @@ class StrategyView(ctk.CTkFrame):
         ctk.CTkLabel(param4a, text="%",
                       font=ctk.CTkFont(size=14)).pack(side="left")
 
-        # Param row 2: 位階窗口 + 年線乖離 + 主力家數
+        # Param row 2: 年線乖離 + 主力家數
+        # 註：位階改以布林通道為基準（上軌=+10、中軌=0、下軌=-10），
+        # 不再需要「位階窗口」輸入；rank_window 在 VM/service 已棄用
         param4b = ctk.CTkFrame(card4, fg_color="transparent")
         param4b.pack(fill="x", padx=24, pady=4)
-        ctk.CTkLabel(param4b, text="位階窗口",
-                      font=ctk.CTkFont(size=14)).pack(side="left")
-        self.sd_rank_entry = ctk.CTkEntry(
-            param4b, width=56, font=ctk.CTkFont(size=14), justify="center")
-        self.sd_rank_entry.pack(side="left", padx=(4, 2))
-        self.sd_rank_entry.insert(0, "60")
-        ctk.CTkLabel(param4b, text="日　",
-                      font=ctk.CTkFont(size=14)).pack(side="left")
         # 乖離條件預設僅勾雙週(MA12)，其餘需手動勾
         self.sd_bias_use_var = ctk.BooleanVar(value=False)
         ctk.CTkCheckBox(
@@ -736,7 +730,6 @@ class StrategyView(ctk.CTkFrame):
         conc_max = _pf(self.sd_conc_entry, 0.0)
         band_min = _pf(self.sd_band_entry, 20.0)
         slope_max = _pf(self.sd_slope_entry, 0.0)
-        rank_window = _pi(self.sd_rank_entry, 60)
         bias_min = _pf(self.sd_bias_entry, 10.0)
         top_n = _pi(self.sd_topn_entry, 15)
         b6 = _pf(self.sd_b6_entry, -3.0)
@@ -758,7 +751,7 @@ class StrategyView(ctk.CTkFrame):
         self.vm.run_short_daytrade_strategy(
             date,
             conc_max=conc_max, band_min=band_min, slope_max=slope_max,
-            rank_window=rank_window, bias_min=bias_min, top_n=top_n,
+            bias_min=bias_min, top_n=top_n,
             bias6_max=b6, bias12_max=b12,
             bias20_max=b20, bias72_max=b72,
             use_bias_min=use_bias,
@@ -1142,12 +1135,13 @@ class StrategyView(ctk.CTkFrame):
 
         for i, r in enumerate(data, 1):
             pos = r.get("rank_pos", 0)
-            if pos >= 5:
+            # 位階以布林通道為基準：≥+8 強勢、≤-8 弱勢、其餘中性
+            if pos >= 8:
                 tag = "strong"
-            elif pos >= 0:
-                tag = "mid"
-            else:
+            elif pos <= -8:
                 tag = "watch"
+            else:
+                tag = "mid"
             bear_txt, bull_txt = _icons(r.get("signals"))
             tree.insert("", "end", values=(
                 i, r["stock_code"], r["stock_name"],
