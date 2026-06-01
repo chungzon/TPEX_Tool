@@ -180,8 +180,12 @@ class StrategyEvalViewModel(BaseViewModel):
             return
 
         otc_codes = self._config.get("stock_codes") or []
-        if not otc_codes:
-            self.error_text = "尚未設定上櫃股票清單，請至「系統設定」按更新清單"
+        twse_codes = self._config.get("twse_stock_codes") or []
+        codes = otc_codes + twse_codes
+        if not codes:
+            self.error_text = (
+                "尚未設定股票清單（上櫃/上市），請至「系統設定」按更新清單"
+            )
             return
 
         self.error_text = ""
@@ -196,7 +200,7 @@ class StrategyEvalViewModel(BaseViewModel):
 
         threading.Thread(
             target=self._work_short,
-            args=(otc_codes, s, e, hd, cm, bm, sm, rw, bmin, tn,
+            args=(codes, s, e, hd, cm, bm, sm, rw, bmin, tn,
                   b6, b12, b20, b72,
                   bool(use_bias_min), bool(use_bias6), bool(use_bias12),
                   bool(use_bias20), bool(use_bias72)),
@@ -435,7 +439,8 @@ class StrategyEvalViewModel(BaseViewModel):
             else:
                 self._log("乖離條件：（未啟用）\n")
             self._log(
-                f"範圍：{start_date} ~ {end_date}，共 {len(codes)} 檔上櫃股票\n"
+                f"範圍：{start_date} ~ {end_date}，"
+                f"共 {len(codes)} 檔股票（上櫃 + 上市）\n"
             )
             self._log("─" * 44 + "\n")
 
