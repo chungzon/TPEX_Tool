@@ -652,7 +652,7 @@ class StrategyEvalView(ctk.CTkFrame):
                     values=(
                         s["signal_date"], s["exit_date"],
                         s["stock_code"], s["stock_name"],
-                        f"{s['rank_pos']:+.2f}",
+                        f"{int(s['rank_pos']):+d}",
                         f"{s['conc_10']:+.2f}",
                         f"{s['ma20_slope']:+.2f}",
                         _delta(s.get("ma20_bias")),

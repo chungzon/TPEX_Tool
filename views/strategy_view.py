@@ -1149,7 +1149,7 @@ class StrategyView(ctk.CTkFrame):
                 f"{r['conc_10']:+.2f}",
                 f"{r['bb_bandwidth']:.2f}",
                 f"{r['ma20_slope']:+.2f}",
-                f"{pos:+.2f}",
+                f"{int(pos):+d}",
                 f"{r['amplitude']:.2f}",
                 _bf(r.get("ma6_bias")),
                 _bf(r.get("ma12_bias")),
