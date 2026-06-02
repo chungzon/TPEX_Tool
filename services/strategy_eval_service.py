@@ -420,12 +420,13 @@ def _price_metrics(
     # 位階：K 棒在布林通道內的相對位置
     #   上軌 (mid + k*sd) = +10、中軌 (mid) = 0、下軌 (mid - k*sd) = -10
     #   位階 = (close - mid) / (k*sd) * 10
-    #   ≥ 8 為近期強勢，≤ -8 為近期弱勢；收盤跑出通道時可超出 ±10
+    #   ≥ 8 為近期強勢，≤ -8 為近期弱勢；夾限在 [-10, +10]
     # 註：rank_window 參數已棄用，保留簽名以維持向後相容
     _ = rank_window  # noqa: F841 — 保留參數，但實際以 BB 計算
     band_half = bb_k * sd
     if band_half > 0:
         rank_pos = (today_close - mid) / band_half * 10.0
+        rank_pos = max(-10.0, min(10.0, rank_pos))
     else:
         rank_pos = 0.0
 
