@@ -17,6 +17,7 @@ try:
     import matplotlib.ticker as mticker
     from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
     from matplotlib.figure import Figure
+    from matplotlib.patches import Rectangle
     matplotlib.rcParams["font.sans-serif"] = [
         "Microsoft JhengHei", "Microsoft YaHei", "PMingLiU", "DFKai-SB",
     ]
@@ -1444,11 +1445,22 @@ class StrategyView(ctk.CTkFrame):
 
         labels: list[str] = []
         closes: list[float] = []
+        opens: list[float] = []
+        highs: list[float] = []
+        lows: list[float] = []
         for p in prices:
             c = self._parse_price(p.get("close_price"))
-            if c is not None:
-                labels.append(str(p.get("trade_date"))[:10])
-                closes.append(c)
+            if c is None:
+                continue
+            o = self._parse_price(p.get("open_price"))
+            h = self._parse_price(p.get("high_price"))
+            lo = self._parse_price(p.get("low_price"))
+            # 缺 OHLC 任一欄就用 close 補（避免 K 棒畫不出來）
+            labels.append(str(p.get("trade_date"))[:10])
+            closes.append(c)
+            opens.append(o if o is not None else c)
+            highs.append(h if h is not None else c)
+            lows.append(lo if lo is not None else c)
         if len(closes) < 5:
             ctk.CTkLabel(parent, text="（資料筆數不足）",
                           text_color="gray").pack(pady=24)
@@ -1458,6 +1470,9 @@ class StrategyView(ctk.CTkFrame):
         plot_n = min(len(closes), 120)
         labels = labels[-plot_n:]
         closes = closes[-plot_n:]
+        opens = opens[-plot_n:]
+        highs = highs[-plot_n:]
+        lows = lows[-plot_n:]
         n = len(closes)
         xs = list(range(n))
 
@@ -1526,9 +1541,43 @@ class StrategyView(ctk.CTkFrame):
             ax.plot(ma20_x, ma20_y, color="#ab47bc", linewidth=1.3,
                     alpha=0.95, zorder=6, label="MA20")
 
-        # 收盤線（主體）
-        ax.plot(xs, closes, color="#e0e0e0", linewidth=1.4,
-                zorder=8, label="收盤")
+        # K 棒蠟燭圖（台灣慣例：紅漲、綠跌；平盤 = 灰）
+        red = "#ef5350"
+        green = "#26a69a"
+        flat = "#9e9e9e"
+        body_w = 0.62
+        # 圖例代理（只各加一筆，避免每根 K 都被列入 legend）
+        legend_added = {"up": False, "down": False}
+        for i, (o, h, lo_v, c) in enumerate(zip(opens, highs, lows, closes)):
+            if c > o:
+                col = red
+                kind = "up"
+                lbl = "K 紅(漲)" if not legend_added["up"] else None
+                legend_added["up"] = True
+            elif c < o:
+                col = green
+                kind = "down"
+                lbl = "K 綠(跌)" if not legend_added["down"] else None
+                legend_added["down"] = True
+            else:
+                col = flat
+                lbl = None
+            # 上下影線
+            ax.plot([i, i], [lo_v, h], color=col, linewidth=0.9,
+                    zorder=7)
+            # 實體
+            body_lo = min(o, c)
+            body_hi = max(o, c)
+            body_h = body_hi - body_lo
+            if body_h < 1e-9:
+                # 一字線 / doji
+                ax.plot([i - body_w / 2, i + body_w / 2], [c, c],
+                        color=col, linewidth=1.4, zorder=8, label=lbl)
+            else:
+                rect = Rectangle((i - body_w / 2, body_lo), body_w,
+                                  body_h, facecolor=col, edgecolor=col,
+                                  linewidth=0.5, zorder=8, label=lbl)
+                ax.add_patch(rect)
 
         # X 軸刻度（取等距 ~10 個）
         step = max(n // 10, 1)
@@ -1544,8 +1593,8 @@ class StrategyView(ctk.CTkFrame):
                             rotation=35, ha="right")
         ax.set_xlim(-0.5, n - 0.5)
 
-        # Y 軸：價格範圍含 BB
-        lo, hi = min(closes), max(closes)
+        # Y 軸：價格範圍含 K 棒高低與 BB
+        lo, hi = min(lows), max(highs)
         if bb_xs:
             lo = min(lo, min(bb_lower))
             hi = max(hi, max(bb_upper))
