@@ -2,11 +2,28 @@
 
 from __future__ import annotations
 
+import threading
+
 import customtkinter as ctk
 from tkinter import ttk
-from datetime import datetime
+from datetime import datetime, timedelta
 
 from viewmodels.strategy_viewmodel import StrategyViewModel
+
+# matplotlib for the per-stock detail chart popup
+try:
+    import matplotlib
+    matplotlib.use("Agg")
+    import matplotlib.ticker as mticker
+    from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
+    from matplotlib.figure import Figure
+    matplotlib.rcParams["font.sans-serif"] = [
+        "Microsoft JhengHei", "Microsoft YaHei", "PMingLiU", "DFKai-SB",
+    ]
+    matplotlib.rcParams["axes.unicode_minus"] = False
+    HAS_MPL = True
+except Exception:
+    HAS_MPL = False
 
 
 def _fmt(n: int) -> str:
@@ -1090,6 +1107,9 @@ class StrategyView(ctk.CTkFrame):
         tree.tag_configure("mid", foreground="#80cbc4")
         tree.tag_configure("watch", foreground="#d4d4d4")
 
+        # iid → (code, name) for double-click 開啟詳細視窗
+        sd_lookup: dict[str, tuple[str, str]] = {}
+
         def _bf(v):
             return f"{v:+.2f}" if v is not None else "—"
 
@@ -1143,7 +1163,9 @@ class StrategyView(ctk.CTkFrame):
             else:
                 tag = "mid"
             bear_txt, bull_txt = _icons(r.get("signals"))
-            tree.insert("", "end", values=(
+            iid = f"sd-{i}"
+            sd_lookup[iid] = (r["stock_code"], r["stock_name"])
+            tree.insert("", "end", iid=iid, values=(
                 i, r["stock_code"], r["stock_name"],
                 f"{r['close_price']:,.2f}",
                 f"{r['conc_10']:+.2f}",
@@ -1159,9 +1181,392 @@ class StrategyView(ctk.CTkFrame):
                 bear_txt, bull_txt,
             ), tags=(tag,))
 
+        def _on_sd_double(event, tv=tree, lookup=sd_lookup):
+            iid = tv.identify_row(event.y)
+            if not iid:
+                return
+            info = lookup.get(iid)
+            if info:
+                self._open_strategy4_detail(*info)
+        tree.bind("<Double-1>", _on_sd_double)
+        tree.bind("<Return>", lambda e, tv=tree, lookup=sd_lookup:
+                  self._open_strategy4_detail(*lookup[tv.focus()])
+                  if tv.focus() in lookup else None)
+
         sb = ttk.Scrollbar(
             self.sd_result_frame, orient="vertical", command=tree.yview)
         tree.configure(yscrollcommand=sb.set)
         tree.pack(side="left", fill="both", expand=True,
                   padx=(4, 0), pady=4)
         sb.pack(side="right", fill="y", padx=(0, 4), pady=4)
+
+    # =====================================================================
+    # 策略四：個股技術分析 popup
+    # =====================================================================
+
+    def _open_strategy4_detail(self, stock_code: str, stock_name: str):
+        """雙擊策略四列表 → 彈窗顯示個股技術指標 + K 線/MA/布林通道圖。"""
+        try:
+            trade_date = (self.sd_date_entry.get() or "").strip()
+        except Exception:
+            trade_date = ""
+        if not trade_date:
+            trade_date = datetime.now().strftime("%Y-%m-%d")
+
+        win = ctk.CTkToplevel(self)
+        win.title(f"{stock_code} {stock_name} — 技術分析（{trade_date}）")
+        win.geometry("980x720")
+        win.transient(self.winfo_toplevel())
+
+        # Header
+        header = ctk.CTkFrame(win, fg_color="transparent")
+        header.pack(fill="x", padx=16, pady=(14, 6))
+        ctk.CTkLabel(
+            header,
+            text=f"{stock_code}  {stock_name}",
+            font=ctk.CTkFont(size=18, weight="bold"),
+        ).pack(anchor="w")
+        status_label = ctk.CTkLabel(
+            header, text=f"分析日：{trade_date}　載入中…",
+            font=ctk.CTkFont(size=12), text_color="#888")
+        status_label.pack(anchor="w", pady=(2, 0))
+
+        # Body：上排 = 技術指標表、下排 = 圖表
+        body = ctk.CTkFrame(win, corner_radius=10)
+        body.pack(fill="both", expand=True, padx=16, pady=(6, 14))
+
+        info_frame = ctk.CTkFrame(body, fg_color="transparent")
+        info_frame.pack(fill="x", padx=8, pady=(8, 4))
+
+        chart_frame = ctk.CTkFrame(body, fg_color="#1c1c1e", corner_radius=8)
+        chart_frame.pack(fill="both", expand=True, padx=8, pady=(4, 8))
+
+        loading = ctk.CTkLabel(
+            chart_frame, text="查詢中…",
+            font=ctk.CTkFont(size=13), text_color="gray")
+        loading.pack(pady=40)
+
+        def _populate(prices: list[dict], err: str | None):
+            loading.destroy()
+            if err:
+                ctk.CTkLabel(
+                    chart_frame, text=f"查詢失敗：{err}",
+                    font=ctk.CTkFont(size=13), text_color="#FF6B6B",
+                ).pack(pady=24)
+                status_label.configure(text=f"分析日：{trade_date}　錯誤",
+                                       text_color="#FF6B6B")
+                return
+            if not prices:
+                ctk.CTkLabel(
+                    chart_frame, text="（該股票在 DB 沒有足夠的歷史價格）",
+                    font=ctk.CTkFont(size=13), text_color="gray",
+                ).pack(pady=24)
+                status_label.configure(text=f"分析日：{trade_date}　無資料")
+                return
+
+            self._render_strategy4_info(info_frame, prices, trade_date)
+            self._render_strategy4_chart(chart_frame, prices, stock_code,
+                                          stock_name)
+            status_label.configure(
+                text=f"分析日：{trade_date}　共 {len(prices)} 筆價格資料")
+
+        def _work():
+            from services.db_service import DbService
+            db = DbService()
+            err: str | None = None
+            prices: list[dict] = []
+            try:
+                db.connect()
+                # 抓 ~ 300 個交易日（≈ 420 日曆日，足夠算 MA250 + 圖示窗口）
+                end_dt = datetime.strptime(trade_date, "%Y-%m-%d")
+                start = (end_dt - timedelta(days=420)).strftime("%Y-%m-%d")
+                prices = db.get_stock_prices(stock_code, start, trade_date)
+            except Exception as e:
+                err = str(e)
+            finally:
+                try:
+                    db.close()
+                except Exception:
+                    pass
+            self.after(0, lambda: _populate(prices, err))
+
+        threading.Thread(target=_work, daemon=True).start()
+
+    @staticmethod
+    def _parse_price(v) -> float | None:
+        try:
+            return float(str(v).replace(",", ""))
+        except (ValueError, TypeError, AttributeError):
+            return None
+
+    def _render_strategy4_info(self, parent, prices: list[dict],
+                                trade_date: str):
+        """渲染技術指標摘要：MA5/10/20/60/120/250 + BB + 位階 + 月斜率。"""
+        # 解析收盤序列（升冪）
+        closes: list[float] = []
+        dates: list[str] = []
+        for p in prices:
+            c = self._parse_price(p.get("close_price"))
+            if c is not None:
+                closes.append(c)
+                dates.append(str(p.get("trade_date"))[:10])
+
+        if not closes:
+            ctk.CTkLabel(parent, text="（收盤資料無法解析）",
+                          text_color="#FF6B6B").pack()
+            return
+
+        close = closes[-1]
+        prev_close = closes[-2] if len(closes) >= 2 else close
+
+        def _ma(period: int) -> float | None:
+            if len(closes) < period:
+                return None
+            return sum(closes[-period:]) / period
+
+        ma5 = _ma(5)
+        ma10 = _ma(10)
+        ma20 = _ma(20)
+        ma60 = _ma(60)
+        ma120 = _ma(120)
+        ma250 = _ma(250)
+
+        # 布林通道
+        bb_upper = bb_lower = bb_bw = None
+        if ma20 is not None:
+            win = closes[-20:]
+            mid = ma20
+            var = sum((x - mid) ** 2 for x in win) / 20
+            sd = var ** 0.5
+            bb_upper = mid + 2 * sd
+            bb_lower = mid - 2 * sd
+            bb_bw = (bb_upper - bb_lower) / mid * 100 if mid > 0 else None
+
+            # 月線斜率
+            if len(closes) >= 21:
+                win_prev = closes[-21:-1]
+                mid_prev = sum(win_prev) / 20
+                slope = ((mid - mid_prev) / mid_prev * 100.0
+                         if mid_prev > 0 else 0.0)
+            else:
+                slope = None
+
+            # 位階 (round to integer level)
+            band_half = 2 * sd
+            if band_half > 0:
+                pos = float(round((close - mid) / band_half * 10.0))
+            else:
+                pos = 0.0
+        else:
+            slope = None
+            pos = None
+
+        change = close - prev_close
+        change_pct = (change / prev_close * 100) if prev_close > 0 else 0.0
+
+        # ---- Row 1: 收盤 + 漲跌 ----
+        row1 = ctk.CTkFrame(parent, fg_color="transparent")
+        row1.pack(fill="x", pady=(2, 6))
+        clr = "#ef5350" if change >= 0 else "#26a69a"
+        ctk.CTkLabel(
+            row1, text=f"收盤 {close:,.2f}",
+            font=ctk.CTkFont(size=20, weight="bold"),
+            text_color=clr,
+        ).pack(side="left", padx=(8, 16))
+        ctk.CTkLabel(
+            row1, text=f"{change:+.2f} ({change_pct:+.2f}%)",
+            font=ctk.CTkFont(size=15, weight="bold"),
+            text_color=clr,
+        ).pack(side="left")
+        ctk.CTkLabel(
+            row1, text=f"  日期 {dates[-1]}",
+            font=ctk.CTkFont(size=12), text_color="#888",
+        ).pack(side="left", padx=(12, 0))
+
+        # ---- Row 2: 均線 + 布林 + 位階 ----
+        def _fmt(v):
+            return f"{v:,.2f}" if v is not None else "—"
+
+        def _bias_pct(v):
+            if v is None or v <= 0:
+                return "—"
+            return f"{(close - v) / v * 100:+.2f}%"
+
+        grid = ctk.CTkFrame(parent, fg_color="transparent")
+        grid.pack(fill="x", pady=(0, 4))
+
+        cells = [
+            ("MA5", _fmt(ma5), _bias_pct(ma5)),
+            ("MA10", _fmt(ma10), _bias_pct(ma10)),
+            ("MA20 (月)", _fmt(ma20), _bias_pct(ma20)),
+            ("MA60 (季)", _fmt(ma60), _bias_pct(ma60)),
+            ("MA120 (半)", _fmt(ma120), _bias_pct(ma120)),
+            ("MA250 (年)", _fmt(ma250), _bias_pct(ma250)),
+            ("BB 上軌", _fmt(bb_upper), "—"),
+            ("BB 下軌", _fmt(bb_lower), "—"),
+            ("帶寬%", f"{bb_bw:.2f}" if bb_bw is not None else "—", "—"),
+            ("月斜率%", f"{slope:+.2f}" if slope is not None else "—", "—"),
+            ("位階",
+             f"{int(pos):+d}" if pos is not None else "—", "—"),
+        ]
+        for i, (label, value, bias) in enumerate(cells):
+            cell = ctk.CTkFrame(grid, fg_color="#2a2a2a", corner_radius=6)
+            cell.grid(row=i // 6, column=i % 6, padx=3, pady=3,
+                      sticky="nsew")
+            ctk.CTkLabel(cell, text=label,
+                          font=ctk.CTkFont(size=11),
+                          text_color="#888").pack(padx=8, pady=(4, 0))
+            ctk.CTkLabel(cell, text=value,
+                          font=ctk.CTkFont(size=14, weight="bold"),
+                          text_color="#d4d4d4").pack(padx=8)
+            if bias != "—":
+                bc = "#ef5350" if bias.startswith("+") else "#26a69a"
+                ctk.CTkLabel(cell, text=bias,
+                              font=ctk.CTkFont(size=10),
+                              text_color=bc).pack(padx=8, pady=(0, 4))
+            else:
+                ctk.CTkLabel(cell, text=" ",
+                              font=ctk.CTkFont(size=10)).pack(padx=8,
+                                                              pady=(0, 4))
+        for col in range(6):
+            grid.grid_columnconfigure(col, weight=1)
+
+    def _render_strategy4_chart(self, parent, prices: list[dict],
+                                  stock_code: str, stock_name: str):
+        """渲染收盤線 + MA5/10/20 + 布林通道圖。"""
+        if not HAS_MPL:
+            ctk.CTkLabel(
+                parent,
+                text="（缺 matplotlib，pip install matplotlib 後可看圖表）",
+                font=ctk.CTkFont(size=13), text_color="gray",
+            ).pack(pady=24)
+            return
+
+        labels: list[str] = []
+        closes: list[float] = []
+        for p in prices:
+            c = self._parse_price(p.get("close_price"))
+            if c is not None:
+                labels.append(str(p.get("trade_date"))[:10])
+                closes.append(c)
+        if len(closes) < 5:
+            ctk.CTkLabel(parent, text="（資料筆數不足）",
+                          text_color="gray").pack(pady=24)
+            return
+
+        # 取最後 120 筆畫圖（避免太擁擠）
+        plot_n = min(len(closes), 120)
+        labels = labels[-plot_n:]
+        closes = closes[-plot_n:]
+        n = len(closes)
+        xs = list(range(n))
+
+        def _ma_series(period: int) -> tuple[list[int], list[float]]:
+            if n < period:
+                return [], []
+            xs_out, ys = [], []
+            for i in range(period - 1, n):
+                xs_out.append(i)
+                ys.append(sum(closes[i - period + 1: i + 1]) / period)
+            return xs_out, ys
+
+        ma5_x, ma5_y = _ma_series(5)
+        ma10_x, ma10_y = _ma_series(10)
+        ma20_x, ma20_y = _ma_series(20)
+
+        # 布林通道（period 20, k 2）
+        bb_xs: list[int] = []
+        bb_upper: list[float] = []
+        bb_lower: list[float] = []
+        bb_mid: list[float] = []
+        if n >= 20:
+            for i in range(19, n):
+                window = closes[i - 19: i + 1]
+                mid = sum(window) / 20
+                var = sum((x - mid) ** 2 for x in window) / 20
+                sd = var ** 0.5
+                bb_xs.append(i)
+                bb_mid.append(mid)
+                bb_upper.append(mid + 2 * sd)
+                bb_lower.append(mid - 2 * sd)
+
+        # ---- Dark theme ----
+        bg = "#1c1c1e"
+        txt = "#8e8e93"
+        grid_clr = "#2c2c2e"
+
+        fig = Figure(figsize=(9.2, 4.2), dpi=100, facecolor=bg)
+        fig.subplots_adjust(left=0.07, right=0.97, top=0.92, bottom=0.12)
+
+        ax = fig.add_subplot(111)
+        ax.set_facecolor(bg)
+        for sp in ax.spines.values():
+            sp.set_color(grid_clr)
+        ax.tick_params(axis="x", colors=txt, labelsize=8)
+        ax.tick_params(axis="y", colors=txt, labelsize=9)
+        ax.grid(True, alpha=0.2, color=grid_clr, linewidth=0.5)
+
+        # BB band fill + lines
+        if bb_xs:
+            ax.fill_between(bb_xs, bb_lower, bb_upper,
+                            color="#b0b0b0", alpha=0.10, zorder=2)
+            ax.plot(bb_xs, bb_upper, color="#b0b0b0", linewidth=0.7,
+                    linestyle="--", alpha=0.7, zorder=3, label="BB 上軌")
+            ax.plot(bb_xs, bb_lower, color="#b0b0b0", linewidth=0.7,
+                    linestyle="--", alpha=0.7, zorder=3, label="BB 下軌")
+
+        # MA lines
+        if ma5_x:
+            ax.plot(ma5_x, ma5_y, color="#ffeb3b", linewidth=1.1,
+                    alpha=0.95, zorder=5, label="MA5")
+        if ma10_x:
+            ax.plot(ma10_x, ma10_y, color="#42a5f5", linewidth=1.1,
+                    alpha=0.95, zorder=5, label="MA10")
+        if ma20_x:
+            ax.plot(ma20_x, ma20_y, color="#ab47bc", linewidth=1.3,
+                    alpha=0.95, zorder=6, label="MA20")
+
+        # 收盤線（主體）
+        ax.plot(xs, closes, color="#e0e0e0", linewidth=1.4,
+                zorder=8, label="收盤")
+
+        # X 軸刻度（取等距 ~10 個）
+        step = max(n // 10, 1)
+        tk_idx = list(range(0, n, step))
+        if tk_idx[-1] != n - 1:
+            tk_idx.append(n - 1)
+
+        def _short(d: str) -> str:
+            return d[5:7] + "/" + d[8:10] if len(d) >= 10 else d
+
+        ax.set_xticks(tk_idx)
+        ax.set_xticklabels([_short(labels[i]) for i in tk_idx],
+                            rotation=35, ha="right")
+        ax.set_xlim(-0.5, n - 0.5)
+
+        # Y 軸：價格範圍含 BB
+        lo, hi = min(closes), max(closes)
+        if bb_xs:
+            lo = min(lo, min(bb_lower))
+            hi = max(hi, max(bb_upper))
+        rng = hi - lo if hi > lo else 1.0
+        ax.set_ylim(lo - rng * 0.05, hi + rng * 0.08)
+        ax.yaxis.set_major_formatter(
+            mticker.FuncFormatter(lambda x, _: f"{x:,.2f}"))
+
+        # 標題
+        ax.set_title(f"{stock_code} {stock_name}　近 {n} 個交易日",
+                     color="#d4d4d4", fontsize=12,
+                     fontweight="bold", pad=8)
+
+        # 圖例
+        leg = ax.legend(loc="upper left", fontsize=9, framealpha=0.85,
+                         facecolor="#252526", edgecolor=grid_clr,
+                         labelcolor="#d4d4d4")
+        for t in leg.get_texts():
+            t.set_color("#d4d4d4")
+
+        canvas = FigureCanvasTkAgg(fig, parent)
+        canvas.draw()
+        canvas.get_tk_widget().pack(fill="both", expand=True,
+                                    padx=4, pady=4)
