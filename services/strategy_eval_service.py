@@ -359,6 +359,9 @@ class ShortDayCandidate:
     ma20_bias: float | None     # 月線乖離 (%)
     ma72_bias: float | None     # 季線乖離 (%)
     ma250_bias: float | None    # 年線乖離 (%)
+    conc_10_prev: float | None = None   # 5 個交易日前的主10（用於趨勢判斷）
+    conc_10_delta: float | None = None  # = conc_10 − conc_10_prev
+                                         # > 0 遞增 = 主力慢慢進場（反向警訊）
 
 
 def _price_metrics(
@@ -552,6 +555,18 @@ def find_short_daytrade_candidates(
         if not (conc_10 < conc_max):
             continue
 
+        # 主10 趨勢：與 5 個交易日前的同窗口主10 比較
+        trend_lookback = 5
+        conc_10_prev: float | None = None
+        conc_10_delta: float | None = None
+        if len(dates) >= main_window + trend_lookback:
+            prev_window = dates[
+                -main_window - trend_lookback: -trend_lookback]
+            if len(prev_window) == main_window:
+                conc_10_prev = _window_concentration(
+                    prev_window, by_date_net, vol_by_date, top_n)
+                conc_10_delta = conc_10 - conc_10_prev
+
         name = broker_rows[0].get("stock_name") or ""
         def _r(v):
             return round(v, 2) if v is not None else None
@@ -571,11 +586,47 @@ def find_short_daytrade_candidates(
             ma20_bias=_r(m["ma20_bias"]),
             ma72_bias=_r(m["ma72_bias"]),
             ma250_bias=_r(m["ma250_bias"]),
+            conc_10_prev=_r(conc_10_prev),
+            conc_10_delta=_r(conc_10_delta),
         ))
 
     # 排序：位階 desc（高基期優先）
     out.sort(key=lambda c: c.rank_pos, reverse=True)
     return out
+
+
+def compute_conc10_series(
+    broker_rows: list[dict],
+    main_window: int = 10,
+    top_n: int = 15,
+) -> tuple[list[str], list[float]]:
+    """從單一個股的 broker 歷史算出每日的主10 序列。
+
+    Args:
+        broker_rows: 單一個股的 broker history（升冪），需含 trade_date、
+            broker_name、buy_volume / sell_volume / total_volume。
+        main_window: 主力集中度窗口（預設 10 日）。
+        top_n: 主力家數（預設 15）。
+
+    Returns:
+        (dates, values)：兩個等長 list。dates 是「該主10 對應的 end_date」，
+        values 是當日主10 (%)。前 ``main_window − 1`` 個交易日不足窗口，
+        會被略過。
+    """
+    if not broker_rows:
+        return [], []
+    dates, by_date_net, vol_by_date, _ = _aggregate_by_date(broker_rows)
+    n = len(dates)
+    if n < main_window:
+        return [], []
+    out_dates: list[str] = []
+    out_vals: list[float] = []
+    for i in range(main_window - 1, n):
+        window = dates[i - main_window + 1: i + 1]
+        v = _window_concentration(window, by_date_net, vol_by_date, top_n)
+        out_dates.append(dates[i])
+        out_vals.append(v)
+    return out_dates, out_vals
 
 
 # ---------------------------------------------------------------------------

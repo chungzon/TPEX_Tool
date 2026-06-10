@@ -17,6 +17,7 @@ try:
     import matplotlib.ticker as mticker
     from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
     from matplotlib.figure import Figure
+    from matplotlib.gridspec import GridSpec
     from matplotlib.patches import Rectangle
     matplotlib.rcParams["font.sans-serif"] = [
         "Microsoft JhengHei", "Microsoft YaHei", "PMingLiU", "DFKai-SB",
@@ -618,7 +619,9 @@ class StrategyView(ctk.CTkFrame):
         legend4.pack(fill="x", padx=24, pady=(2, 4))
         ctk.CTkLabel(
             legend4,
-            text=("▼助空：隔=隔日沖大買、外N=外資連賣 N 天、自=自營大賣、"
+            text=("主10勢 ▲=近 5 日遞增（主力慢慢進場、不利空）"
+                  "／▼=遞減（出貨持續、強化助空）　　"
+                  "▼助空：隔=隔日沖大買、外N=外資連賣 N 天、自=自營大賣、"
                   "戶+=集保戶數爆增、資追=融資逆勢追高（散戶套牢）　　"
                   "▲警訊：投=投信第一天買、大=大戶持股增加、"
                   "戶-=集保戶數下降、軋=券資比過高軋空風險"),
@@ -1065,7 +1068,7 @@ class StrategyView(ctk.CTkFrame):
         _ensure_style()
 
         columns = ("rank", "code", "name", "price",
-                   "conc10", "band", "slope", "pos", "amp",
+                   "conc10", "ctrend", "band", "slope", "pos", "amp",
                    "b6", "b12", "b20", "b72", "b250",
                    "bear", "bull")
         tree = ttk.Treeview(
@@ -1075,7 +1078,8 @@ class StrategyView(ctk.CTkFrame):
         headings = {
             "rank": "#", "code": "代碼", "name": "名稱",
             "price": "收盤",
-            "conc10": "主10%", "band": "帶寬%",
+            "conc10": "主10%", "ctrend": "主10勢",
+            "band": "帶寬%",
             "slope": "月斜率%", "pos": "位階",
             "amp": "振幅%",
             "b6": "周乖%", "b12": "雙週乖%",
@@ -1085,14 +1089,15 @@ class StrategyView(ctk.CTkFrame):
         }
         widths = {
             "rank": 32, "code": 56, "name": 80, "price": 62,
-            "conc10": 60, "band": 58,
+            "conc10": 60, "ctrend": 72, "band": 58,
             "slope": 64, "pos": 52, "amp": 56,
             "b6": 52, "b12": 56, "b20": 52, "b72": 52, "b250": 52,
             "bear": 130, "bull": 110,
         }
         anchors = {
             "rank": "center", "code": "center", "name": "w",
-            "price": "e", "conc10": "e", "band": "e",
+            "price": "e", "conc10": "e", "ctrend": "center",
+            "band": "e",
             "slope": "e", "pos": "e", "amp": "e",
             "b6": "e", "b12": "e", "b20": "e",
             "b72": "e", "b250": "e",
@@ -1164,12 +1169,23 @@ class StrategyView(ctk.CTkFrame):
             else:
                 tag = "mid"
             bear_txt, bull_txt = _icons(r.get("signals"))
+            # 主10 趨勢：與 5 日前比較，>+0.3 = 遞增（警訊，主力慢慢進場）
+            delta = r.get("conc_10_delta")
+            if delta is None:
+                ctrend = "—"
+            elif delta > 0.3:
+                ctrend = f"▲{delta:+.2f}"   # 遞增：警訊
+            elif delta < -0.3:
+                ctrend = f"▼{delta:+.2f}"   # 遞減：助空
+            else:
+                ctrend = f"={delta:+.2f}"   # 持平
             iid = f"sd-{i}"
             sd_lookup[iid] = (r["stock_code"], r["stock_name"])
             tree.insert("", "end", iid=iid, values=(
                 i, r["stock_code"], r["stock_name"],
                 f"{r['close_price']:,.2f}",
                 f"{r['conc_10']:+.2f}",
+                ctrend,
                 f"{r['bb_bandwidth']:.2f}",
                 f"{r['ma20_slope']:+.2f}",
                 f"{int(pos):+d}",
@@ -1247,7 +1263,8 @@ class StrategyView(ctk.CTkFrame):
             font=ctk.CTkFont(size=13), text_color="gray")
         loading.pack(pady=40)
 
-        def _populate(prices: list[dict], err: str | None):
+        def _populate(prices: list[dict], conc_series: tuple[list, list],
+                      err: str | None):
             loading.destroy()
             if err:
                 ctk.CTkLabel(
@@ -1267,21 +1284,35 @@ class StrategyView(ctk.CTkFrame):
 
             self._render_strategy4_info(info_frame, prices, trade_date)
             self._render_strategy4_chart(chart_frame, prices, stock_code,
-                                          stock_name)
+                                          stock_name, conc_series)
+            extra = (f"、主10 走勢 {len(conc_series[0])} 點"
+                     if conc_series[0] else "")
             status_label.configure(
-                text=f"分析日：{trade_date}　共 {len(prices)} 筆價格資料")
+                text=f"分析日：{trade_date}　"
+                     f"共 {len(prices)} 筆價格資料{extra}")
 
         def _work():
             from services.db_service import DbService
+            from services.strategy_eval_service import compute_conc10_series
             db = DbService()
             err: str | None = None
             prices: list[dict] = []
+            conc_dates: list[str] = []
+            conc_vals: list[float] = []
             try:
                 db.connect()
                 # 抓 ~ 300 個交易日（≈ 420 日曆日，足夠算 MA250 + 圖示窗口）
                 end_dt = datetime.strptime(trade_date, "%Y-%m-%d")
                 start = (end_dt - timedelta(days=420)).strftime("%Y-%m-%d")
                 prices = db.get_stock_prices(stock_code, start, trade_date)
+                # 算主10 序列需要 broker history（給底部子圖用）
+                try:
+                    brokers = db.get_all_brokers_daily(
+                        stock_code, start, trade_date)
+                    conc_dates, conc_vals = compute_conc10_series(
+                        brokers, main_window=10, top_n=15)
+                except Exception:
+                    pass  # 缺分點資料時不影響主圖
             except Exception as e:
                 err = str(e)
             finally:
@@ -1289,7 +1320,8 @@ class StrategyView(ctk.CTkFrame):
                     db.close()
                 except Exception:
                     pass
-            self.after(0, lambda: _populate(prices, err))
+            self.after(0, lambda: _populate(
+                prices, (conc_dates, conc_vals), err))
 
         threading.Thread(target=_work, daemon=True).start()
 
@@ -1433,8 +1465,10 @@ class StrategyView(ctk.CTkFrame):
             grid.grid_columnconfigure(col, weight=1)
 
     def _render_strategy4_chart(self, parent, prices: list[dict],
-                                  stock_code: str, stock_name: str):
-        """渲染收盤線 + MA5/10/20 + 布林通道圖。"""
+                                  stock_code: str, stock_name: str,
+                                  conc_series: tuple[list, list] = (
+                                      [], [])):
+        """渲染 K 線 + MA5/10/20 + 布林通道；下方子圖顯示主10 走勢條狀圖。"""
         if not HAS_MPL:
             ctk.CTkLabel(
                 parent,
@@ -1510,16 +1544,22 @@ class StrategyView(ctk.CTkFrame):
         txt = "#8e8e93"
         grid_clr = "#2c2c2e"
 
-        fig = Figure(figsize=(9.2, 4.2), dpi=100, facecolor=bg)
-        fig.subplots_adjust(left=0.07, right=0.97, top=0.92, bottom=0.12)
+        # 兩個子圖：上 = K 線 / MA / BB（高），下 = 主10 條狀（矮）
+        fig = Figure(figsize=(9.2, 5.2), dpi=100, facecolor=bg)
+        gs = GridSpec(2, 1, figure=fig, height_ratios=[3, 1], hspace=0.08,
+                      left=0.07, right=0.97, top=0.94, bottom=0.10)
+        ax = fig.add_subplot(gs[0])
+        ax_conc = fig.add_subplot(gs[1], sharex=ax)
 
-        ax = fig.add_subplot(111)
-        ax.set_facecolor(bg)
-        for sp in ax.spines.values():
-            sp.set_color(grid_clr)
-        ax.tick_params(axis="x", colors=txt, labelsize=8)
-        ax.tick_params(axis="y", colors=txt, labelsize=9)
-        ax.grid(True, alpha=0.2, color=grid_clr, linewidth=0.5)
+        for ax_ in (ax, ax_conc):
+            ax_.set_facecolor(bg)
+            for sp in ax_.spines.values():
+                sp.set_color(grid_clr)
+            ax_.tick_params(axis="x", colors=txt, labelsize=8)
+            ax_.tick_params(axis="y", colors=txt, labelsize=9)
+            ax_.grid(True, alpha=0.2, color=grid_clr, linewidth=0.5)
+        # 上方子圖 x 刻度藏起來，避免重複
+        ax.tick_params(axis="x", which="both", labelbottom=False)
 
         # BB band fill + lines
         if bb_xs:
@@ -1579,7 +1619,7 @@ class StrategyView(ctk.CTkFrame):
                                   linewidth=0.5, zorder=8, label=lbl)
                 ax.add_patch(rect)
 
-        # X 軸刻度（取等距 ~10 個）
+        # X 軸刻度（取等距 ~10 個，放在底部子圖）
         step = max(n // 10, 1)
         tk_idx = list(range(0, n, step))
         if tk_idx[-1] != n - 1:
@@ -1588,10 +1628,11 @@ class StrategyView(ctk.CTkFrame):
         def _short(d: str) -> str:
             return d[5:7] + "/" + d[8:10] if len(d) >= 10 else d
 
-        ax.set_xticks(tk_idx)
-        ax.set_xticklabels([_short(labels[i]) for i in tk_idx],
-                            rotation=35, ha="right")
         ax.set_xlim(-0.5, n - 0.5)
+        ax_conc.set_xticks(tk_idx)
+        ax_conc.set_xticklabels([_short(labels[i]) for i in tk_idx],
+                                  rotation=35, ha="right", fontsize=8)
+        ax_conc.set_xlim(-0.5, n - 0.5)
 
         # Y 軸：價格範圍含 K 棒高低與 BB
         lo, hi = min(lows), max(highs)
@@ -1603,12 +1644,39 @@ class StrategyView(ctk.CTkFrame):
         ax.yaxis.set_major_formatter(
             mticker.FuncFormatter(lambda x, _: f"{x:,.2f}"))
 
-        # 標題
+        # 標題（上方）
         ax.set_title(f"{stock_code} {stock_name}　近 {n} 個交易日",
                      color="#d4d4d4", fontsize=12,
                      fontweight="bold", pad=8)
 
-        # 圖例
+        # ---- 底部子圖：主10 走勢條狀（紅=正/主力買、綠=負/主力賣） ----
+        conc_dates, conc_vals = conc_series
+        ax_conc.axhline(0, color=grid_clr, linewidth=0.6, zorder=3)
+        if conc_dates and conc_vals:
+            # 把 date 對應到 chart x 軸 index
+            label_idx = {d: i for i, d in enumerate(labels)}
+            bar_xs: list[int] = []
+            bar_vals: list[float] = []
+            for d, v in zip(conc_dates, conc_vals):
+                if d in label_idx:
+                    bar_xs.append(label_idx[d])
+                    bar_vals.append(v)
+            if bar_xs:
+                cols = ["#ef5350" if v > 0 else "#26a69a" for v in bar_vals]
+                ax_conc.bar(bar_xs, bar_vals, width=0.7, color=cols,
+                             alpha=0.85, zorder=4)
+                # 疊一條折線強化趨勢觀察
+                ax_conc.plot(bar_xs, bar_vals, color="#ffeb3b",
+                              linewidth=0.8, alpha=0.55, zorder=5)
+        else:
+            ax_conc.text(0.5, 0.5, "（無分點資料，無法計算主10 走勢）",
+                          color="#888", fontsize=10, ha="center",
+                          va="center", transform=ax_conc.transAxes)
+        ax_conc.set_ylabel("主10%", color=txt, fontsize=9, labelpad=4)
+        ax_conc.yaxis.set_major_formatter(
+            mticker.FuncFormatter(lambda x, _: f"{x:.1f}"))
+
+        # 圖例（上方）
         leg = ax.legend(loc="upper left", fontsize=9, framealpha=0.85,
                          facecolor="#252526", edgecolor=grid_clr,
                          labelcolor="#d4d4d4")
