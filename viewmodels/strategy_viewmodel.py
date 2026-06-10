@@ -598,6 +598,109 @@ class StrategyViewModel(BaseViewModel):
 
         threading.Thread(target=_work, daemon=True).start()
 
+    def run_main_accumulation_strategy(
+        self, trade_date: str,
+        conc_delta_min: float = 0.3,
+        chip_weeks: int = 4,
+        big_delta_min: float = 0.0,
+        main_window: int = 10,
+        top_n: int = 15,
+    ):
+        """策略五：主力進場 + 大戶集中 做多候選。
+
+        主10 趨勢遞增（近 5 日主10 增加 ≥ conc_delta_min）且
+        大戶持股 chip_weeks 週前 → 現在 增幅 ≥ big_delta_min。
+        排序依 conc_10_delta desc。
+        """
+        trade_date = trade_date.strip()
+        if not trade_date:
+            self.error_text = "請輸入日期"
+            return
+        if self.loading:
+            return
+        self.loading = True
+        self.error_text = ""
+        self.results = None
+        self.status_text = ""
+
+        def _work():
+            try:
+                from dataclasses import asdict
+                from datetime import datetime as _dt, timedelta
+                from services.strategy_eval_service import (
+                    find_main_accumulation_candidates,
+                )
+
+                self._db.connect()
+                self._db.ensure_tables()
+
+                try:
+                    end_dt = _dt.strptime(trade_date, "%Y-%m-%d")
+                except ValueError:
+                    self.error_text = "日期格式錯誤，請用 yyyy-mm-dd"
+                    return
+
+                # 分點需要覆蓋 main_window + 5 個交易日（趨勢比對）
+                broker_start = (
+                    end_dt - timedelta(days=main_window * 2 + 15)
+                ).strftime("%Y-%m-%d")
+                broker_rows = self._db.get_broker_history_range(
+                    broker_start, trade_date)
+                if not broker_rows:
+                    self.error_text = f"{trade_date} 之前無分點資料"
+                    self.results = []
+                    return
+
+                grouped: dict[str, list[dict]] = defaultdict(list)
+                for r in broker_rows:
+                    grouped[r["stock_code"]].append(r)
+
+                # 價格 — 覆蓋 MA250 + 緩衝
+                price_start = (
+                    end_dt - timedelta(days=420)
+                ).strftime("%Y-%m-%d")
+                price_map = self._db.get_all_prices_range(
+                    price_start, trade_date)
+                if not price_map:
+                    self.error_text = f"{trade_date} 無價格資料"
+                    self.results = []
+                    return
+
+                # TDCC 週報（大戶/散戶 比例變化）
+                self.status_text = "載入 TDCC 週報..."
+                all_codes = list(price_map.keys())
+                chip_map = self._db.get_distribution_summary_for_codes(
+                    all_codes)
+
+                cands = find_main_accumulation_candidates(
+                    grouped, price_map, chip_map, trade_date,
+                    main_window=main_window, top_n=top_n,
+                    conc_delta_min=conc_delta_min,
+                    chip_weeks=chip_weeks,
+                    big_delta_min=big_delta_min,
+                )
+
+                result_dicts = [asdict(c) for c in cands]
+                if not result_dicts:
+                    self.error_text = (
+                        f"{trade_date} 無符合條件的標的"
+                        f"（主10勢≥+{conc_delta_min:g}、"
+                        f"大戶≥+{big_delta_min:g}%（比對 {chip_weeks} 週前））"
+                    )
+                else:
+                    self.status_text = (
+                        f"找到 {len(result_dicts)} 檔做多候選"
+                    )
+                self.results = result_dicts
+            except Exception as e:
+                self.error_text = f"查詢錯誤：{e}"
+                import traceback
+                traceback.print_exc()
+            finally:
+                self.loading = False
+
+        threading.Thread(target=_work, daemon=True).start()
+
     def shutdown(self):
         try:
             self._db.close()

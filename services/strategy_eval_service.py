@@ -595,6 +595,129 @@ def find_short_daytrade_candidates(
     return out
 
 
+@dataclass
+class MainAccumulationCandidate:
+    """主力進場 + 大戶集中：做多候選。
+
+    篩選邏輯：
+      • 主10 趨勢遞增（近 5 日主10 增加 ≥ conc_delta_min）
+      • 大戶持股增加（比對 chip_weeks 週前 → 現在，big_pct 增加 ≥ big_delta_min）
+
+    排序預設依 conc_10_delta desc（主力進場越急越前面）。
+    """
+    stock_code: str
+    stock_name: str
+    trade_date: str
+    close_price: float
+    conc_10: float
+    conc_10_prev: float
+    conc_10_delta: float
+    big_pct_now: float
+    big_pct_then: float
+    big_pct_delta: float
+    chip_latest_date: str
+    chip_earlier_date: str
+    rank_pos: float
+    ma20_slope: float
+    ma20_bias: float | None
+    ma250_bias: float | None
+    amplitude: float
+
+
+def find_main_accumulation_candidates(
+    grouped_broker_rows: dict[str, list[dict]],
+    price_map: dict[str, list[dict]],
+    chip_map: dict[str, list[dict]],
+    trade_date: str,
+    main_window: int = 10,
+    top_n: int = 15,
+    conc_delta_min: float = 0.3,
+    chip_weeks: int = 4,
+    big_delta_min: float = 0.0,
+    bb_period: int = 20,
+    bb_k: float = 2.0,
+    ma_long: int = 250,
+) -> list[MainAccumulationCandidate]:
+    """掃所有個股，找出主10 遞增 + 大戶持股遞增的做多候選。
+
+    Args:
+        chip_map: {stock_code: [{report_date, retail_pct, big_pct}, ...]} 升冪
+        conc_delta_min: 主10 趨勢遞增門檻（與 5 個交易日前的同窗口比較）
+        chip_weeks: 大戶比對週期（預設 4 週）
+        big_delta_min: 大戶比例上升門檻
+    """
+    out: list[MainAccumulationCandidate] = []
+    trend_lookback = 5
+
+    for code, price_rows in price_map.items():
+        if not price_rows:
+            continue
+        if str(price_rows[-1]["trade_date"])[:10] != trade_date:
+            continue
+
+        m = _price_metrics(
+            price_rows, bb_period=bb_period, bb_k=bb_k,
+            rank_window=60, ma_long=ma_long)
+        if m is None:
+            continue
+
+        broker_rows = grouped_broker_rows.get(code, [])
+        if not broker_rows:
+            continue
+        dates, by_date_net, vol_by_date, _ = _aggregate_by_date(broker_rows)
+        if not dates or dates[-1] != trade_date:
+            continue
+        if len(dates) < main_window + trend_lookback:
+            continue
+
+        conc_10 = _window_concentration(
+            dates[-main_window:], by_date_net, vol_by_date, top_n)
+        prev_window = dates[
+            -main_window - trend_lookback: -trend_lookback]
+        if len(prev_window) != main_window:
+            continue
+        conc_10_prev = _window_concentration(
+            prev_window, by_date_net, vol_by_date, top_n)
+        conc_delta = conc_10 - conc_10_prev
+        if conc_delta < conc_delta_min:
+            continue
+
+        chip_history = chip_map.get(code, [])
+        chip_info = chip_change_at_date(
+            chip_history, trade_date, chip_weeks)
+        if chip_info is None:
+            continue
+        if chip_info["big_delta"] < big_delta_min:
+            continue
+
+        name = broker_rows[0].get("stock_name") or ""
+        out.append(MainAccumulationCandidate(
+            stock_code=code,
+            stock_name=name,
+            trade_date=trade_date,
+            close_price=round(m["today_close"], 2),
+            conc_10=round(conc_10, 2),
+            conc_10_prev=round(conc_10_prev, 2),
+            conc_10_delta=round(conc_delta, 2),
+            big_pct_now=round(chip_info["big_now"], 2),
+            big_pct_then=round(chip_info["big_then"], 2),
+            big_pct_delta=round(chip_info["big_delta"], 2),
+            chip_latest_date=chip_info["latest_date"],
+            chip_earlier_date=chip_info["earlier_date"],
+            rank_pos=round(m["rank_pos"], 2),
+            ma20_slope=round(m["slope"], 2),
+            ma20_bias=(round(m["ma20_bias"], 2)
+                       if m["ma20_bias"] is not None else None),
+            ma250_bias=(round(m["ma250_bias"], 2)
+                        if m["ma250_bias"] is not None else None),
+            amplitude=round(m["amp"], 2),
+        ))
+
+    # 排序：conc_delta desc（主力進場越急越前面）
+    out.sort(key=lambda c: c.conc_10_delta, reverse=True)
+    return out
+
+
 def compute_conc10_series(
     broker_rows: list[dict],
     main_window: int = 10,

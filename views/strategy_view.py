@@ -651,6 +651,85 @@ class StrategyView(ctk.CTkFrame):
         self.sd_result_frame.pack(fill="both", expand=True,
                                   padx=16, pady=(4, 16))
 
+        # ============================================================
+        # Strategy 5: 主力進場 + 大戶集中（做多候選）
+        # ============================================================
+        card5 = ctk.CTkFrame(container, corner_radius=12)
+        card5.pack(padx=40, pady=8, fill="x")
+
+        ctk.CTkLabel(
+            card5, text="策略五：主力進場 + 大戶集中（做多獵手）",
+            font=ctk.CTkFont(size=16, weight="bold"),
+        ).pack(anchor="w", padx=24, pady=(20, 4))
+
+        ctk.CTkLabel(
+            card5,
+            text="主10 近 5 日趨勢遞增（主力慢慢進場）+ 大戶持股 N 週前→現在"
+                 "增幅達門檻 → 做多候選；依「主10 遞增量」desc 排序。"
+                 "雙擊個股可看技術圖 + 主10 走勢 + 大戶/散戶 比例變化。",
+            font=ctk.CTkFont(size=13), text_color="gray",
+            wraplength=860, justify="left",
+        ).pack(anchor="w", padx=24, pady=(0, 12))
+
+        param5a = ctk.CTkFrame(card5, fg_color="transparent")
+        param5a.pack(fill="x", padx=24, pady=4)
+        ctk.CTkLabel(param5a, text="交易日期：",
+                      font=ctk.CTkFont(size=14)).pack(side="left")
+        self.ma_date_entry = ctk.CTkEntry(
+            param5a, width=130, font=ctk.CTkFont(size=14),
+            placeholder_text="yyyy-mm-dd")
+        self.ma_date_entry.pack(side="left", padx=(4, 16))
+        self.ma_date_entry.insert(0, datetime.now().strftime("%Y-%m-%d"))
+
+        ctk.CTkLabel(param5a, text="主10勢 ≥ +",
+                      font=ctk.CTkFont(size=14)).pack(side="left")
+        self.ma_cdelta_entry = ctk.CTkEntry(
+            param5a, width=56, font=ctk.CTkFont(size=14), justify="center")
+        self.ma_cdelta_entry.pack(side="left", padx=(4, 2))
+        self.ma_cdelta_entry.insert(0, "0.3")
+        ctk.CTkLabel(param5a, text="　大戶比較期",
+                      font=ctk.CTkFont(size=14)).pack(side="left")
+        self.ma_weeks_entry = ctk.CTkEntry(
+            param5a, width=50, font=ctk.CTkFont(size=14), justify="center")
+        self.ma_weeks_entry.pack(side="left", padx=(4, 2))
+        self.ma_weeks_entry.insert(0, "4")
+        ctk.CTkLabel(param5a, text="週　大戶 ≥ +",
+                      font=ctk.CTkFont(size=14)).pack(side="left")
+        self.ma_bdelta_entry = ctk.CTkEntry(
+            param5a, width=56, font=ctk.CTkFont(size=14), justify="center")
+        self.ma_bdelta_entry.pack(side="left", padx=(4, 2))
+        self.ma_bdelta_entry.insert(0, "0")
+        ctk.CTkLabel(param5a, text="%　主力前",
+                      font=ctk.CTkFont(size=14)).pack(side="left")
+        self.ma_topn_entry = ctk.CTkEntry(
+            param5a, width=50, font=ctk.CTkFont(size=14), justify="center")
+        self.ma_topn_entry.pack(side="left", padx=(4, 2))
+        self.ma_topn_entry.insert(0, "15")
+        ctk.CTkLabel(param5a, text="家",
+                      font=ctk.CTkFont(size=14)).pack(side="left")
+
+        btn5_row = ctk.CTkFrame(card5, fg_color="transparent")
+        btn5_row.pack(fill="x", padx=24, pady=(8, 4))
+        self.ma_run_btn = ctk.CTkButton(
+            btn5_row, text="執行篩選", width=120, height=36,
+            corner_radius=8,
+            font=ctk.CTkFont(size=14, weight="bold"),
+            fg_color="#ef5350", hover_color="#c62828",
+            command=self._on_run_ma)
+        self.ma_run_btn.pack(side="left")
+        self.ma_status_label = ctk.CTkLabel(
+            btn5_row, text="", font=ctk.CTkFont(size=13),
+            text_color="#4ECDC4")
+        self.ma_status_label.pack(side="left", padx=(12, 0))
+        self.ma_error_label = ctk.CTkLabel(
+            btn5_row, text="", font=ctk.CTkFont(size=13),
+            text_color="#FF6B6B")
+        self.ma_error_label.pack(side="left", padx=(12, 0))
+
+        self.ma_result_frame = ctk.CTkFrame(card5, fg_color="transparent")
+        self.ma_result_frame.pack(fill="both", expand=True,
+                                   padx=16, pady=(4, 16))
+
     # Events
 
     def _on_run(self):
@@ -785,6 +864,37 @@ class StrategyView(ctk.CTkFrame):
             sig_short_ratio=sig_sratio,
         )
 
+    def _on_run_ma(self):
+        """執行策略五：主力進場 + 大戶集中。"""
+        self._active_strategy = 5
+        date = self.ma_date_entry.get().strip()
+
+        def _pf(entry, default):
+            try:
+                return float(entry.get().strip())
+            except ValueError:
+                return default
+
+        def _pi(entry, default):
+            try:
+                v = int(entry.get().strip())
+                return v if v > 0 else default
+            except ValueError:
+                return default
+
+        cdelta = _pf(self.ma_cdelta_entry, 0.3)
+        weeks = _pi(self.ma_weeks_entry, 4)
+        bdelta = _pf(self.ma_bdelta_entry, 0.0)
+        topn = _pi(self.ma_topn_entry, 15)
+
+        self.vm.run_main_accumulation_strategy(
+            date,
+            conc_delta_min=cdelta,
+            chip_weeks=weeks,
+            big_delta_min=bdelta,
+            top_n=topn,
+        )
+
     # Bindings
 
     def _bind_vm(self):
@@ -802,13 +912,16 @@ class StrategyView(ctk.CTkFrame):
                     self.bb_run_btn.configure(state="disabled", text="篩選中...")
                 elif self._active_strategy == 3:
                     self.ic_run_btn.configure(state="disabled", text="篩選中...")
-                else:
+                elif self._active_strategy == 4:
                     self.sd_run_btn.configure(state="disabled", text="篩選中...")
+                else:
+                    self.ma_run_btn.configure(state="disabled", text="篩選中...")
             else:
                 self.run_btn.configure(state="normal", text="執行篩選")
                 self.bb_run_btn.configure(state="normal", text="執行篩選")
                 self.ic_run_btn.configure(state="normal", text="執行篩選")
                 self.sd_run_btn.configure(state="normal", text="執行篩選")
+                self.ma_run_btn.configure(state="normal", text="執行篩選")
         self.after(0, _u)
 
     def _on_error(self, v):
@@ -819,8 +932,10 @@ class StrategyView(ctk.CTkFrame):
                 self.bb_error_label.configure(text=v)
             elif self._active_strategy == 3:
                 self.ic_error_label.configure(text=v)
-            else:
+            elif self._active_strategy == 4:
                 self.sd_error_label.configure(text=v)
+            else:
+                self.ma_error_label.configure(text=v)
         self.after(0, _u)
 
     def _on_status(self, v):
@@ -831,8 +946,10 @@ class StrategyView(ctk.CTkFrame):
                 self.bb_status_label.configure(text=v)
             elif self._active_strategy == 3:
                 self.ic_status_label.configure(text=v)
-            else:
+            elif self._active_strategy == 4:
                 self.sd_status_label.configure(text=v)
+            else:
+                self.ma_status_label.configure(text=v)
         self.after(0, _u)
 
     def _on_results(self, data):
@@ -843,8 +960,10 @@ class StrategyView(ctk.CTkFrame):
                 self._render_strategy2(data)
             elif self._active_strategy == 3:
                 self._render_strategy3(data)
-            else:
+            elif self._active_strategy == 4:
                 self._render_strategy4(data)
+            else:
+                self._render_strategy5(data)
         self.after(0, _u)
 
     def _render_strategy1(self, data):
@@ -1217,14 +1336,128 @@ class StrategyView(ctk.CTkFrame):
                   padx=(4, 0), pady=4)
         sb.pack(side="right", fill="y", padx=(0, 4), pady=4)
 
+    def _render_strategy5(self, data):
+        for w in self.ma_result_frame.winfo_children():
+            w.destroy()
+
+        if data is None or len(data) == 0:
+            return
+
+        _ensure_style()
+
+        columns = ("rank", "code", "name", "price",
+                   "c10", "cdelta",
+                   "big_now", "big_then", "big_delta",
+                   "pos", "slope", "b20", "b250")
+        tree = ttk.Treeview(
+            self.ma_result_frame, columns=columns, show="headings",
+            style="Strategy.Treeview", height=min(len(data), 20))
+
+        headings = {
+            "rank": "#", "code": "代碼", "name": "名稱",
+            "price": "收盤",
+            "c10": "主10%", "cdelta": "主10勢",
+            "big_now": "大戶%", "big_then": "大戶前%",
+            "big_delta": "大戶Δ%",
+            "pos": "位階", "slope": "月斜率%",
+            "b20": "月乖%", "b250": "年乖%",
+        }
+        widths = {
+            "rank": 32, "code": 56, "name": 88, "price": 64,
+            "c10": 60, "cdelta": 70,
+            "big_now": 62, "big_then": 70, "big_delta": 70,
+            "pos": 50, "slope": 64, "b20": 58, "b250": 58,
+        }
+        anchors = {
+            "rank": "center", "code": "center", "name": "w",
+            "price": "e", "c10": "e", "cdelta": "center",
+            "big_now": "e", "big_then": "e", "big_delta": "e",
+            "pos": "e", "slope": "e", "b20": "e", "b250": "e",
+        }
+        for c in columns:
+            tree.heading(c, text=headings[c])
+            tree.column(c, width=widths[c], anchor=anchors[c],
+                        stretch=True)
+
+        # 染色：大戶遞增越多 + 主10勢越強 = 越前面 = 深紅
+        tree.tag_configure("hot", foreground="#ef5350")
+        tree.tag_configure("warm", foreground="#ffa726")
+        tree.tag_configure("watch", foreground="#d4d4d4")
+
+        def _bf(v):
+            return f"{v:+.2f}" if v is not None else "—"
+
+        ma_lookup: dict[str, tuple[str, str]] = {}
+        for i, r in enumerate(data, 1):
+            big_d = r.get("big_pct_delta", 0)
+            c_delta = r.get("conc_10_delta", 0)
+            # 兩個訊號都強 → hot
+            if big_d >= 1.0 and c_delta >= 1.0:
+                tag = "hot"
+            elif big_d >= 0.3 or c_delta >= 0.6:
+                tag = "warm"
+            else:
+                tag = "watch"
+            iid = f"ma-{i}"
+            ma_lookup[iid] = (r["stock_code"], r["stock_name"])
+            tree.insert("", "end", iid=iid, values=(
+                i, r["stock_code"], r["stock_name"],
+                f"{r['close_price']:,.2f}",
+                f"{r['conc_10']:+.2f}",
+                f"▲{c_delta:+.2f}" if c_delta > 0 else f"{c_delta:+.2f}",
+                f"{r['big_pct_now']:.2f}",
+                f"{r['big_pct_then']:.2f}",
+                f"{big_d:+.2f}",
+                f"{int(r['rank_pos']):+d}",
+                f"{r['ma20_slope']:+.2f}",
+                _bf(r.get("ma20_bias")),
+                _bf(r.get("ma250_bias")),
+            ), tags=(tag,))
+
+        def _on_ma_double(event, tv=tree, lookup=ma_lookup):
+            iid = tv.identify_row(event.y)
+            if not iid:
+                return
+            info = lookup.get(iid)
+            if info:
+                self._open_strategy5_detail(*info)
+        tree.bind("<Double-1>", _on_ma_double)
+        tree.bind("<Return>", lambda e, tv=tree, lookup=ma_lookup:
+                  self._open_strategy5_detail(*lookup[tv.focus()])
+                  if tv.focus() in lookup else None)
+
+        sb = ttk.Scrollbar(
+            self.ma_result_frame, orient="vertical", command=tree.yview)
+        tree.configure(yscrollcommand=sb.set)
+        tree.pack(side="left", fill="both", expand=True,
+                  padx=(4, 0), pady=4)
+        sb.pack(side="right", fill="y", padx=(0, 4), pady=4)
+
     # =====================================================================
     # 策略四：個股技術分析 popup
     # =====================================================================
 
     def _open_strategy4_detail(self, stock_code: str, stock_name: str):
-        """雙擊策略四列表 → 彈窗顯示個股技術指標 + K 線/MA/布林通道圖。"""
+        """雙擊策略四 → 個股技術 popup（無大戶子圖）。"""
+        self._open_stock_detail(stock_code, stock_name, include_chip=False)
+
+    def _open_strategy5_detail(self, stock_code: str, stock_name: str):
+        """雙擊策略五 → 個股技術 popup + 大戶/散戶 趨勢子圖。"""
+        self._open_stock_detail(stock_code, stock_name, include_chip=True)
+
+    def _open_stock_detail(self, stock_code: str, stock_name: str,
+                            *, include_chip: bool = False):
+        """彈窗顯示個股技術指標 + K 線/MA/布林通道圖。
+
+        include_chip=True 時加一個子圖顯示 TDCC 大戶/散戶 比例變化。
+        """
+        # 讀對應策略的日期輸入（策略五優先）
+        trade_date = ""
         try:
-            trade_date = (self.sd_date_entry.get() or "").strip()
+            if include_chip:
+                trade_date = (self.ma_date_entry.get() or "").strip()
+            else:
+                trade_date = (self.sd_date_entry.get() or "").strip()
         except Exception:
             trade_date = ""
         if not trade_date:
@@ -1264,7 +1497,7 @@ class StrategyView(ctk.CTkFrame):
         loading.pack(pady=40)
 
         def _populate(prices: list[dict], conc_series: tuple[list, list],
-                      err: str | None):
+                      chip_history: list[dict], err: str | None):
             loading.destroy()
             if err:
                 ctk.CTkLabel(
@@ -1284,9 +1517,14 @@ class StrategyView(ctk.CTkFrame):
 
             self._render_strategy4_info(info_frame, prices, trade_date)
             self._render_strategy4_chart(chart_frame, prices, stock_code,
-                                          stock_name, conc_series)
-            extra = (f"、主10 走勢 {len(conc_series[0])} 點"
-                     if conc_series[0] else "")
+                                          stock_name, conc_series,
+                                          chip_history=chip_history)
+            extra_parts = []
+            if conc_series[0]:
+                extra_parts.append(f"主10 走勢 {len(conc_series[0])} 點")
+            if include_chip and chip_history:
+                extra_parts.append(f"TDCC 週報 {len(chip_history)} 筆")
+            extra = ("、" + "、".join(extra_parts)) if extra_parts else ""
             status_label.configure(
                 text=f"分析日：{trade_date}　"
                      f"共 {len(prices)} 筆價格資料{extra}")
@@ -1299,6 +1537,7 @@ class StrategyView(ctk.CTkFrame):
             prices: list[dict] = []
             conc_dates: list[str] = []
             conc_vals: list[float] = []
+            chip_history: list[dict] = []
             try:
                 db.connect()
                 # 抓 ~ 300 個交易日（≈ 420 日曆日，足夠算 MA250 + 圖示窗口）
@@ -1313,6 +1552,12 @@ class StrategyView(ctk.CTkFrame):
                         brokers, main_window=10, top_n=15)
                 except Exception:
                     pass  # 缺分點資料時不影響主圖
+                # 策略五：撈 TDCC 大戶/散戶 比例變化
+                if include_chip:
+                    try:
+                        chip_history = db.get_distribution_history(stock_code)
+                    except Exception:
+                        chip_history = []
             except Exception as e:
                 err = str(e)
             finally:
@@ -1321,7 +1566,7 @@ class StrategyView(ctk.CTkFrame):
                 except Exception:
                     pass
             self.after(0, lambda: _populate(
-                prices, (conc_dates, conc_vals), err))
+                prices, (conc_dates, conc_vals), chip_history, err))
 
         threading.Thread(target=_work, daemon=True).start()
 
@@ -1467,8 +1712,12 @@ class StrategyView(ctk.CTkFrame):
     def _render_strategy4_chart(self, parent, prices: list[dict],
                                   stock_code: str, stock_name: str,
                                   conc_series: tuple[list, list] = (
-                                      [], [])):
-        """渲染 K 線 + MA5/10/20 + 布林通道；下方子圖顯示主10 走勢條狀圖。"""
+                                      [], []),
+                                  chip_history: list[dict] | None = None):
+        """渲染 K 線 + MA5/10/20 + 布林通道；下方子圖顯示主10 走勢條狀圖。
+
+        chip_history 非空時再加第三個子圖顯示 TDCC 大戶/散戶 比例走勢。
+        """
         if not HAS_MPL:
             ctk.CTkLabel(
                 parent,
@@ -1544,14 +1793,28 @@ class StrategyView(ctk.CTkFrame):
         txt = "#8e8e93"
         grid_clr = "#2c2c2e"
 
-        # 兩個子圖：上 = K 線 / MA / BB（高），下 = 主10 條狀（矮）
-        fig = Figure(figsize=(9.2, 5.2), dpi=100, facecolor=bg)
-        gs = GridSpec(2, 1, figure=fig, height_ratios=[3, 1], hspace=0.08,
-                      left=0.07, right=0.97, top=0.94, bottom=0.10)
-        ax = fig.add_subplot(gs[0])
-        ax_conc = fig.add_subplot(gs[1], sharex=ax)
+        # 子圖數依是否含 chip 決定
+        has_chip = bool(chip_history)
+        if has_chip:
+            fig = Figure(figsize=(9.2, 6.4), dpi=100, facecolor=bg)
+            gs = GridSpec(3, 1, figure=fig,
+                          height_ratios=[3, 1, 1.2], hspace=0.18,
+                          left=0.07, right=0.97, top=0.95, bottom=0.08)
+            ax = fig.add_subplot(gs[0])
+            ax_conc = fig.add_subplot(gs[1], sharex=ax)
+            ax_chip = fig.add_subplot(gs[2])
+            axes_iter = (ax, ax_conc, ax_chip)
+        else:
+            fig = Figure(figsize=(9.2, 5.2), dpi=100, facecolor=bg)
+            gs = GridSpec(2, 1, figure=fig, height_ratios=[3, 1],
+                          hspace=0.08,
+                          left=0.07, right=0.97, top=0.94, bottom=0.10)
+            ax = fig.add_subplot(gs[0])
+            ax_conc = fig.add_subplot(gs[1], sharex=ax)
+            ax_chip = None
+            axes_iter = (ax, ax_conc)
 
-        for ax_ in (ax, ax_conc):
+        for ax_ in axes_iter:
             ax_.set_facecolor(bg)
             for sp in ax_.spines.values():
                 sp.set_color(grid_clr)
@@ -1675,6 +1938,79 @@ class StrategyView(ctk.CTkFrame):
         ax_conc.set_ylabel("主10%", color=txt, fontsize=9, labelpad=4)
         ax_conc.yaxis.set_major_formatter(
             mticker.FuncFormatter(lambda x, _: f"{x:.1f}"))
+
+        # ---- 第三子圖：TDCC 大戶 / 散戶 比例走勢（策略五專用） ----
+        if ax_chip is not None and chip_history:
+            # 取最近 52 週，避免時間軸過長
+            recent = chip_history[-52:] if len(chip_history) > 52 \
+                else chip_history
+            chip_dates = [str(w["report_date"])[:10] for w in recent]
+            big_pcts = [float(w["big_pct"]) for w in recent]
+            retail_pcts = [float(w["retail_pct"]) for w in recent]
+            cxs = list(range(len(chip_dates)))
+
+            ax_chip.plot(cxs, big_pcts, color="#ef5350", linewidth=1.4,
+                          marker="o", markersize=2.5, alpha=0.95,
+                          label="大戶%")
+            ax_chip.plot(cxs, retail_pcts, color="#42a5f5",
+                          linewidth=1.4, marker="o", markersize=2.5,
+                          alpha=0.95, label="散戶%")
+
+            # 加標起點/終點數字
+            if big_pcts:
+                ax_chip.annotate(
+                    f"{big_pcts[-1]:.1f}",
+                    xy=(cxs[-1], big_pcts[-1]),
+                    xytext=(4, 0), textcoords="offset points",
+                    color="#ef5350", fontsize=9, va="center")
+            if retail_pcts:
+                ax_chip.annotate(
+                    f"{retail_pcts[-1]:.1f}",
+                    xy=(cxs[-1], retail_pcts[-1]),
+                    xytext=(4, 0), textcoords="offset points",
+                    color="#42a5f5", fontsize=9, va="center")
+
+            # 大戶趨勢箭頭（首尾比較）
+            if len(big_pcts) >= 2:
+                delta = big_pcts[-1] - big_pcts[0]
+                arrow = "▲" if delta > 0 else ("▼" if delta < 0 else "＝")
+                clr = "#ef5350" if delta > 0 else (
+                    "#26a69a" if delta < 0 else "#888")
+                ax_chip.text(
+                    0.02, 0.92,
+                    f"大戶 {arrow} {delta:+.2f}%（"
+                    f"{chip_dates[0]} → {chip_dates[-1]}）",
+                    color=clr, fontsize=10, fontweight="bold",
+                    transform=ax_chip.transAxes,
+                    va="top", ha="left")
+
+            # X 刻度
+            step_c = max(len(cxs) // 8, 1)
+            tk_c = list(range(0, len(cxs), step_c))
+            if tk_c and tk_c[-1] != len(cxs) - 1:
+                tk_c.append(len(cxs) - 1)
+            ax_chip.set_xticks(tk_c)
+            ax_chip.set_xticklabels(
+                [chip_dates[i][5:] for i in tk_c],
+                rotation=35, ha="right", fontsize=8)
+            ax_chip.set_xlim(-0.5, len(cxs) - 0.5)
+            ax_chip.set_ylabel("持股 %", color=txt, fontsize=9, labelpad=4)
+            ax_chip.yaxis.set_major_formatter(
+                mticker.FuncFormatter(lambda x, _: f"{x:.1f}"))
+
+            leg_chip = ax_chip.legend(
+                loc="upper right", fontsize=9, framealpha=0.85,
+                facecolor="#252526", edgecolor=grid_clr,
+                labelcolor="#d4d4d4")
+            for t in leg_chip.get_texts():
+                t.set_color("#d4d4d4")
+        elif ax_chip is not None:
+            ax_chip.text(
+                0.5, 0.5, "（無 TDCC 週報資料）", color="#888",
+                fontsize=10, ha="center", va="center",
+                transform=ax_chip.transAxes)
+            ax_chip.set_xticks([])
+            ax_chip.set_yticks([])
 
         # 圖例（上方）
         leg = ax.legend(loc="upper left", fontsize=9, framealpha=0.85,
