@@ -1434,46 +1434,27 @@ class StrategyView(ctk.CTkFrame):
         sb.pack(side="right", fill="y", padx=(0, 4), pady=4)
 
     # =====================================================================
-    # 策略四：個股技術分析 popup
+    # 策略四：個股技術分析 popup（自包含；只與策略五共用 chart helper）
     # =====================================================================
 
     def _open_strategy4_detail(self, stock_code: str, stock_name: str):
-        """雙擊策略四 → 個股技術 popup（無大戶子圖）。"""
-        self._open_stock_detail(stock_code, stock_name, include_chip=False)
-
-    def _open_strategy5_detail(self, stock_code: str, stock_name: str):
-        """雙擊策略五 → 個股技術 popup + 大戶/散戶 趨勢子圖。"""
-        self._open_stock_detail(stock_code, stock_name, include_chip=True)
-
-    def _open_stock_detail(self, stock_code: str, stock_name: str,
-                            *, include_chip: bool = False):
-        """彈窗顯示個股技術指標 + K 線/MA/布林通道圖。
-
-        include_chip=True 時加一個子圖顯示 TDCC 大戶/散戶 比例變化。
-        """
-        # 讀對應策略的日期輸入（策略五優先）
-        trade_date = ""
+        """雙擊策略四 → 個股技術 popup（K 線 + MA + 布林 + 主10 走勢）。"""
         try:
-            if include_chip:
-                trade_date = (self.ma_date_entry.get() or "").strip()
-            else:
-                trade_date = (self.sd_date_entry.get() or "").strip()
+            trade_date = (self.sd_date_entry.get() or "").strip()
         except Exception:
             trade_date = ""
         if not trade_date:
             trade_date = datetime.now().strftime("%Y-%m-%d")
 
         win = ctk.CTkToplevel(self)
-        win.title(f"{stock_code} {stock_name} — 技術分析（{trade_date}）")
+        win.title(f"{stock_code} {stock_name} — 策略四技術分析（{trade_date}）")
         win.geometry("980x720")
         win.transient(self.winfo_toplevel())
 
-        # Header
         header = ctk.CTkFrame(win, fg_color="transparent")
         header.pack(fill="x", padx=16, pady=(14, 6))
         ctk.CTkLabel(
-            header,
-            text=f"{stock_code}  {stock_name}",
+            header, text=f"{stock_code}  {stock_name}",
             font=ctk.CTkFont(size=18, weight="bold"),
         ).pack(anchor="w")
         status_label = ctk.CTkLabel(
@@ -1481,23 +1462,18 @@ class StrategyView(ctk.CTkFrame):
             font=ctk.CTkFont(size=12), text_color="#888")
         status_label.pack(anchor="w", pady=(2, 0))
 
-        # Body：上排 = 技術指標表、下排 = 圖表
         body = ctk.CTkFrame(win, corner_radius=10)
         body.pack(fill="both", expand=True, padx=16, pady=(6, 14))
-
         info_frame = ctk.CTkFrame(body, fg_color="transparent")
         info_frame.pack(fill="x", padx=8, pady=(8, 4))
-
         chart_frame = ctk.CTkFrame(body, fg_color="#1c1c1e", corner_radius=8)
         chart_frame.pack(fill="both", expand=True, padx=8, pady=(4, 8))
 
-        loading = ctk.CTkLabel(
-            chart_frame, text="查詢中…",
-            font=ctk.CTkFont(size=13), text_color="gray")
+        loading = ctk.CTkLabel(chart_frame, text="查詢中…",
+                                font=ctk.CTkFont(size=13), text_color="gray")
         loading.pack(pady=40)
 
-        def _populate(prices: list[dict], conc_series: tuple[list, list],
-                      chip_history: list[dict], err: str | None):
+        def _populate(prices, conc_series, err):
             loading.destroy()
             if err:
                 ctk.CTkLabel(
@@ -1514,17 +1490,114 @@ class StrategyView(ctk.CTkFrame):
                 ).pack(pady=24)
                 status_label.configure(text=f"分析日：{trade_date}　無資料")
                 return
+            self._render_strategy4_info(info_frame, prices, trade_date)
+            self._render_strategy4_chart(chart_frame, prices, stock_code,
+                                          stock_name, conc_series)
+            extra = (f"、主10 走勢 {len(conc_series[0])} 點"
+                     if conc_series[0] else "")
+            status_label.configure(
+                text=f"分析日：{trade_date}　"
+                     f"共 {len(prices)} 筆價格資料{extra}")
 
+        def _work():
+            from services.db_service import DbService
+            from services.strategy_eval_service import compute_conc10_series
+            db = DbService()
+            err: str | None = None
+            prices: list[dict] = []
+            conc_dates: list[str] = []
+            conc_vals: list[float] = []
+            try:
+                db.connect()
+                end_dt = datetime.strptime(trade_date, "%Y-%m-%d")
+                start = (end_dt - timedelta(days=420)).strftime("%Y-%m-%d")
+                prices = db.get_stock_prices(stock_code, start, trade_date)
+                try:
+                    brokers = db.get_all_brokers_daily(
+                        stock_code, start, trade_date)
+                    conc_dates, conc_vals = compute_conc10_series(
+                        brokers, main_window=10, top_n=15)
+                except Exception:
+                    pass
+            except Exception as e:
+                err = str(e)
+            finally:
+                try:
+                    db.close()
+                except Exception:
+                    pass
+            self.after(0, lambda: _populate(
+                prices, (conc_dates, conc_vals), err))
+
+        threading.Thread(target=_work, daemon=True).start()
+
+    # =====================================================================
+    # 策略五：個股技術分析 popup（自包含；含大戶/散戶 趨勢子圖）
+    # =====================================================================
+
+    def _open_strategy5_detail(self, stock_code: str, stock_name: str):
+        """雙擊策略五 → 個股技術 popup + TDCC 大戶/散戶 趨勢子圖。"""
+        try:
+            trade_date = (self.ma_date_entry.get() or "").strip()
+        except Exception:
+            trade_date = ""
+        if not trade_date:
+            trade_date = datetime.now().strftime("%Y-%m-%d")
+
+        win = ctk.CTkToplevel(self)
+        win.title(f"{stock_code} {stock_name} — 策略五技術分析（{trade_date}）")
+        win.geometry("980x780")
+        win.transient(self.winfo_toplevel())
+
+        header = ctk.CTkFrame(win, fg_color="transparent")
+        header.pack(fill="x", padx=16, pady=(14, 6))
+        ctk.CTkLabel(
+            header, text=f"{stock_code}  {stock_name}",
+            font=ctk.CTkFont(size=18, weight="bold"),
+        ).pack(anchor="w")
+        status_label = ctk.CTkLabel(
+            header, text=f"分析日：{trade_date}　載入中…",
+            font=ctk.CTkFont(size=12), text_color="#888")
+        status_label.pack(anchor="w", pady=(2, 0))
+
+        body = ctk.CTkFrame(win, corner_radius=10)
+        body.pack(fill="both", expand=True, padx=16, pady=(6, 14))
+        info_frame = ctk.CTkFrame(body, fg_color="transparent")
+        info_frame.pack(fill="x", padx=8, pady=(8, 4))
+        chart_frame = ctk.CTkFrame(body, fg_color="#1c1c1e", corner_radius=8)
+        chart_frame.pack(fill="both", expand=True, padx=8, pady=(4, 8))
+
+        loading = ctk.CTkLabel(chart_frame, text="查詢中…",
+                                font=ctk.CTkFont(size=13), text_color="gray")
+        loading.pack(pady=40)
+
+        def _populate(prices, conc_series, chip_history, err):
+            loading.destroy()
+            if err:
+                ctk.CTkLabel(
+                    chart_frame, text=f"查詢失敗：{err}",
+                    font=ctk.CTkFont(size=13), text_color="#FF6B6B",
+                ).pack(pady=24)
+                status_label.configure(text=f"分析日：{trade_date}　錯誤",
+                                       text_color="#FF6B6B")
+                return
+            if not prices:
+                ctk.CTkLabel(
+                    chart_frame, text="（該股票在 DB 沒有足夠的歷史價格）",
+                    font=ctk.CTkFont(size=13), text_color="gray",
+                ).pack(pady=24)
+                status_label.configure(text=f"分析日：{trade_date}　無資料")
+                return
             self._render_strategy4_info(info_frame, prices, trade_date)
             self._render_strategy4_chart(chart_frame, prices, stock_code,
                                           stock_name, conc_series,
                                           chip_history=chip_history)
-            extra_parts = []
+            parts = []
             if conc_series[0]:
-                extra_parts.append(f"主10 走勢 {len(conc_series[0])} 點")
-            if include_chip and chip_history:
-                extra_parts.append(f"TDCC 週報 {len(chip_history)} 筆")
-            extra = ("、" + "、".join(extra_parts)) if extra_parts else ""
+                parts.append(f"主10 走勢 {len(conc_series[0])} 點")
+            if chip_history:
+                parts.append(f"TDCC 週報 {len(chip_history)} 筆")
+            extra = ("、" + "、".join(parts)) if parts else ""
             status_label.configure(
                 text=f"分析日：{trade_date}　"
                      f"共 {len(prices)} 筆價格資料{extra}")
@@ -1540,24 +1613,20 @@ class StrategyView(ctk.CTkFrame):
             chip_history: list[dict] = []
             try:
                 db.connect()
-                # 抓 ~ 300 個交易日（≈ 420 日曆日，足夠算 MA250 + 圖示窗口）
                 end_dt = datetime.strptime(trade_date, "%Y-%m-%d")
                 start = (end_dt - timedelta(days=420)).strftime("%Y-%m-%d")
                 prices = db.get_stock_prices(stock_code, start, trade_date)
-                # 算主10 序列需要 broker history（給底部子圖用）
                 try:
                     brokers = db.get_all_brokers_daily(
                         stock_code, start, trade_date)
                     conc_dates, conc_vals = compute_conc10_series(
                         brokers, main_window=10, top_n=15)
                 except Exception:
-                    pass  # 缺分點資料時不影響主圖
-                # 策略五：撈 TDCC 大戶/散戶 比例變化
-                if include_chip:
-                    try:
-                        chip_history = db.get_distribution_history(stock_code)
-                    except Exception:
-                        chip_history = []
+                    pass
+                try:
+                    chip_history = db.get_distribution_history(stock_code)
+                except Exception:
+                    chip_history = []
             except Exception as e:
                 err = str(e)
             finally:
