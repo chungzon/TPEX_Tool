@@ -8,6 +8,7 @@ from viewmodels.strategy_eval_viewmodel import StrategyEvalViewModel
 from viewmodels.settings_viewmodel import SettingsViewModel
 from viewmodels.strategy_viewmodel import StrategyViewModel
 from viewmodels.trading_viewmodel import TradingViewModel
+from viewmodels.microstructure_viewmodel import MicrostructureViewModel
 from viewmodels.signal_viewmodel import SignalViewModel
 from views.broker_download_view import BrokerDownloadView
 from views.batch_download_view import BatchDownloadView
@@ -17,6 +18,7 @@ from views.strategy_eval_view import StrategyEvalView
 from views.settings_view import SettingsView
 from views.strategy_view import StrategyView
 from views.trading_view import TradingView
+from views.microstructure_view import MicrostructureView
 from views.signal_view import SignalView
 from services.config_service import ConfigService
 from services.scheduler_service import SchedulerService
@@ -127,14 +129,22 @@ class MainWindow(ctk.CTk):
         trading_view = TradingView(tab8, self.trading_vm)
         trading_view.pack(fill="both", expand=True)
 
-        # Tab 9: 系統設定
-        tab9 = self.tabview.add("系統設定")
+        # Tab 9: 大單追蹤（與下單共用同一 Shioaji 連線）
+        tab9 = self.tabview.add("大單追蹤")
+
+        self.micro_vm = MicrostructureViewModel(
+            self._config_svc, shioaji_svc=self.trading_vm._sj)
+        micro_view = MicrostructureView(tab9, self.micro_vm)
+        micro_view.pack(fill="both", expand=True)
+
+        # Tab 10: 系統設定
+        tab10 = self.tabview.add("系統設定")
 
         self.settings_vm = SettingsViewModel(
             self._config_svc, self._scheduler_svc,
             shioaji_svc=self.trading_vm._sj,
         )
-        settings_view = SettingsView(tab9, self.settings_vm)
+        settings_view = SettingsView(tab10, self.settings_vm)
         settings_view.pack(fill="both", expand=True)
 
         # Cleanup on close
@@ -164,6 +174,7 @@ class MainWindow(ctk.CTk):
         self.strategy_eval_vm.shutdown()
         self.strategy_vm.shutdown()
         self.signal_vm.shutdown()
+        self.micro_vm.shutdown()
         self.trading_vm.shutdown()
         self.settings_vm.shutdown()
         self.destroy()

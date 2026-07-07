@@ -18,6 +18,11 @@ class ShioajiService:
         self._stock_account = None
         self._lock = threading.Lock()
         self._order_callbacks: list[Callable] = []
+        # Real-time quote streaming (tick / bidask)
+        self._quote_cb_set = False
+        self._on_tick_cb: Callable | None = None
+        self._on_bidask_cb: Callable | None = None
+        self._subscribed: set[str] = set()
 
     @property
     def is_logged_in(self) -> bool:
@@ -115,11 +120,17 @@ class ShioajiService:
     def logout(self):
         if self._api and self._logged_in:
             try:
+                self.unsubscribe_all_quotes()
+            except Exception:
+                pass
+            try:
                 self._api.logout()
             except Exception:
                 pass
         self._logged_in = False
         self._api = None
+        self._quote_cb_set = False
+        self._subscribed.clear()
 
     # ---- Contract lookup ----
 
@@ -159,6 +170,116 @@ class ShioajiService:
         except Exception as e:
             log.warning("Snapshot failed for %s: %s", stock_code, e)
         return None
+
+    # ---- Real-time quote streaming (tick / bidask) ----
+
+    def _ensure_quote_callbacks(self):
+        """Register the STK v1 tick / bidask callbacks once."""
+        if self._quote_cb_set or not self._api:
+            return
+        self._api.quote.set_on_tick_stk_v1_callback(self._handle_tick)
+        self._api.quote.set_on_bidask_stk_v1_callback(self._handle_bidask)
+        self._quote_cb_set = True
+
+    def _handle_tick(self, exchange, tick):
+        """Shioaji TickSTKv1 → plain dict → forward to registered callback."""
+        if not self._on_tick_cb:
+            return
+        try:
+            data = {
+                "code": getattr(tick, "code", ""),
+                "time": str(getattr(tick, "datetime", "")),
+                "close": getattr(tick, "close", 0),
+                "avg_price": getattr(tick, "avg_price", 0),
+                "high": getattr(tick, "high", 0),
+                "low": getattr(tick, "low", 0),
+                "volume": getattr(tick, "volume", 0),
+                "total_volume": getattr(tick, "total_volume", 0),
+                # 1=外盤(買方觸發) 2=內盤(賣方觸發) 0=無法判定
+                "tick_type": getattr(tick, "tick_type", 0),
+                "simtrade": getattr(tick, "simtrade", 0),
+                "intraday_odd": getattr(tick, "intraday_odd", 0),
+            }
+            # 忽略試撮 / 盤中零股，避免污染微觀結構統計
+            if data["simtrade"] or data["intraday_odd"]:
+                return
+            self._on_tick_cb(data)
+        except Exception:
+            log.exception("tick handler failed")
+
+    def _handle_bidask(self, exchange, bidask):
+        """Shioaji BidAskSTKv1 → plain dict → forward to registered callback."""
+        if not self._on_bidask_cb:
+            return
+        try:
+            data = {
+                "code": getattr(bidask, "code", ""),
+                "time": str(getattr(bidask, "datetime", "")),
+                "bid_price": list(getattr(bidask, "bid_price", []) or []),
+                "bid_volume": list(getattr(bidask, "bid_volume", []) or []),
+                "ask_price": list(getattr(bidask, "ask_price", []) or []),
+                "ask_volume": list(getattr(bidask, "ask_volume", []) or []),
+                "simtrade": getattr(bidask, "simtrade", 0),
+                "intraday_odd": getattr(bidask, "intraday_odd", 0),
+            }
+            if data["simtrade"] or data["intraday_odd"]:
+                return
+            self._on_bidask_cb(data)
+        except Exception:
+            log.exception("bidask handler failed")
+
+    def subscribe_quote(self, stock_code: str,
+                        on_tick: Callable[[dict], None] | None = None,
+                        on_bidask: Callable[[dict], None] | None = None) -> bool:
+        """訂閱某檔股票的即時逐筆成交(Tick) + 五檔委買賣(BidAsk)。
+
+        注意：即時行情串流需在**正式環境**登入才會推送；模擬(測試)環境不供行情。
+        """
+        if not self._logged_in or not self._api:
+            return False
+        import shioaji as sj
+
+        contract = self.get_stock_contract(stock_code)
+        if not contract:
+            return False
+        try:
+            if on_tick:
+                self._on_tick_cb = on_tick
+            if on_bidask:
+                self._on_bidask_cb = on_bidask
+            self._ensure_quote_callbacks()
+            self._api.quote.subscribe(
+                contract, quote_type=sj.constant.QuoteType.Tick,
+                version=sj.constant.QuoteVersion.v1)
+            self._api.quote.subscribe(
+                contract, quote_type=sj.constant.QuoteType.BidAsk,
+                version=sj.constant.QuoteVersion.v1)
+            self._subscribed.add(stock_code)
+            log.info("Subscribed tick+bidask for %s", stock_code)
+            return True
+        except Exception:
+            log.exception("subscribe_quote failed for %s", stock_code)
+            return False
+
+    def unsubscribe_quote(self, stock_code: str) -> None:
+        """取消某檔股票的行情訂閱。"""
+        if not self._logged_in or not self._api:
+            return
+        import shioaji as sj
+        contract = self.get_stock_contract(stock_code)
+        if not contract:
+            return
+        for qt in (sj.constant.QuoteType.Tick, sj.constant.QuoteType.BidAsk):
+            try:
+                self._api.quote.unsubscribe(
+                    contract, quote_type=qt, version=sj.constant.QuoteVersion.v1)
+            except Exception:
+                log.warning("unsubscribe %s %s failed", stock_code, qt)
+        self._subscribed.discard(stock_code)
+
+    def unsubscribe_all_quotes(self) -> None:
+        for code in list(self._subscribed):
+            self.unsubscribe_quote(code)
 
     # ---- Order ----
 
