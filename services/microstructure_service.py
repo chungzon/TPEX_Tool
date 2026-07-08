@@ -169,6 +169,8 @@ class TickVolumeBucket:
         self._imb: deque[float] = deque(maxlen=cfg.vpin_buckets)  # 每桶 |B-S|/V
         self.vpin = 0.0
         self.cur_buy_ratio = 0.5   # 當前桶即時買方推進率
+        self.consec_buy_buckets = 0   # 連續「買方推進達標」的量桶數
+        self.consec_sell_buckets = 0  # 連續「賣方推進達標」的量桶數
 
     def add(self, volume: float, side: int, price: float, time: str) -> Alert | None:
         """加入一筆成交量。side: +1 買方觸發 / -1 賣方觸發 / 0 無法判定。
@@ -204,6 +206,17 @@ class TickVolumeBucket:
         self._imb.append(imb)
         self.vpin = sum(self._imb) / len(self._imb) if self._imb else 0.0
         buy_ratio = self._buy / (self._buy + self._sell) if (self._buy + self._sell) > 0 else 0.5
+
+        # 連續量桶方向計數（供回測「連續 2 桶買/賣 >75%」判斷用）
+        if buy_ratio >= self.cfg.buy_push_ratio:
+            self.consec_buy_buckets += 1
+            self.consec_sell_buckets = 0
+        elif buy_ratio <= (1 - self.cfg.buy_push_ratio):
+            self.consec_sell_buckets += 1
+            self.consec_buy_buckets = 0
+        else:
+            self.consec_buy_buckets = 0
+            self.consec_sell_buckets = 0
 
         alert: Alert | None = None
         # 動能點火：一整桶量幾乎全由單邊市價單貢獻
@@ -513,6 +526,8 @@ class MicrostructureEngine:
                 "setup_side": self.ob.setup_side,
                 "vpin": self.vpin.vpin,
                 "buy_push_ratio": self.vpin.cur_buy_ratio,
+                "consec_buy_buckets": self.vpin.consec_buy_buckets,
+                "consec_sell_buckets": self.vpin.consec_sell_buckets,
                 "avg_trade_vol": self.large.avg_trade_vol,
                 "bid_price": list(self.ob.bid_price),
                 "bid_volume": list(self.ob.bid_volume),

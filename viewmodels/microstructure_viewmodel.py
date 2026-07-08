@@ -16,9 +16,13 @@ from viewmodels.base_viewmodel import BaseViewModel, ObservableProperty
 from services.shioaji_service import ShioajiService
 from services.config_service import ConfigService
 from services.microstructure_service import MicrostructureEngine, MicroConfig, Alert
+from services.microstructure_backtest import (
+    MicrostructureBacktester, BacktestParams, BacktestResult)
 
 _CONFIG_KEY = "micro_params"
 _VALID_FIELDS = {f.name for f in dataclasses.fields(MicroConfig)}
+_BT_CONFIG_KEY = "micro_backtest_params"
+_BT_FIELDS = {f.name for f in dataclasses.fields(BacktestParams)}
 
 
 class MicrostructureViewModel(BaseViewModel):
@@ -39,6 +43,11 @@ class MicrostructureViewModel(BaseViewModel):
     params_status = ObservableProperty("")  # 參數套用結果訊息
     export_status = ObservableProperty("")  # CSV 匯出結果訊息
 
+    # Backtest
+    is_backtesting = ObservableProperty(False)
+    backtest_status = ObservableProperty("")
+    backtest_result = ObservableProperty(None)   # dict | None（summary + trades + report）
+
     REFRESH_INTERVAL = 0.4  # 秒；UI 刷新頻率
 
     def __init__(self, config: ConfigService, shioaji_svc: ShioajiService | None = None):
@@ -56,6 +65,7 @@ class MicrostructureViewModel(BaseViewModel):
         # 完整買賣點歷史（供 CSV 匯出，不受畫面 deque maxlen 限制）
         self._point_lock = threading.Lock()
         self._point_history: list[dict] = []
+        self._last_bt: BacktestResult | None = None  # 最近一次回測結果（供匯出）
 
     # ================================================================ Parameters
 
@@ -95,6 +105,94 @@ class MicrostructureViewModel(BaseViewModel):
         self._engine.set_config(cfg)
         self._config.set(_CONFIG_KEY, dataclasses.asdict(cfg))
         self.params_status = "✓ 已回復預設參數"
+
+    # ================================================================ Backtest
+
+    def default_backtest_params(self) -> dict:
+        """讀 config 內存過的回測參數（套在預設上）供 UI 預填。"""
+        saved = self._config.get(_BT_CONFIG_KEY) or {}
+        clean = {k: v for k, v in saved.items() if k in _BT_FIELDS}
+        try:
+            return dataclasses.asdict(BacktestParams(**clean))
+        except (TypeError, ValueError):
+            return dataclasses.asdict(BacktestParams())
+
+    def run_backtest(self, stock_code: str, date: str, params: dict):
+        """抓永豐歷史逐筆 → 用目前 MicroConfig 跑回測（背景執行緒）。"""
+        if self.is_backtesting:
+            return
+        stock_code = stock_code.strip()
+        if not stock_code:
+            self.backtest_status = "請輸入股票代碼"
+            return
+        if not date.strip():
+            self.backtest_status = "請輸入回測日期 (YYYY-MM-DD)"
+            return
+        if not self._sj.is_logged_in:
+            self.backtest_status = "尚未連線永豐，請先按『連線』"
+            return
+
+        clean = {k: v for k, v in params.items() if k in _BT_FIELDS}
+        try:
+            bt_params = BacktestParams(**clean)
+        except (TypeError, ValueError) as e:
+            self.backtest_status = f"回測參數錯誤：{e}"
+            return
+        self._config.set(_BT_CONFIG_KEY, dataclasses.asdict(bt_params))
+
+        self.is_backtesting = True
+        self.backtest_status = f"下載 {stock_code} {date} 逐筆資料中..."
+        self.backtest_result = None
+
+        def _work():
+            try:
+                ticks = self._sj.get_historical_ticks(stock_code, date)
+                if not ticks:
+                    self.backtest_status = "查無逐筆資料（代碼/日期錯誤、非交易日或無權限）"
+                    return
+                self.backtest_status = f"重放 {len(ticks):,} 筆 tick，回測中..."
+                bt = MicrostructureBacktester(self._engine.cfg, bt_params)
+                res = bt.run(ticks, code=stock_code, date=date)
+                self._last_bt = res
+                self.backtest_result = {
+                    "summary": res.summary_dict(),
+                    "trades": [t.as_dict() for t in res.trades],
+                    "report": bt.report_text(res),
+                    "equity_curve": res.equity_curve,
+                }
+                if res.error:
+                    self.backtest_status = f"回測失敗：{res.error}"
+                else:
+                    self.backtest_status = (
+                        f"完成：{res.total_trades} 筆交易，勝率 {res.win_rate:.1f}%，"
+                        f"總報酬 {res.total_return_pct:+.2f}%")
+            except Exception as e:
+                self.backtest_status = f"回測發生錯誤：{e}"
+            finally:
+                self.is_backtesting = False
+
+        threading.Thread(target=_work, daemon=True).start()
+
+    def export_backtest_csv(self, path: str):
+        """把最近一次回測的每筆交易明細匯出成 CSV。"""
+        import csv
+        res = self._last_bt
+        if not res or not res.trades:
+            self.export_status = "目前沒有回測交易可匯出"
+            return
+        try:
+            with open(path, "w", newline="", encoding="utf-8-sig") as f:
+                w = csv.writer(f)
+                w.writerow(["方向", "進場時間", "進場價", "出場時間", "出場價",
+                            "報酬率%", "出場原因", "持有筆數"])
+                for t in res.trades:
+                    w.writerow([
+                        "做多" if t.direction == "long" else "做空",
+                        t.entry_time, t.entry_price, t.exit_time, t.exit_price,
+                        t.ret_pct, t.exit_reason, t.hold_ticks])
+            self.export_status = f"✓ 已匯出 {len(res.trades)} 筆交易 → {path}"
+        except Exception as e:
+            self.export_status = f"匯出失敗：{e}"
 
     # ================================================================ Connection
 

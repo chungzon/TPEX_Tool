@@ -281,6 +281,40 @@ class ShioajiService:
         for code in list(self._subscribed):
             self.unsubscribe_quote(code)
 
+    # ---- Historical tick data (for backtest) ----
+
+    def get_historical_ticks(self, stock_code: str, date: str) -> list[dict]:
+        """取得某檔股票某日的逐筆成交資料（含 level-1 買賣價量）供回測用。
+
+        date 格式 'YYYY-MM-DD'。回傳依時間排序的 tick dict list。
+        注意：永豐歷史 ticks 僅提供第一檔（best bid/ask），非五檔。
+        """
+        if not self._logged_in or not self._api:
+            return []
+        contract = self.get_stock_contract(stock_code)
+        if not contract:
+            return []
+        try:
+            t = self._api.ticks(contract, date, timeout=60000)
+            n = len(t.ts)
+            out: list[dict] = []
+            for i in range(n):
+                out.append({
+                    "ts": t.ts[i],
+                    "close": float(t.close[i]),
+                    "volume": float(t.volume[i]),
+                    "bid_price": float(t.bid_price[i]),
+                    "bid_volume": float(t.bid_volume[i]),
+                    "ask_price": float(t.ask_price[i]),
+                    "ask_volume": float(t.ask_volume[i]),
+                    "tick_type": int(t.tick_type[i]),
+                })
+            log.info("Fetched %d historical ticks for %s %s", n, stock_code, date)
+            return out
+        except Exception:
+            log.exception("get_historical_ticks failed for %s %s", stock_code, date)
+            return []
+
     # ---- Order ----
 
     def place_order(

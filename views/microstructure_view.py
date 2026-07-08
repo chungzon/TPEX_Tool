@@ -27,6 +27,7 @@ class MicrostructureView(ctk.CTkFrame):
         self._points_tree: ttk.Treeview | None = None
         self._ob_tree: ttk.Treeview | None = None
         self._large_tree: ttk.Treeview | None = None
+        self._bt_tree: ttk.Treeview | None = None
         self._build_ui()
         self._bind_vm()
         # 進頁時同步共用連線狀態
@@ -195,6 +196,9 @@ class MicrostructureView(ctk.CTkFrame):
             font=ctk.CTkFont(size=12, family="Consolas"), state="disabled")
         self.log_textbox.pack(fill="x", padx=14, pady=(0, 14))
 
+        # -------- Backtest card --------
+        self._build_backtest_card(container)
+
         self._build_points_tree()
         self._build_ob_tree()
         self._build_large_tree()
@@ -286,6 +290,140 @@ class MicrostructureView(ctk.CTkFrame):
         for key, (ent, typ) in self._param_entries.items():
             ent.delete(0, "end")
             ent.insert(0, self._fmt_param(cur.get(key), typ))
+
+    # ---- Backtest card ----
+
+    BT_NUM_SPEC = [
+        ("take_profit_pct", "停利%", float),
+        ("stop_loss_pct", "停損%", float),
+        ("trailing_pct", "移動停損%", float),
+        ("slippage_ticks", "滑價(tick)", float),
+        ("confluence_window", "訊號窗口", int),
+        ("fee_discount", "手續費折", float),
+    ]
+
+    def _build_backtest_card(self, container):
+        card = ctk.CTkFrame(container, corner_radius=12)
+        card.pack(padx=30, pady=(6, 16), fill="x")
+
+        hdr = ctk.CTkFrame(card, fg_color="transparent")
+        hdr.pack(fill="x", padx=20, pady=(14, 2))
+        ctk.CTkLabel(hdr, text="策略回測（永豐歷史逐筆）",
+                      font=ctk.CTkFont(size=15, weight="bold")).pack(side="left")
+        ctk.CTkLabel(hdr, text="套用上方偵測參數，做多/做空事件驅動回測 · 已計滑價與手續費稅",
+                      font=ctk.CTkFont(size=11), text_color="#888888").pack(
+                          side="left", padx=(10, 0))
+
+        # 代碼 + 日期 + 做多/做空
+        row1 = ctk.CTkFrame(card, fg_color="transparent")
+        row1.pack(fill="x", padx=20, pady=(6, 2))
+        ctk.CTkLabel(row1, text="代碼：", font=ctk.CTkFont(size=13)).pack(side="left")
+        self.bt_code_entry = ctk.CTkEntry(row1, width=90, font=ctk.CTkFont(size=13))
+        self.bt_code_entry.pack(side="left", padx=(2, 12))
+        ctk.CTkLabel(row1, text="日期：", font=ctk.CTkFont(size=13)).pack(side="left")
+        self.bt_date_entry = ctk.CTkEntry(row1, width=110, font=ctk.CTkFont(size=13),
+                                          placeholder_text="YYYY-MM-DD")
+        self.bt_date_entry.pack(side="left", padx=(2, 12))
+        self.bt_date_entry.insert(0, datetime.now().strftime("%Y-%m-%d"))
+
+        cur = self.vm.default_backtest_params()
+        self.bt_long_var = ctk.BooleanVar(value=bool(cur.get("allow_long", True)))
+        self.bt_short_var = ctk.BooleanVar(value=bool(cur.get("allow_short", True)))
+        ctk.CTkCheckBox(row1, text="做多", variable=self.bt_long_var,
+                         font=ctk.CTkFont(size=13)).pack(side="left", padx=(0, 8))
+        ctk.CTkCheckBox(row1, text="做空", variable=self.bt_short_var,
+                         font=ctk.CTkFont(size=13)).pack(side="left")
+
+        # 數值參數
+        row2 = ctk.CTkFrame(card, fg_color="transparent")
+        row2.pack(fill="x", padx=20, pady=(4, 2))
+        self._bt_entries: dict[str, tuple] = {}
+        for key, label, typ in self.BT_NUM_SPEC:
+            ctk.CTkLabel(row2, text=label + "：",
+                          font=ctk.CTkFont(size=12)).pack(side="left")
+            ent = ctk.CTkEntry(row2, width=56, font=ctk.CTkFont(size=12))
+            ent.pack(side="left", padx=(2, 10))
+            ent.insert(0, self._fmt_param(cur.get(key), typ))
+            self._bt_entries[key] = (ent, typ)
+
+        # 執行 + 狀態
+        row3 = ctk.CTkFrame(card, fg_color="transparent")
+        row3.pack(fill="x", padx=20, pady=(6, 4))
+        self.bt_run_btn = ctk.CTkButton(
+            row3, text="執行回測", width=110, height=34, corner_radius=8,
+            font=ctk.CTkFont(size=14, weight="bold"),
+            fg_color="#7e57c2", hover_color="#5e35b1",
+            command=self._on_run_backtest)
+        self.bt_run_btn.pack(side="left")
+        self.bt_export_btn = ctk.CTkButton(
+            row3, text="匯出交易 CSV", width=110, height=34, corner_radius=8,
+            font=ctk.CTkFont(size=12), fg_color="#1f6aa5", hover_color="#185a8c",
+            command=self._on_export_backtest)
+        self.bt_export_btn.pack(side="left", padx=(8, 0))
+        self.bt_status_label = ctk.CTkLabel(
+            row3, text="", font=ctk.CTkFont(size=12), text_color="#4ECDC4")
+        self.bt_status_label.pack(side="left", padx=(14, 0))
+
+        # 報告
+        self.bt_report_label = ctk.CTkLabel(
+            card, text="", font=ctk.CTkFont(size=12, family="Consolas"),
+            justify="left", text_color="#e0e0e0")
+        self.bt_report_label.pack(anchor="w", padx=22, pady=(4, 6))
+
+        # 交易明細表
+        self.bt_trades_frame = ctk.CTkFrame(card, fg_color="transparent")
+        self.bt_trades_frame.pack(fill="both", expand=True, padx=12, pady=(0, 14))
+        self._build_bt_tree()
+
+    def _build_bt_tree(self):
+        self._tree_style()
+        cols = ("dir", "et", "ep", "xt", "xp", "ret", "reason", "hold")
+        tree = ttk.Treeview(self.bt_trades_frame, columns=cols, show="headings",
+                            height=8, style="Micro.Treeview")
+        for c, txt, w, anc in [
+            ("dir", "方向", 45, "center"), ("et", "進場時間", 70, "center"),
+            ("ep", "進場價", 60, "e"), ("xt", "出場時間", 70, "center"),
+            ("xp", "出場價", 60, "e"), ("ret", "報酬%", 60, "e"),
+            ("reason", "出場原因", 75, "center"), ("hold", "持有", 45, "e"),
+        ]:
+            tree.heading(c, text=txt)
+            tree.column(c, width=w, anchor=anc, stretch=(c == "reason"))
+        tree.tag_configure("win", foreground="#ef5350")
+        tree.tag_configure("loss", foreground="#26a69a")
+        sb = ttk.Scrollbar(self.bt_trades_frame, orient="vertical", command=tree.yview)
+        tree.configure(yscrollcommand=sb.set)
+        tree.pack(side="left", fill="both", expand=True)
+        sb.pack(side="right", fill="y")
+        self._bt_tree = tree
+
+    def _on_run_backtest(self):
+        params = {
+            "allow_long": self.bt_long_var.get(),
+            "allow_short": self.bt_short_var.get(),
+        }
+        for key, (ent, typ) in self._bt_entries.items():
+            raw = ent.get().strip()
+            if raw == "":
+                continue
+            try:
+                params[key] = typ(raw)
+            except ValueError:
+                self.bt_status_label.configure(
+                    text=f"「{key}」格式錯誤", text_color="#FF6B6B")
+                return
+        self.vm.run_backtest(
+            self.bt_code_entry.get().strip() or self.code_entry.get().strip(),
+            self.bt_date_entry.get().strip(), params)
+
+    def _on_export_backtest(self):
+        code = self.bt_code_entry.get().strip() or "stock"
+        default_name = f"回測交易_{code}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv"
+        path = filedialog.asksaveasfilename(
+            title="匯出回測交易", defaultextension=".csv",
+            initialfile=default_name,
+            filetypes=[("CSV 檔", "*.csv"), ("所有檔案", "*.*")])
+        if path:
+            self.vm.export_backtest_csv(path)
 
     def _tree_style(self):
         style = ttk.Style()
@@ -381,6 +519,41 @@ class MicrostructureView(ctk.CTkFrame):
         self.vm.bind("error", self._on_error)
         self.vm.bind("params_status", self._on_params_status)
         self.vm.bind("export_status", self._on_export_status)
+        self.vm.bind("is_backtesting", self._on_backtesting)
+        self.vm.bind("backtest_status", self._on_backtest_status)
+        self.vm.bind("backtest_result", self._on_backtest_result)
+
+    def _on_backtesting(self, v):
+        def _u():
+            if v:
+                self.bt_run_btn.configure(state="disabled", text="回測中...")
+            else:
+                self.bt_run_btn.configure(state="normal", text="執行回測")
+        self.after(0, _u)
+
+    def _on_backtest_status(self, v):
+        clr = "#FF6B6B" if ("失敗" in v or "錯誤" in v or "查無" in v or "請" in v) else "#4ECDC4"
+        self.after(0, lambda: self.bt_status_label.configure(text=v, text_color=clr))
+
+    def _on_backtest_result(self, data):
+        if not data:
+            return
+
+        def _u():
+            self.bt_report_label.configure(text=data.get("report", ""))
+            if not self._bt_tree:
+                return
+            self._bt_tree.delete(*self._bt_tree.get_children())
+            for t in data.get("trades", []):
+                ret = t.get("ret_pct", 0)
+                tag = "win" if ret > 0 else "loss"
+                self._bt_tree.insert("", "end", values=(
+                    "做多" if t.get("direction") == "long" else "做空",
+                    t.get("entry_time", ""), f"{t.get('entry_price', 0):.2f}",
+                    t.get("exit_time", ""), f"{t.get('exit_price', 0):.2f}",
+                    f"{ret:+.3f}", t.get("exit_reason", ""), t.get("hold_ticks", 0),
+                ), tags=(tag,))
+        self.after(0, _u)
 
     def _on_params_status(self, v):
         if not v:
