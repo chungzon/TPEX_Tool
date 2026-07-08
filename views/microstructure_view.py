@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
+from datetime import datetime
+
 import customtkinter as ctk
-from tkinter import ttk
+from tkinter import ttk, filedialog
 
 from viewmodels.microstructure_viewmodel import MicrostructureViewModel
 
@@ -146,8 +148,14 @@ class MicrostructureView(ctk.CTkFrame):
                       text="由微觀結構訊號彙整（起漲/起跌 · 動能點火 · 冰山），僅供參考非投資建議",
                       font=ctk.CTkFont(size=11), text_color="#888888").pack(
                           side="left", padx=(10, 0))
+        ctk.CTkButton(pts_hdr, text="匯出 CSV", width=90, height=28, corner_radius=6,
+                       font=ctk.CTkFont(size=12), fg_color="#1f6aa5", hover_color="#185a8c",
+                       command=self._on_export_csv).pack(side="right")
         self.points_frame = ctk.CTkFrame(pts_card, fg_color="transparent")
         self.points_frame.pack(fill="both", expand=True, padx=10, pady=(0, 12))
+        self.export_label = ctk.CTkLabel(
+            pts_card, text="", font=ctk.CTkFont(size=11), text_color="#4ECDC4")
+        self.export_label.pack(anchor="w", padx=16, pady=(0, 8))
 
         # -------- Order book + large orders (side by side) --------
         mid = ctk.CTkFrame(container, fg_color="transparent")
@@ -350,6 +358,16 @@ class MicrostructureView(ctk.CTkFrame):
     def _on_stop(self):
         self.vm.stop_tracking()
 
+    def _on_export_csv(self):
+        code = self.vm.tracked_code or "stock"
+        default_name = f"買賣點_{code}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv"
+        path = filedialog.asksaveasfilename(
+            title="匯出買賣點", defaultextension=".csv",
+            initialfile=default_name,
+            filetypes=[("CSV 檔", "*.csv"), ("所有檔案", "*.*")])
+        if path:
+            self.vm.export_csv(path)
+
     # ================================================================ Bindings
 
     def _bind_vm(self):
@@ -362,12 +380,19 @@ class MicrostructureView(ctk.CTkFrame):
         self.vm.bind("alert_log", self._on_alert_log)
         self.vm.bind("error", self._on_error)
         self.vm.bind("params_status", self._on_params_status)
+        self.vm.bind("export_status", self._on_export_status)
 
     def _on_params_status(self, v):
         if not v:
             return
         clr = "#FF6B6B" if v.startswith("參數") else "#4ECDC4"
         self.after(0, lambda: self.params_status_label.configure(text=v, text_color=clr))
+
+    def _on_export_status(self, v):
+        if not v:
+            return
+        clr = "#FF6B6B" if "失敗" in v or "沒有" in v else "#4ECDC4"
+        self.after(0, lambda: self.export_label.configure(text=v, text_color=clr))
 
     def _on_conn_status(self, v):
         self.after(0, lambda: self.conn_label.configure(text=v))

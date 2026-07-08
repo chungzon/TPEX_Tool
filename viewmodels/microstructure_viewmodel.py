@@ -37,6 +37,7 @@ class MicrostructureViewModel(BaseViewModel):
     alert_log = ObservableProperty("")
     error = ObservableProperty("")
     params_status = ObservableProperty("")  # 參數套用結果訊息
+    export_status = ObservableProperty("")  # CSV 匯出結果訊息
 
     REFRESH_INTERVAL = 0.4  # 秒；UI 刷新頻率
 
@@ -46,11 +47,15 @@ class MicrostructureViewModel(BaseViewModel):
         # 與「下單」分頁共用同一個 Shioaji 連線；若未提供則自建
         self._sj = shioaji_svc or ShioajiService()
         cfg = self._load_config()
-        self._engine = MicrostructureEngine(cfg, on_alert=self._on_alert)
+        self._engine = MicrostructureEngine(
+            cfg, on_alert=self._on_alert, on_point=self._on_point)
         self._refresh_thread: threading.Thread | None = None
         self._stop = threading.Event()
         self._alert_lock = threading.Lock()
         self._pending_alerts: list[str] = []
+        # 完整買賣點歷史（供 CSV 匯出，不受畫面 deque maxlen 限制）
+        self._point_lock = threading.Lock()
+        self._point_history: list[dict] = []
 
     # ================================================================ Parameters
 
@@ -155,6 +160,8 @@ class MicrostructureViewModel(BaseViewModel):
             self.stop_tracking()
 
         self._engine.reset()
+        with self._point_lock:
+            self._point_history.clear()
         self.state_data = None
         ok = self._sj.subscribe_quote(
             stock_code, on_tick=self._engine.on_tick,
@@ -203,6 +210,43 @@ class MicrostructureViewModel(BaseViewModel):
         icon = {"strong": "🔴", "warn": "🟡", "info": "⚪"}.get(alert.level, "•")
         t = (alert.time or "")[-12:]  # 只取時分秒
         self._append_alert(f"{icon} [{t}] {alert.message}")
+
+    def _on_point(self, point: dict):
+        """engine callback：產生新買/賣點 → 存入歷史 + 寫一行到訊號紀錄。"""
+        with self._point_lock:
+            self._point_history.append(dict(point))
+        side_txt = "買點" if point.get("side") == "buy" else "賣點"
+        kind_txt = {"attack": "起漲/起跌", "momentum": "動能點火",
+                    "iceberg": "冰山"}.get(point.get("kind", ""), point.get("kind", ""))
+        self._append_alert(
+            f"★ [{point.get('time','')}] {side_txt} @{point.get('price',0):.2f} "
+            f"{point.get('strength','')}｜{kind_txt}：{point.get('reason','')}")
+
+    def export_csv(self, path: str):
+        """把本次追蹤累積的所有買賣點匯出成 CSV（Excel 可直接開）。"""
+        import csv
+        with self._point_lock:
+            rows = list(self._point_history)
+        if not rows:
+            self.export_status = "目前沒有買賣點可匯出"
+            return
+        try:
+            with open(path, "w", newline="", encoding="utf-8-sig") as f:
+                w = csv.writer(f)
+                w.writerow(["時間", "方向", "價格", "強度", "類型", "依據"])
+                kmap = {"attack": "起漲/起跌", "momentum": "動能點火", "iceberg": "冰山"}
+                for p in rows:
+                    w.writerow([
+                        p.get("time", ""),
+                        "買點" if p.get("side") == "buy" else "賣點",
+                        p.get("price", 0),
+                        p.get("strength", ""),
+                        kmap.get(p.get("kind", ""), p.get("kind", "")),
+                        p.get("reason", ""),
+                    ])
+            self.export_status = f"✓ 已匯出 {len(rows)} 筆買賣點 → {path}"
+        except Exception as e:
+            self.export_status = f"匯出失敗：{e}"
 
     def _append_alert(self, line: str):
         with self._alert_lock:

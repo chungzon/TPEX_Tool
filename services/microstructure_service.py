@@ -364,10 +364,12 @@ class MicrostructureEngine:
     """整合 OBI / VPIN / 大單三大偵測器，統一吃 tick / bidask 事件。"""
 
     def __init__(self, cfg: MicroConfig | None = None,
-                 on_alert: Callable[[Alert], None] | None = None):
+                 on_alert: Callable[[Alert], None] | None = None,
+                 on_point: Callable[[dict], None] | None = None):
         self.cfg = cfg or MicroConfig()
         self._lock = threading.Lock()
         self._on_alert = on_alert
+        self._on_point = on_point   # 產生新買賣點時的 callback
 
         self.ob = OrderBookTracker(self.cfg)
         self.vpin = TickVolumeBucket(self.cfg)
@@ -484,6 +486,11 @@ class MicrostructureEngine:
                     and abs(last["price"] - point["price"]) < 1e-6):
                 return
         self.trade_points.append(point)
+        if self._on_point:
+            try:
+                self._on_point(point)
+            except Exception:
+                pass
 
     # ---- 快照供 UI 讀取 ----
     def snapshot(self) -> dict:
