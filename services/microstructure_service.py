@@ -23,13 +23,39 @@ from __future__ import annotations
 import threading
 from collections import deque
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Any, Callable
 
 
 def _now_str() -> str:
     """目前本地時間（時:分:秒），用於訊號/大單/買賣點的時間戳。"""
     return datetime.now().strftime("%H:%M:%S")
+
+
+def _tick_ns(tick: dict) -> int:
+    """把 tick 的成交時間統一成「台北當地時間當成 UTC」的奈秒 epoch。
+
+    此基準與永豐歷史逐筆的 ``ts`` 完全一致（歷史 ts 即以此方式編碼），讓分線濾網的
+    bar 分組在『即時追蹤』與『回測』之間對齊、且對齊台北整點分鐘：
+      * 歷史逐筆：直接用 ``ts``（已是此基準）。
+      * 即時逐筆：永豐 ``tick.datetime`` 為台北當地牆鐘時間（本 dict 的 ``time``），
+        解析後「當成 UTC」換算 epoch，即得同一基準；解析失敗退回本機現在時間。
+    """
+    ts = tick.get("ts")
+    if ts:
+        return int(ts)
+    dt = None
+    s = tick.get("time") or ""
+    if s:
+        try:
+            dt = datetime.fromisoformat(str(s))
+        except ValueError:
+            dt = None
+    if dt is None:
+        dt = datetime.now()
+    if dt.tzinfo is not None:          # 若帶時區，只取牆鐘數字（去除 offset）
+        dt = dt.replace(tzinfo=None)
+    return int(dt.replace(tzinfo=timezone.utc).timestamp() * 1e9)
 
 
 # --------------------------------------------------------------------------- #
@@ -403,6 +429,41 @@ class MicrostructureEngine:
         self._alerts: list[Alert] = []
         self.trade_points: deque[dict] = deque(maxlen=50)  # 彙整後的買/賣點
 
+        # 趨勢濾網（雙層濾網的上層）：買賣點須方向大局點頭才亮燈
+        self._init_filter_state()
+
+    def _init_filter_state(self) -> None:
+        self._filter_active = False
+        self._daily_long_ok = True
+        self._daily_short_ok = True
+        self._daily_note = ""
+        self._intraday_tf = None   # duck-typed IntradayTrendFilter | None
+        self.filtered_points = 0   # 被濾網擋下的買賣點數（診斷用）
+
+    def set_trend_filter(self, daily_long_ok: bool, daily_short_ok: bool,
+                         intraday_tf=None, daily_note: str = "") -> None:
+        """設定趨勢濾網。intraday_tf 為 IntradayTrendFilter（或 None 不用分線閘門）。
+        任一層生效即啟用；全放行等同不濾。由 VM 在開始追蹤時依設定呼叫。"""
+        with self._lock:
+            self._daily_long_ok = daily_long_ok
+            self._daily_short_ok = daily_short_ok
+            self._intraday_tf = intraday_tf
+            self._daily_note = daily_note
+            self._filter_active = (
+                (not daily_long_ok) or (not daily_short_ok) or intraday_tf is not None)
+            self.filtered_points = 0
+
+    def _gate_side(self, side: str) -> bool:
+        """該方向的買賣點是否被濾網允許亮燈。"""
+        if not self._filter_active:
+            return True
+        itf = self._intraday_tf
+        if side == "buy":
+            return self._daily_long_ok and (itf is None or itf.long_ok)
+        if side == "sell":
+            return self._daily_short_ok and (itf is None or itf.short_ok)
+        return True
+
     # 會轉成「買賣點」的訊號類型（confluence 較高者）
     _POINT_KINDS = {"attack": "強", "momentum": "中", "iceberg": "中"}
 
@@ -438,6 +499,10 @@ class MicrostructureEngine:
 
             side = self._classify(price, tick_type)
             self._last_trade_price = price
+
+            # 餵分線趨勢閘門：時間統一成台北牆鐘當 UTC 的基準（與歷史 ts、回測一致）
+            if self._intraday_tf is not None:
+                self._intraday_tf.update(_tick_ns(tick), price)
 
             self.code = tick.get("code", self.code)
             self.last_price = price
@@ -481,6 +546,10 @@ class MicrostructureEngine:
     def _maybe_trade_point(self, a: Alert) -> None:
         """把 confluence 較高的訊號彙整成一個離散「買點/賣點」。"""
         if a.kind not in self._POINT_KINDS or a.side not in ("buy", "sell"):
+            return
+        # 趨勢濾網：方向與大局不符（逆勢/未突破）則不亮買賣點，只留在訊號紀錄
+        if not self._gate_side(a.side):
+            self.filtered_points += 1
             return
         # 依據簡述（去掉冒號後段細節）
         reason = a.message.split("：", 1)[0]
@@ -535,6 +604,13 @@ class MicrostructureEngine:
                 "ask_volume": list(self.ob.ask_volume),
                 "recent_large": list(self.large.recent_large)[-12:],
                 "trade_points": list(self.trade_points)[-15:],
+                "filter_active": self._filter_active,
+                "filter_daily_long": self._daily_long_ok,
+                "filter_daily_short": self._daily_short_ok,
+                "filter_daily_note": self._daily_note,
+                "filter_intraday_state": (
+                    self._intraday_tf.state if self._intraday_tf is not None else ""),
+                "filtered_points": self.filtered_points,
             }
 
     def set_config(self, cfg: MicroConfig) -> None:
@@ -569,3 +645,5 @@ class MicrostructureEngine:
             self.sell_vol_total = 0.0
             self._alerts = []
             self.trade_points.clear()
+            # 換股票 → 清除濾網（日線偏向、分線 bar 都是個股專屬）；VM 會重設
+            self._init_filter_state()

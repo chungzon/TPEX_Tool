@@ -678,6 +678,25 @@ class DbService:
             for r in cur.fetchall()
         ]
 
+    def get_recent_volume(self, stock_code: str, days: int = 20) -> list[dict]:
+        """Get the last ``days`` trading days' close price and volume for a stock,
+        most-recent first. Used to derive last price + ADV for adaptive params."""
+        cur = self._cursor()
+        cur.execute("""
+            SELECT TOP (%s) trade_date, close_price, total_volume
+            FROM StockDailySummary
+            WHERE stock_code=%s
+            ORDER BY trade_date DESC
+        """, (int(days), stock_code))
+        return [
+            {
+                "trade_date": str(r[0]),
+                "close_price": r[1],
+                "total_volume": r[2],
+            }
+            for r in cur.fetchall()
+        ]
+
     def search_stocks(self, keyword: str) -> list[dict]:
         """Search stocks by code or name. Returns list of {stock_code, stock_name}."""
         cur = self._cursor()

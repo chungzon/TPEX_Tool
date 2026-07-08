@@ -14,7 +14,7 @@ OBI / VPIN / 大單 偵測邏輯，模擬做多/做空進出場並統計績效�
    2. 連續 ≥2 個量桶賣方推進 > buy_push_ratio
    3. 內盤連續大單且價格向下跳檔（起跌點 attack sell）
 
-出場：固定停利 / 固定停損 / 移動停損 / OBI 反轉（穿越 0）/ 反向訊號。
+出場：固定停利 / 固定停損 / 移動停損 / OBI 反轉（蓄勢方向翻向，與進場對稱）/ 反向訊號。
 
 防未來函數（Look-ahead bias）
 ------------------------------
@@ -24,10 +24,14 @@ OBI / VPIN / 大單 偵測邏輯，模擬做多/做空進出場並統計績效�
 
 from __future__ import annotations
 
+import logging
 from dataclasses import dataclass, field, asdict
-from datetime import datetime
+from datetime import datetime, timezone
 
 from services.microstructure_service import MicrostructureEngine, MicroConfig, Alert
+from services.trend_filter_service import daily_trend_bias, IntradayTrendFilter
+
+log = logging.getLogger(__name__)
 
 
 # --------------------------------------------------------------------------- #
@@ -57,11 +61,28 @@ def tw_tick_size(price: float) -> float:
 class BacktestParams:
     allow_long: bool = True
     allow_short: bool = True
-    confluence_window: int = 40      # 三條件需在最近 N 筆 tick 內同時成立
+    confluence_window: int = 40      # 各訊號的「新鮮度」窗口：最近 N 筆 tick 內成立才算數
+    # --- 進場：K-of-N 合流計分（取代舊版三條件硬性 AND，避免過度嚴格跑不出訊號）---
+    entry_min_conditions: int = 2    # {OBI蓄勢, VPIN連續桶, 大單起漲} 至少幾項成立即進場（3=最嚴、1=最鬆）
+    min_consec_buckets: int = 1      # VPIN 條件：需連續幾個量桶同向推進（舊版硬寫 2）
+    require_attack: bool = False     # 是否「強制」需有大單起漲訊號（無論 K）
+    require_breakout: bool = False   # 是否「強制」需價格突破近 N 筆高/低點
+    breakout_lookback: int = 120     # 突破判斷回看的 tick 數（近似「近一分鐘高低」）
+    debug_every: int = 1000          # 每 N 筆 tick 記一次診斷快照（0=關閉），用於觀察哪個門檻太嚴
+    # --- 雙層濾網：上層決定方向，微觀訊號只在閘門開啟時扣板機 ---
+    daily_trend_filter: bool = False   # 日線趨勢方向濾網（需 VM 傳入回測日前的日收盤）
+    daily_ma_period: int = 20          # 日線 SMA 期數
+    intraday_filter: str = "off"       # 分線濾網：'off' | 'ma' | 'squeeze'
+    bar_seconds: int = 300             # 分線 bar 長度（秒），預設 5 分鐘
+    intraday_ma_period: int = 10       # 分線 MA 期數（mode='ma'）
+    bb_period: int = 20                # 布林通道期數（mode='squeeze'）
+    bb_k: float = 2.0                  # 布林通道標準差倍數
+    squeeze_factor: float = 0.6        # 擠壓判定：帶寬 ≤ factor×近期平均帶寬
+    squeeze_lookback: int = 20         # 擠壓帶寬回看 bar 數
     take_profit_pct: float = 0.5     # 固定停利 %
     stop_loss_pct: float = 0.3       # 固定停損 %
     trailing_pct: float = 0.0        # 移動停損 %（0 = 關閉）
-    exit_on_obi_flip: bool = True    # OBI 穿越 0 反向即出場
+    exit_on_obi_flip: bool = True    # OBI 蓄勢方向翻向即出場（與進場對稱，非單純穿越 0）
     exit_on_reverse: bool = True     # 出現反向 attack 訊號即出場
     slippage_ticks: float = 1.0      # 進出場各加幾個 tick 的滑價
     fee_rate: float = 0.001425       # 手續費率（單邊）
@@ -106,6 +127,8 @@ class BacktestResult:
     long_trades: int = 0
     short_trades: int = 0
     error: str = ""
+    # --- 診斷：幫忙看「零訊號」到底卡在哪個條件 ---
+    diag: dict = field(default_factory=dict)
 
     def summary_dict(self) -> dict:
         d = asdict(self)
@@ -121,9 +144,12 @@ class BacktestResult:
 class MicrostructureBacktester:
     """事件驅動回測器：重放逐筆資料 → 產生交易 → 統計績效。"""
 
-    def __init__(self, cfg: MicroConfig, params: BacktestParams):
+    def __init__(self, cfg: MicroConfig, params: BacktestParams,
+                 daily_closes: list[float] | None = None):
         self.cfg = cfg
         self.p = params
+        # 日線收盤序列（回測日之前，最舊在前）供日線趨勢濾網用
+        self.daily_closes = daily_closes or []
 
     # ---- 主流程 ----
     def run(self, ticks: list[dict], code: str = "", date: str = "") -> BacktestResult:
@@ -151,6 +177,39 @@ class MicrostructureBacktester:
         res.equity_curve.append(nav)
 
         W = self.p.confluence_window
+        K = max(1, min(3, self.p.entry_min_conditions))
+        min_buckets = max(1, self.p.min_consec_buckets)
+
+        # --- 上層濾網 ---
+        # 日線方向偏向（整日固定）
+        daily_long_ok, daily_short_ok, daily_note = True, True, ""
+        if self.p.daily_trend_filter:
+            daily_long_ok, daily_short_ok, daily_note = daily_trend_bias(
+                self.daily_closes, self.p.daily_ma_period)
+        # 分線趨勢/擠壓濾網（盤中逐 tick 更新）
+        intraday_tf: IntradayTrendFilter | None = None
+        if self.p.intraday_filter in ("ma", "squeeze"):
+            intraday_tf = IntradayTrendFilter(
+                mode=self.p.intraday_filter, bar_seconds=self.p.bar_seconds,
+                ma_period=self.p.intraday_ma_period, bb_period=self.p.bb_period,
+                bb_k=self.p.bb_k, squeeze_factor=self.p.squeeze_factor,
+                squeeze_lookback=self.p.squeeze_lookback)
+        filter_blocked_long = 0   # 診斷：微觀訊號成立但被濾網擋下的次數
+        filter_blocked_short = 0
+
+        # 突破判斷：維護近 breakout_lookback 筆收盤，判斷是否創窗口新高/低
+        from collections import deque
+        closes: deque[float] = deque(maxlen=max(2, self.p.breakout_lookback))
+
+        # 診斷計數器：在「空手」時統計各條件成立次數與合流分數分布
+        flat_ticks = 0
+        cond_hits = {"obi_buy": 0, "obi_sell": 0, "vpin_buy": 0, "vpin_sell": 0,
+                     "attack_buy": 0, "attack_sell": 0, "brk_up": 0, "brk_dn": 0}
+        score_hist_long = {0: 0, 1: 0, 2: 0, 3: 0}
+        score_hist_short = {0: 0, 1: 0, 2: 0, 3: 0}
+        obi_sum = 0.0
+        max_volume = 0.0
+        max_consec = 0
 
         for i, tk in enumerate(ticks):
             bid = tk["bid_price"]
@@ -179,6 +238,23 @@ class MicrostructureBacktester:
             snap = engine.snapshot()
             obi = snap["obi5"]
 
+            # 突破用收盤序列（用「加入本筆前」的窗口做為過去高/低基準）
+            prev_high = max(closes) if closes else close
+            prev_low = min(closes) if closes else close
+            closes.append(close)
+
+            # 上層分線濾網逐 tick 餵入
+            if intraday_tf is not None:
+                intraday_tf.update(tk.get("ts"), close)
+
+            # 診斷running stats
+            obi_sum += obi
+            if tk["volume"] > max_volume:
+                max_volume = tk["volume"]
+            mc = max(snap["consec_buy_buckets"], snap["consec_sell_buckets"])
+            if mc > max_consec:
+                max_consec = mc
+
             # ===================== 出場判斷 =====================
             if pos != 0:
                 held = i - entry_i
@@ -201,7 +277,10 @@ class MicrostructureBacktester:
                     elif self.p.trailing_pct > 0 and draw >= self.p.trailing_pct:
                         exit_reason = "移動停損"
                     elif self.p.exit_on_obi_flip and (
-                            (pos == 1 and obi <= 0) or (pos == -1 and obi >= 0)):
+                            (pos == 1 and snap["setup_side"] == "sell") or
+                            (pos == -1 and snap["setup_side"] == "buy")):
+                        # 與進場對稱：OBI 蓄勢「翻向」（連續數筆 obi5 壓過反向門檻）才出場，
+                        # 而非單純穿越 0，避免雜訊把停利提前洗掉。
                         exit_reason = "OBI反轉"
                     elif self.p.exit_on_reverse and (
                             (pos == 1 and last_attack_sell == i) or
@@ -227,18 +306,61 @@ class MicrostructureBacktester:
                     pos = 0
                     continue  # 出場當筆不再進場
 
-            # ===================== 進場判斷 =====================
+            # ===================== 進場判斷（K-of-N 合流計分）=====================
             if pos == 0:
+                flat_ticks += 1
+
+                # --- 三個核心訊號（各自有新鮮度窗口 W）---
+                a_buy = snap["setup_active"] and snap["setup_side"] == "buy"
+                b_buy = snap["consec_buy_buckets"] >= min_buckets
+                c_buy = (i - last_attack_buy) <= W
+                a_sell = snap["setup_active"] and snap["setup_side"] == "sell"
+                b_sell = snap["consec_sell_buckets"] >= min_buckets
+                c_sell = (i - last_attack_sell) <= W
+                # --- 突破訊號（選配過濾條件，不計入 K 分數）---
+                d_up = close > prev_high
+                d_dn = close < prev_low
+
+                score_long = a_buy + b_buy + c_buy
+                score_short = a_sell + b_sell + c_sell
+                score_hist_long[score_long] += 1
+                score_hist_short[score_short] += 1
+                for flag, key in ((a_buy, "obi_buy"), (b_buy, "vpin_buy"),
+                                  (c_buy, "attack_buy"), (a_sell, "obi_sell"),
+                                  (b_sell, "vpin_sell"), (c_sell, "attack_sell"),
+                                  (d_up, "brk_up"), (d_dn, "brk_dn")):
+                    if flag:
+                        cond_hits[key] += 1
+
                 long_ok = (
-                    self.p.allow_long
-                    and snap["setup_active"] and snap["setup_side"] == "buy"
-                    and snap["consec_buy_buckets"] >= 2
-                    and (i - last_attack_buy) <= W)
+                    self.p.allow_long and score_long >= K
+                    and (not self.p.require_attack or c_buy)
+                    and (not self.p.require_breakout or d_up))
                 short_ok = (
-                    self.p.allow_short
-                    and snap["setup_active"] and snap["setup_side"] == "sell"
-                    and snap["consec_sell_buckets"] >= 2
-                    and (i - last_attack_sell) <= W)
+                    self.p.allow_short and score_short >= K
+                    and (not self.p.require_attack or c_sell)
+                    and (not self.p.require_breakout or d_dn))
+
+                # ===== 上層濾網閘門：微觀訊號成立，還要方向大局點頭才放行 =====
+                gate_long = daily_long_ok and (
+                    intraday_tf is None or intraday_tf.long_ok)
+                gate_short = daily_short_ok and (
+                    intraday_tf is None or intraday_tf.short_ok)
+                if long_ok and not gate_long:
+                    filter_blocked_long += 1
+                if short_ok and not gate_short:
+                    filter_blocked_short += 1
+                long_ok = long_ok and gate_long
+                short_ok = short_ok and gate_short
+
+                if self.p.debug_every and i > 0 and i % self.p.debug_every == 0:
+                    log.info(
+                        "[bt %s] tick %d/%d｜avgOBI=%.3f maxVol=%.0f maxBuckets=%d｜"
+                        "命中 OBI買%d VPIN買%d 大單買%d｜score≥%d 多%d 空%d",
+                        code, i, len(ticks), obi_sum / (i + 1), max_volume, max_consec,
+                        cond_hits["obi_buy"], cond_hits["vpin_buy"], cond_hits["attack_buy"],
+                        K, score_hist_long[3] + (score_hist_long[2] if K <= 2 else 0),
+                        score_hist_short[3] + (score_hist_short[2] if K <= 2 else 0))
 
                 if long_ok and bid > 0 and ask > 0:
                     entry_price = self._slip(ask, +1, close)  # 吃 Ask + 滑價
@@ -273,6 +395,28 @@ class MicrostructureBacktester:
                 ret_pct=round(ret, 4), exit_reason="收盤平倉",
                 hold_ticks=len(ticks) - 1 - entry_i))
 
+        # 診斷彙整（供報告顯示零訊號卡點）
+        ft = max(1, flat_ticks)
+        res.diag = {
+            "flat_ticks": flat_ticks,
+            "avg_obi5": obi_sum / len(ticks) if ticks else 0.0,
+            "max_volume": max_volume,
+            "max_consec_buckets": max_consec,
+            "K": K,
+            "min_buckets": min_buckets,
+            "cond_hits": cond_hits,
+            "cond_pct": {k: v / ft * 100 for k, v in cond_hits.items()},
+            "score_hist_long": score_hist_long,
+            "score_hist_short": score_hist_short,
+            # 濾網
+            "daily_filter": self.p.daily_trend_filter,
+            "daily_note": daily_note,
+            "intraday_filter": self.p.intraday_filter,
+            "intraday_state": intraday_tf.state if intraday_tf else "",
+            "filter_blocked_long": filter_blocked_long,
+            "filter_blocked_short": filter_blocked_short,
+        }
+
         self._compute_metrics(res)
         return res
 
@@ -299,10 +443,13 @@ class MicrostructureBacktester:
 
     @staticmethod
     def _ts_str(ts) -> str:
-        """永豐 ts 為奈秒 epoch → HH:MM:SS。"""
+        """永豐歷史 ticks 的 ts 為奈秒 epoch，數值本身即「台北當地時間」（把當地時間
+        當成 UTC 編碼）。因此固定用 UTC 解讀、不套用本機時區，否則在 UTC+8 的機器上
+        會再多加 8 小時。與 pandas.to_datetime(ticks.ts) 得到的時間一致。"""
         try:
-            return datetime.fromtimestamp(int(ts) / 1e9).strftime("%H:%M:%S")
-        except (TypeError, ValueError, OSError):
+            return (datetime.fromtimestamp(int(ts) / 1e9, tz=timezone.utc)
+                    .strftime("%H:%M:%S"))
+        except (TypeError, ValueError, OSError, OverflowError):
             return ""
 
     # ---- 績效統計 ----
@@ -338,13 +485,66 @@ class MicrostructureBacktester:
             mdd = max(mdd, dd)
         res.max_drawdown_pct = mdd
 
+    # ---- 診斷文字（哪個條件太嚴格）----
+    def _diag_text(self, res: BacktestResult) -> str:
+        d = res.diag
+        if not d:
+            return ""
+        cp = d.get("cond_pct", {})
+        sl = d.get("score_hist_long", {})
+        ss = d.get("score_hist_short", {})
+        ft = d.get("flat_ticks", 0)
+        lines = [
+            f"—— 訊號診斷（空手 {ft:,} 筆 tick）——",
+            f"平均 OBI5：{d.get('avg_obi5', 0):+.3f}　最大單筆量：{d.get('max_volume', 0):,.0f} 張"
+            f"　最大連續桶：{d.get('max_consec_buckets', 0)}",
+            f"各條件命中率：OBI買 {cp.get('obi_buy', 0):.1f}%｜VPIN買 {cp.get('vpin_buy', 0):.1f}%"
+            f"｜大單買 {cp.get('attack_buy', 0):.1f}%｜突破 {cp.get('brk_up', 0):.1f}%",
+            f"　　　　　　OBI賣 {cp.get('obi_sell', 0):.1f}%｜VPIN賣 {cp.get('vpin_sell', 0):.1f}%"
+            f"｜大單賣 {cp.get('attack_sell', 0):.1f}%",
+            f"合流分數分布(多)：0={sl.get(0,0)} 1={sl.get(1,0)} 2={sl.get(2,0)} 3={sl.get(3,0)}"
+            f"　需 ≥{d.get('K')} 進場",
+            f"合流分數分布(空)：0={ss.get(0,0)} 1={ss.get(1,0)} 2={ss.get(2,0)} 3={ss.get(3,0)}",
+        ]
+        # 濾網狀態（有開才顯示）
+        if d.get("daily_filter"):
+            lines.append(f"日線濾網：{d.get('daily_note', '')}")
+        if d.get("intraday_filter") in ("ma", "squeeze"):
+            lines.append(
+                f"分線濾網({d.get('intraday_filter')})：{d.get('intraday_state', '')}")
+        if d.get("filter_blocked_long") or d.get("filter_blocked_short"):
+            lines.append(
+                f"※ 微觀訊號成立但被濾網擋下：多 {d.get('filter_blocked_long', 0)} 次 / "
+                f"空 {d.get('filter_blocked_short', 0)} 次")
+        lines.append(self._diag_hint(res))
+        return "\n".join(lines)
+
+    @staticmethod
+    def _diag_hint(res: BacktestResult) -> str:
+        """依命中率給一句「哪裡太嚴」的建議。"""
+        d = res.diag
+        cp = d.get("cond_pct", {})
+        weakest = min(
+            [("OBI 蓄勢", cp.get("obi_buy", 0) + cp.get("obi_sell", 0)),
+             ("VPIN 連續桶", cp.get("vpin_buy", 0) + cp.get("vpin_sell", 0)),
+             ("大單起漲", cp.get("attack_buy", 0) + cp.get("attack_sell", 0))],
+            key=lambda x: x[1])
+        blocked = d.get("filter_blocked_long", 0) + d.get("filter_blocked_short", 0)
+        if res.total_trades == 0:
+            if blocked > 0:
+                return (f"→ 微觀訊號其實成立過 {blocked} 次，但全被上層濾網擋下："
+                        f"方向與大局相反或未達突破。可放寬/關閉濾網，或改抓另一方向。")
+            return (f"→ 建議：最少見的是「{weakest[0]}」；可調降對應門檻、"
+                    f"降低『進場門檻數K』或『連續桶數』，或用「依股價自動」放寬。")
+        return f"→ 三訊號中最稀有：「{weakest[0]}」。"
+
     # ---- 文字報告 ----
     def report_text(self, res: BacktestResult) -> str:
         if res.error:
             return f"回測失敗：{res.error}"
         if res.total_trades == 0:
-            return (f"{res.code} {res.date}｜{res.tick_count} 筆 tick\n"
-                    f"未觸發任何交易（訊號條件未同時成立）。")
+            return (f"{res.code} {res.date}｜{res.tick_count:,} 筆 tick\n"
+                    f"未觸發任何交易。\n" + self._diag_text(res))
         pf = "∞" if res.profit_factor == float("inf") else f"{res.profit_factor:.2f}"
         lines = [
             f"===== 微觀結構回測報告 =====",
@@ -357,5 +557,6 @@ class MicrostructureBacktester:
             f"平均獲利：{res.avg_win_pct:+.3f}%　平均虧損：{res.avg_loss_pct:+.3f}%",
             f"每筆期望值：{res.expectancy_pct:+.3f}%",
             f"============================",
+            self._diag_text(res),
         ]
         return "\n".join(lines)

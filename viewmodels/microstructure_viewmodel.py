@@ -18,6 +18,7 @@ from services.config_service import ConfigService
 from services.microstructure_service import MicrostructureEngine, MicroConfig, Alert
 from services.microstructure_backtest import (
     MicrostructureBacktester, BacktestParams, BacktestResult)
+from services.adaptive_params_service import AdaptiveParameterManager
 
 _CONFIG_KEY = "micro_params"
 _VALID_FIELDS = {f.name for f in dataclasses.fields(MicroConfig)}
@@ -42,6 +43,7 @@ class MicrostructureViewModel(BaseViewModel):
     error = ObservableProperty("")
     params_status = ObservableProperty("")  # 參數套用結果訊息
     export_status = ObservableProperty("")  # CSV 匯出結果訊息
+    computed_params = ObservableProperty(None)  # 自動推導後的參數 dict（供 UI 回填）
 
     # Backtest
     is_backtesting = ObservableProperty(False)
@@ -106,6 +108,99 @@ class MicrostructureViewModel(BaseViewModel):
         self._config.set(_CONFIG_KEY, dataclasses.asdict(cfg))
         self.params_status = "✓ 已回復預設參數"
 
+    # ---------------------------------------------------------- Adaptive params
+
+    def auto_params(self, stock_code: str):
+        """依股價 / 量能自動推導並即時套用參數（背景執行緒，含網路抓取）。
+
+        參數隨股價（市場深度）與日均量（流動性）縮放；不寫入 config.json，因為
+        這組值是「該檔股票專屬」的，不宜污染全域預設。UI 端以 computed_params 回填。
+        """
+        code = stock_code.strip()
+        if not code:
+            self.params_status = "請先輸入股票代碼"
+            return
+        self.params_status = f"計算 {code} 的動態參數中..."
+
+        def _work():
+            try:
+                price, adv_lots, tick_sizes, note = self._gather_stock_profile(code)
+                if price <= 0:
+                    self.params_status = (
+                        "查無股價資料：請先下載日線／補資料，或連線永豐後再試")
+                    return
+                mgr = AdaptiveParameterManager(price, adv_lots, tick_sizes)
+                cfg, basis = mgr.build()
+                self._engine.set_config(cfg)
+                self.computed_params = dataclasses.asdict(cfg)
+                self.params_status = "✓ 已依股價自動設定：" + mgr.describe(basis)
+                self._append_alert(
+                    f"── 依股價自動設定參數（{mgr.describe(basis)}）──")
+            except Exception as e:
+                self.params_status = f"自動設定失敗：{e}"
+
+        threading.Thread(target=_work, daemon=True).start()
+
+    def _gather_stock_profile(
+        self, code: str,
+    ) -> tuple[float, float, list[float], str]:
+        """收集推導參數所需資料 → (股價, 日均量張數, 歷史每筆量, 來源說明)。
+
+        股價：優先 DB 最新收盤（免連線）；量能與每筆量分布：需連線永豐，抓最近一個
+        「完整交易日」的逐筆（單位為張，與即時引擎一致）。DB 的 total_volume 因來源
+        不同（爬蟲=張且雙邊重複計、補資料=股）單位不一致，故量能不採 DB。
+        """
+        price = 0.0
+        adv_lots = 0.0
+        tick_sizes: list[float] = []
+        note = ""
+
+        # 1) 股價：DB 最新收盤（NVARCHAR → float）
+        try:
+            from services.db_service import DbService
+            rows = DbService().get_recent_volume(code, 5)
+            if rows:
+                price = self._to_float(rows[0].get("close_price"))
+        except Exception:
+            pass
+
+        # 2) 量能 + 每筆量分布：永豐最近完整交易日逐筆
+        if self._sj.is_logged_in:
+            for d in self._recent_trading_dates(5):
+                try:
+                    ticks = self._sj.get_historical_ticks(code, d)
+                except Exception:
+                    ticks = []
+                if ticks:
+                    tick_sizes = [self._to_float(t.get("volume"))
+                                  for t in ticks if self._to_float(t.get("volume")) > 0]
+                    adv_lots = float(sum(tick_sizes))
+                    last_close = self._to_float(ticks[-1].get("close"))
+                    if last_close > 0:
+                        price = last_close  # 逐筆收盤較 DB 即時
+                    note = f"{d} 逐筆"
+                    break
+        return price, adv_lots, tick_sizes, note
+
+    @staticmethod
+    def _recent_trading_dates(n: int) -> list[str]:
+        """最近 n 個工作日（跳過六日），由前一個交易日往回，確保是完整交易日。"""
+        from datetime import datetime, timedelta
+        out: list[str] = []
+        d = datetime.now() - timedelta(days=1)
+        while len(out) < n:
+            if d.weekday() < 5:
+                out.append(d.strftime("%Y-%m-%d"))
+            d -= timedelta(days=1)
+        return out
+
+    @staticmethod
+    def _to_float(x) -> float:
+        try:
+            return float(str(x).replace(",", "").strip())
+        except (TypeError, ValueError):
+            return 0.0
+
     # ================================================================ Backtest
 
     def default_backtest_params(self) -> dict:
@@ -117,10 +212,30 @@ class MicrostructureViewModel(BaseViewModel):
         except (TypeError, ValueError):
             return dataclasses.asdict(BacktestParams())
 
+    def save_backtest_params(self, params: dict) -> BacktestParams | None:
+        """驗證回測參數並存入 config.json，回傳 BacktestParams（失敗回 None）。
+
+        獨立於「執行回測」：即使尚未連線或缺代碼/日期，使用者設定（做多/做空、
+        需大單、需突破、K 值、連續桶數…）也會被保存，下次開啟自動預填。
+        """
+        clean = {k: v for k, v in params.items() if k in _BT_FIELDS}
+        try:
+            bt_params = BacktestParams(**clean)
+        except (TypeError, ValueError) as e:
+            self.backtest_status = f"回測參數錯誤：{e}"
+            return None
+        self._config.set(_BT_CONFIG_KEY, dataclasses.asdict(bt_params))
+        return bt_params
+
     def run_backtest(self, stock_code: str, date: str, params: dict):
         """抓永豐歷史逐筆 → 用目前 MicroConfig 跑回測（背景執行緒）。"""
         if self.is_backtesting:
             return
+        # 先存設定（即使後面因未連線/缺欄位而中止，選項也已持久化）
+        bt_params = self.save_backtest_params(params)
+        if bt_params is None:
+            return
+
         stock_code = stock_code.strip()
         if not stock_code:
             self.backtest_status = "請輸入股票代碼"
@@ -131,14 +246,6 @@ class MicrostructureViewModel(BaseViewModel):
         if not self._sj.is_logged_in:
             self.backtest_status = "尚未連線永豐，請先按『連線』"
             return
-
-        clean = {k: v for k, v in params.items() if k in _BT_FIELDS}
-        try:
-            bt_params = BacktestParams(**clean)
-        except (TypeError, ValueError) as e:
-            self.backtest_status = f"回測參數錯誤：{e}"
-            return
-        self._config.set(_BT_CONFIG_KEY, dataclasses.asdict(bt_params))
 
         self.is_backtesting = True
         self.backtest_status = f"下載 {stock_code} {date} 逐筆資料中..."
@@ -151,7 +258,10 @@ class MicrostructureViewModel(BaseViewModel):
                     self.backtest_status = "查無逐筆資料（代碼/日期錯誤、非交易日或無權限）"
                     return
                 self.backtest_status = f"重放 {len(ticks):,} 筆 tick，回測中..."
-                bt = MicrostructureBacktester(self._engine.cfg, bt_params)
+                daily_closes = (self._fetch_daily_closes(stock_code, date)
+                                if bt_params.daily_trend_filter else [])
+                bt = MicrostructureBacktester(
+                    self._engine.cfg, bt_params, daily_closes=daily_closes)
                 res = bt.run(ticks, code=stock_code, date=date)
                 self._last_bt = res
                 self.backtest_result = {
@@ -172,6 +282,26 @@ class MicrostructureViewModel(BaseViewModel):
                 self.is_backtesting = False
 
         threading.Thread(target=_work, daemon=True).start()
+
+    def _fetch_daily_closes(self, code: str, date: str) -> list[float]:
+        """抓回測日『之前』約 60 個日曆日的日收盤（最舊在前），供日線趨勢濾網。
+
+        嚴格排除回測日當天，避免未來函數。DB close_price 為 NVARCHAR，需解析。
+        """
+        from datetime import datetime, timedelta
+        try:
+            end = datetime.strptime(date.strip(), "%Y-%m-%d")
+        except ValueError:
+            return []
+        start = (end - timedelta(days=90)).strftime("%Y-%m-%d")
+        prev = (end - timedelta(days=1)).strftime("%Y-%m-%d")
+        try:
+            from services.db_service import DbService
+            rows = DbService().get_stock_prices(code, start, prev)
+        except Exception:
+            return []
+        closes = [self._to_float(r.get("close_price")) for r in rows]
+        return [c for c in closes if c > 0]
 
     def export_backtest_csv(self, path: str):
         """把最近一次回測的每筆交易明細匯出成 CSV。"""
@@ -245,7 +375,7 @@ class MicrostructureViewModel(BaseViewModel):
 
     # ================================================================ Tracking
 
-    def start_tracking(self, stock_code: str):
+    def start_tracking(self, stock_code: str, auto: bool = False):
         stock_code = stock_code.strip()
         self.error = ""
         if not stock_code:
@@ -257,7 +387,13 @@ class MicrostructureViewModel(BaseViewModel):
         if self.is_tracking:
             self.stop_tracking()
 
+        # 追蹤前依股價／量能自動調參（背景抓取，不阻塞；set_config 為最終權威）
+        if auto:
+            self.auto_params(stock_code)
+
         self._engine.reset()
+        # 依已存的回測濾網設定，套用同一套趨勢濾網到即時買賣點
+        self._apply_live_trend_filter(stock_code)
         with self._point_lock:
             self._point_history.clear()
         self.state_data = None
@@ -276,6 +412,41 @@ class MicrostructureViewModel(BaseViewModel):
         self._stop.clear()
         self._refresh_thread = threading.Thread(target=self._refresh_loop, daemon=True)
         self._refresh_thread.start()
+
+    def _apply_live_trend_filter(self, code: str):
+        """讀回測卡的濾網設定，套用到即時引擎（買賣點過濾）。兩層皆關則不濾。"""
+        from datetime import datetime
+        from services.trend_filter_service import daily_trend_bias, IntradayTrendFilter
+        bp = self.default_backtest_params()
+        use_daily = bool(bp.get("daily_trend_filter"))
+        intraday_mode = bp.get("intraday_filter", "off")
+        if not use_daily and intraday_mode not in ("ma", "squeeze"):
+            self._engine.set_trend_filter(True, True, None)  # 不濾
+            return
+
+        daily_long, daily_short, note = True, True, ""
+        if use_daily:
+            today = datetime.now().strftime("%Y-%m-%d")
+            closes = self._fetch_daily_closes(code, today)
+            daily_long, daily_short, note = daily_trend_bias(
+                closes, int(bp.get("daily_ma_period", 20)))
+
+        itf = None
+        if intraday_mode in ("ma", "squeeze"):
+            itf = IntradayTrendFilter(
+                mode=intraday_mode, bar_seconds=int(bp.get("bar_seconds", 300)),
+                ma_period=int(bp.get("intraday_ma_period", 10)),
+                bb_period=int(bp.get("bb_period", 20)), bb_k=float(bp.get("bb_k", 2.0)),
+                squeeze_factor=float(bp.get("squeeze_factor", 0.6)),
+                squeeze_lookback=int(bp.get("squeeze_lookback", 20)))
+
+        self._engine.set_trend_filter(daily_long, daily_short, itf, daily_note=note)
+        parts = []
+        if use_daily:
+            parts.append(note or "日線濾網")
+        if itf is not None:
+            parts.append(f"分線閘門={intraday_mode}")
+        self._append_alert("── 趨勢濾網啟用：" + "；".join(parts) + " ──")
 
     def stop_tracking(self):
         if not self.is_tracking:

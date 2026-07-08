@@ -103,6 +103,11 @@ class MicrostructureView(ctk.CTkFrame):
             command=self._on_stop, state="disabled")
         self.stop_btn.pack(side="left", padx=(8, 0))
 
+        self.auto_param_var = ctk.BooleanVar(value=True)
+        ctk.CTkCheckBox(
+            track_row, text="依股價自動調參", variable=self.auto_param_var,
+            font=ctk.CTkFont(size=12)).pack(side="left", padx=(12, 0))
+
         self.track_status = ctk.CTkLabel(
             track_row, text="", font=ctk.CTkFont(size=13), text_color="#4ECDC4")
         self.track_status.pack(side="left", padx=(14, 0))
@@ -237,6 +242,10 @@ class MicrostructureView(ctk.CTkFrame):
         ctk.CTkButton(hdr, text="回復預設", width=80, height=30, corner_radius=8,
                        font=ctk.CTkFont(size=12), fg_color="#555", hover_color="#777",
                        command=self._on_reset_params).pack(side="right", padx=(0, 8))
+        ctk.CTkButton(hdr, text="依股價自動", width=100, height=30, corner_radius=8,
+                       font=ctk.CTkFont(size=12, weight="bold"),
+                       fg_color="#26a69a", hover_color="#00897b",
+                       command=self._on_auto_params).pack(side="right", padx=(0, 8))
 
         grid = ctk.CTkFrame(card, fg_color="transparent")
         grid.pack(fill="x", padx=20, pady=(0, 6))
@@ -286,20 +295,37 @@ class MicrostructureView(ctk.CTkFrame):
 
     def _on_reset_params(self):
         self.vm.reset_params()
-        cur = self.vm.default_params()
+        self._fill_param_entries(self.vm.default_params())
+
+    def _on_auto_params(self):
+        code = self.code_entry.get().strip()
+        self.vm.auto_params(code)
+
+    def _fill_param_entries(self, cur: dict):
+        """把一組參數 dict 回填到輸入框（供回復預設 / 自動調參後同步顯示）。"""
+        if not cur:
+            return
         for key, (ent, typ) in self._param_entries.items():
+            if key not in cur:
+                continue
             ent.delete(0, "end")
             ent.insert(0, self._fmt_param(cur.get(key), typ))
 
     # ---- Backtest card ----
 
     BT_NUM_SPEC = [
+        ("entry_min_conditions", "進場門檻K", int),
+        ("min_consec_buckets", "連續桶數", int),
+        ("confluence_window", "訊號窗口", int),
         ("take_profit_pct", "停利%", float),
         ("stop_loss_pct", "停損%", float),
         ("trailing_pct", "移動停損%", float),
         ("slippage_ticks", "滑價(tick)", float),
-        ("confluence_window", "訊號窗口", int),
         ("fee_discount", "手續費折", float),
+        ("debug_every", "診斷間隔", int),
+        ("daily_ma_period", "日線MA", int),
+        ("bar_seconds", "分線秒數", int),
+        ("intraday_ma_period", "分線MA", int),
     ]
 
     def _build_backtest_card(self, container):
@@ -332,17 +358,47 @@ class MicrostructureView(ctk.CTkFrame):
         ctk.CTkCheckBox(row1, text="做多", variable=self.bt_long_var,
                          font=ctk.CTkFont(size=13)).pack(side="left", padx=(0, 8))
         ctk.CTkCheckBox(row1, text="做空", variable=self.bt_short_var,
+                         font=ctk.CTkFont(size=13)).pack(side="left", padx=(0, 16))
+
+        self.bt_req_attack_var = ctk.BooleanVar(value=bool(cur.get("require_attack", False)))
+        self.bt_req_breakout_var = ctk.BooleanVar(value=bool(cur.get("require_breakout", False)))
+        ctk.CTkCheckBox(row1, text="需大單", variable=self.bt_req_attack_var,
+                         font=ctk.CTkFont(size=13)).pack(side="left", padx=(0, 8))
+        ctk.CTkCheckBox(row1, text="需突破", variable=self.bt_req_breakout_var,
                          font=ctk.CTkFont(size=13)).pack(side="left")
 
-        # 數值參數
+        # 濾網列：雙層濾網（上層決定方向，微觀訊號只在閘門開啟時扣板機）
+        rowf = ctk.CTkFrame(card, fg_color="transparent")
+        rowf.pack(fill="x", padx=20, pady=(2, 2))
+        ctk.CTkLabel(rowf, text="趨勢濾網：",
+                      font=ctk.CTkFont(size=13, weight="bold")).pack(side="left")
+        self.bt_daily_filter_var = ctk.BooleanVar(
+            value=bool(cur.get("daily_trend_filter", False)))
+        ctk.CTkCheckBox(rowf, text="日線趨勢(只做順勢)", variable=self.bt_daily_filter_var,
+                         font=ctk.CTkFont(size=13)).pack(side="left", padx=(0, 16))
+        ctk.CTkLabel(rowf, text="分線閘門：",
+                      font=ctk.CTkFont(size=13)).pack(side="left")
+        self._intraday_map = {"關閉": "off", "分線MA順勢": "ma", "布林擠壓突破": "squeeze"}
+        self._intraday_rmap = {v: k for k, v in self._intraday_map.items()}
+        self.bt_intraday_var = ctk.StringVar(
+            value=self._intraday_rmap.get(cur.get("intraday_filter", "off"), "關閉"))
+        ctk.CTkOptionMenu(
+            rowf, values=list(self._intraday_map.keys()), variable=self.bt_intraday_var,
+            width=140, font=ctk.CTkFont(size=12)).pack(side="left", padx=(0, 8))
+
+        # 數值參數（多欄自動換行，避免欄位過多被裁切）
         row2 = ctk.CTkFrame(card, fg_color="transparent")
         row2.pack(fill="x", padx=20, pady=(4, 2))
         self._bt_entries: dict[str, tuple] = {}
-        for key, label, typ in self.BT_NUM_SPEC:
-            ctk.CTkLabel(row2, text=label + "：",
+        PER_ROW = 5
+        for idx, (key, label, typ) in enumerate(self.BT_NUM_SPEC):
+            r, c = divmod(idx, PER_ROW)
+            cell = ctk.CTkFrame(row2, fg_color="transparent")
+            cell.grid(row=r, column=c, padx=(0, 8), pady=3, sticky="w")
+            ctk.CTkLabel(cell, text=label + "：",
                           font=ctk.CTkFont(size=12)).pack(side="left")
-            ent = ctk.CTkEntry(row2, width=56, font=ctk.CTkFont(size=12))
-            ent.pack(side="left", padx=(2, 10))
+            ent = ctk.CTkEntry(cell, width=56, font=ctk.CTkFont(size=12))
+            ent.pack(side="left")
             ent.insert(0, self._fmt_param(cur.get(key), typ))
             self._bt_entries[key] = (ent, typ)
 
@@ -355,6 +411,11 @@ class MicrostructureView(ctk.CTkFrame):
             fg_color="#7e57c2", hover_color="#5e35b1",
             command=self._on_run_backtest)
         self.bt_run_btn.pack(side="left")
+        self.bt_save_btn = ctk.CTkButton(
+            row3, text="儲存設定", width=90, height=34, corner_radius=8,
+            font=ctk.CTkFont(size=12), fg_color="#555", hover_color="#777",
+            command=self._on_save_bt_params)
+        self.bt_save_btn.pack(side="left", padx=(8, 0))
         self.bt_export_btn = ctk.CTkButton(
             row3, text="匯出交易 CSV", width=110, height=34, corner_radius=8,
             font=ctk.CTkFont(size=12), fg_color="#1f6aa5", hover_color="#185a8c",
@@ -396,10 +457,15 @@ class MicrostructureView(ctk.CTkFrame):
         sb.pack(side="right", fill="y")
         self._bt_tree = tree
 
-    def _on_run_backtest(self):
+    def _collect_bt_params(self) -> dict | None:
+        """從 UI 收集回測參數；數值格式錯誤時回 None 並顯示訊息。"""
         params = {
             "allow_long": self.bt_long_var.get(),
             "allow_short": self.bt_short_var.get(),
+            "require_attack": self.bt_req_attack_var.get(),
+            "require_breakout": self.bt_req_breakout_var.get(),
+            "daily_trend_filter": self.bt_daily_filter_var.get(),
+            "intraday_filter": self._intraday_map.get(self.bt_intraday_var.get(), "off"),
         }
         for key, (ent, typ) in self._bt_entries.items():
             raw = ent.get().strip()
@@ -410,10 +476,24 @@ class MicrostructureView(ctk.CTkFrame):
             except ValueError:
                 self.bt_status_label.configure(
                     text=f"「{key}」格式錯誤", text_color="#FF6B6B")
-                return
+                return None
+        return params
+
+    def _on_run_backtest(self):
+        params = self._collect_bt_params()
+        if params is None:
+            return
         self.vm.run_backtest(
             self.bt_code_entry.get().strip() or self.code_entry.get().strip(),
             self.bt_date_entry.get().strip(), params)
+
+    def _on_save_bt_params(self):
+        params = self._collect_bt_params()
+        if params is None:
+            return
+        if self.vm.save_backtest_params(params) is not None:
+            self.bt_status_label.configure(
+                text="✓ 已儲存回測設定", text_color="#4ECDC4")
 
     def _on_export_backtest(self):
         code = self.bt_code_entry.get().strip() or "stock"
@@ -491,7 +571,8 @@ class MicrostructureView(ctk.CTkFrame):
         self.vm.connect(simulation=simulation)
 
     def _on_start(self):
-        self.vm.start_tracking(self.code_entry.get().strip())
+        self.vm.start_tracking(
+            self.code_entry.get().strip(), auto=self.auto_param_var.get())
 
     def _on_stop(self):
         self.vm.stop_tracking()
@@ -518,6 +599,7 @@ class MicrostructureView(ctk.CTkFrame):
         self.vm.bind("alert_log", self._on_alert_log)
         self.vm.bind("error", self._on_error)
         self.vm.bind("params_status", self._on_params_status)
+        self.vm.bind("computed_params", self._on_computed_params)
         self.vm.bind("export_status", self._on_export_status)
         self.vm.bind("is_backtesting", self._on_backtesting)
         self.vm.bind("backtest_status", self._on_backtest_status)
@@ -558,8 +640,14 @@ class MicrostructureView(ctk.CTkFrame):
     def _on_params_status(self, v):
         if not v:
             return
-        clr = "#FF6B6B" if v.startswith("參數") else "#4ECDC4"
+        clr = "#FF6B6B" if (v.startswith("參數") or "失敗" in v or "查無" in v
+                            or "請先" in v) else "#4ECDC4"
         self.after(0, lambda: self.params_status_label.configure(text=v, text_color=clr))
+
+    def _on_computed_params(self, data):
+        if not data:
+            return
+        self.after(0, lambda: self._fill_param_entries(data))
 
     def _on_export_status(self, v):
         if not v:
@@ -648,6 +736,19 @@ class MicrostructureView(ctk.CTkFrame):
             flags.append("✅ 站上均價")
         else:
             flags.append("⬇ 均價下方")
+        # 趨勢濾網狀態（有啟用才顯示）
+        if d.get("filter_active"):
+            dl, ds = d.get("filter_daily_long", True), d.get("filter_daily_short", True)
+            bias = ("日線偏多" if dl and not ds else
+                    "日線偏空" if ds and not dl else "日線中性")
+            istate = d.get("filter_intraday_state", "")
+            fp = d.get("filtered_points", 0)
+            seg = f"🛡 {bias}"
+            if istate:
+                seg += f"｜分線:{istate}"
+            if fp:
+                seg += f"｜已濾 {fp} 點"
+            flags.append(seg)
         self.flag_label.configure(
             text="　".join(flags),
             text_color="#FFD166" if d.get("setup_active") else "#9aa4ad")
