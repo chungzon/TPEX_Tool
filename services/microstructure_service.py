@@ -22,8 +22,14 @@ from __future__ import annotations
 
 import threading
 from collections import deque
-from dataclasses import dataclass, field
+from dataclasses import dataclass
+from datetime import datetime
 from typing import Any, Callable
+
+
+def _now_str() -> str:
+    """目前本地時間（時:分:秒），用於訊號/大單/買賣點的時間戳。"""
+    return datetime.now().strftime("%H:%M:%S")
 
 
 # --------------------------------------------------------------------------- #
@@ -67,11 +73,12 @@ class Alert:
     level: str         # 'info' | 'warn' | 'strong'
     message: str
     price: float = 0.0
+    side: str = ""     # 'buy' | 'sell' | ''（方向，供彙整買賣點用）
 
     def as_dict(self) -> dict:
         return {
             "time": self.time, "kind": self.kind, "level": self.level,
-            "message": self.message, "price": self.price,
+            "message": self.message, "price": self.price, "side": self.side,
         }
 
 
@@ -100,9 +107,10 @@ class OrderBookTracker:
         self.obi5 = 0.0        # 前五檔累積 OBI
         self._obi5_hist: deque[float] = deque(maxlen=cfg.obi_window)
         self.setup_active = False   # 是否處於蓄勢狀態
+        self.setup_side = ""        # 'buy' | 'sell' | ''
 
-    def update(self, ba: dict) -> Alert | None:
-        """吃一筆 BidAsk。回傳 alert（若剛觸發蓄勢）否則 None。"""
+    def update(self, ba: dict, now: str) -> Alert | None:
+        """吃一筆 BidAsk。回傳 alert（若剛觸發買/賣蓄勢）否則 None。"""
         self.bid_price = [_f(p) for p in ba.get("bid_price", [])][:5] or self.bid_price
         self.bid_volume = [_f(v) for v in ba.get("bid_volume", [])][:5] or self.bid_volume
         self.ask_price = [_f(p) for p in ba.get("ask_price", [])][:5] or self.ask_price
@@ -115,21 +123,34 @@ class OrderBookTracker:
         self.obi5 = (bsum - asum) / (bsum + asum) if (bsum + asum) > 0 else 0.0
         self._obi5_hist.append(self.obi5)
 
-        # 蓄勢偵測：最近 obi_sustain_ticks 筆的 OBI5 都 ≥ 門檻（買盤壓倒）
+        # 蓄勢偵測：最近 obi_sustain_ticks 筆的 OBI5 都同向壓過門檻
         n = self.cfg.obi_sustain_ticks
+        thr = self.cfg.obi_threshold
         if len(self._obi5_hist) >= n:
             recent = list(self._obi5_hist)[-n:]
-            strong_buy = all(x >= self.cfg.obi_threshold for x in recent)
-            if strong_buy and not self.setup_active:
+            strong_buy = all(x >= thr for x in recent)
+            strong_sell = all(x <= -thr for x in recent)
+            if strong_buy and self.setup_side != "buy":
                 self.setup_active = True
+                self.setup_side = "buy"
                 return Alert(
-                    time=ba.get("time", ""), kind="setup", level="warn",
-                    message=(f"買盤蓄勢：OBI5 連續 {n} 筆 ≥ {self.cfg.obi_threshold:.2f}"
+                    time=now, kind="setup", level="warn", side="buy",
+                    message=(f"買盤蓄勢：OBI5 連續 {n} 筆 ≥ {thr:.2f}"
                              f"（買{bsum:.0f}/賣{asum:.0f}），下方支撐轉強"),
                     price=self.bid_price[0],
                 )
-            if not strong_buy:
+            if strong_sell and self.setup_side != "sell":
+                self.setup_active = True
+                self.setup_side = "sell"
+                return Alert(
+                    time=now, kind="setup", level="warn", side="sell",
+                    message=(f"賣壓蓄勢：OBI5 連續 {n} 筆 ≤ -{thr:.2f}"
+                             f"（買{bsum:.0f}/賣{asum:.0f}），上方賣壓轉強"),
+                    price=self.ask_price[0],
+                )
+            if not strong_buy and not strong_sell:
                 self.setup_active = False
+                self.setup_side = ""
         return None
 
 
@@ -149,7 +170,7 @@ class TickVolumeBucket:
         self.vpin = 0.0
         self.cur_buy_ratio = 0.5   # 當前桶即時買方推進率
 
-    def add(self, volume: float, side: int, time: str) -> Alert | None:
+    def add(self, volume: float, side: int, price: float, time: str) -> Alert | None:
         """加入一筆成交量。side: +1 買方觸發 / -1 賣方觸發 / 0 無法判定。
         單筆量可能跨桶，依標準 VPIN 做量的切分。"""
         remaining = volume
@@ -169,7 +190,7 @@ class TickVolumeBucket:
             remaining -= take
 
             if self._filled >= self.cfg.bucket_size:
-                a = self._close_bucket(time)
+                a = self._close_bucket(price, time)
                 if a is not None:
                     alert = a  # 保留最後一次點火 alert
 
@@ -177,7 +198,7 @@ class TickVolumeBucket:
         self.cur_buy_ratio = (self._buy / tot) if tot > 0 else 0.5
         return alert
 
-    def _close_bucket(self, time: str) -> Alert | None:
+    def _close_bucket(self, price: float, time: str) -> Alert | None:
         v = self.cfg.bucket_size
         imb = abs(self._buy - self._sell) / v if v > 0 else 0.0
         self._imb.append(imb)
@@ -185,12 +206,21 @@ class TickVolumeBucket:
         buy_ratio = self._buy / (self._buy + self._sell) if (self._buy + self._sell) > 0 else 0.5
 
         alert: Alert | None = None
-        # 動能點火：一整桶量幾乎全由買方市價單貢獻
+        # 動能點火：一整桶量幾乎全由單邊市價單貢獻
         if buy_ratio >= self.cfg.buy_push_ratio:
             alert = Alert(
-                time=time, kind="momentum", level="strong",
-                message=(f"動能點火：滿 {v:.0f} 張桶內買方推進 {buy_ratio*100:.0f}%"
+                time=time, kind="momentum", level="strong", side="buy",
+                price=price,
+                message=(f"買方動能點火：滿 {v:.0f} 張桶內買方推進 {buy_ratio*100:.0f}%"
                          f"（VPIN {self.vpin:.2f}），知情買盤湧入"),
+            )
+        elif buy_ratio <= (1 - self.cfg.buy_push_ratio):
+            sell_ratio = 1 - buy_ratio
+            alert = Alert(
+                time=time, kind="momentum", level="strong", side="sell",
+                price=price,
+                message=(f"賣方動能點火：滿 {v:.0f} 張桶內賣方推進 {sell_ratio*100:.0f}%"
+                         f"（VPIN {self.vpin:.2f}），知情賣盤湧出"),
             )
         # reset bucket
         self._buy = self._sell = self._filled = 0.0
@@ -209,7 +239,8 @@ class LargeOrderMonitor:
         self._trade_vols: deque[float] = deque(maxlen=cfg.trade_window)
         self.avg_trade_vol = 0.0
         self.recent_large: deque[dict] = deque(maxlen=30)  # 最近大單紀錄
-        self._attack_streak = 0        # 連續外盤大單且價格跳檔計數
+        self._attack_streak = 0        # 連續外盤大單且價格上跳計數（起漲）
+        self._down_streak = 0          # 連續內盤大單且價格下殺計數（起跌）
         self._last_price = 0.0
 
         # 冰山狀態：追蹤「當前最佳賣檔」上被吃掉的累積外盤量 vs 顯示掛量
@@ -249,7 +280,7 @@ class LargeOrderMonitor:
             if (self._ice_ask_visible >= cfg.iceberg_min_visible
                     and self._ice_ask_exec > self._ice_ask_visible * cfg.iceberg_mult):
                 alerts.append(Alert(
-                    time=time, kind="iceberg", level="warn",
+                    time=time, kind="iceberg", level="warn", side="sell",
                     message=(f"賣方冰山：{self._ice_ask_price:.2f} 已成交 "
                              f"{self._ice_ask_exec:.0f} 張 > 顯示 {self._ice_ask_visible:.0f} 張，"
                              f"疑有隱藏賣壓/主力壓盤"),
@@ -261,7 +292,7 @@ class LargeOrderMonitor:
             if (self._ice_bid_visible >= cfg.iceberg_min_visible
                     and self._ice_bid_exec > self._ice_bid_visible * cfg.iceberg_mult):
                 alerts.append(Alert(
-                    time=time, kind="iceberg", level="strong",
+                    time=time, kind="iceberg", level="strong", side="buy",
                     message=(f"買方冰山：{self._ice_bid_price:.2f} 已成交 "
                              f"{self._ice_bid_exec:.0f} 張 > 顯示 {self._ice_bid_visible:.0f} 張，"
                              f"疑有隱藏買單暗中吸貨"),
@@ -284,7 +315,8 @@ class LargeOrderMonitor:
                 side_txt = "外盤" if side > 0 else ("內盤" if side < 0 else "平盤")
                 alerts.append(Alert(
                     time=time, kind="large",
-                    level="strong" if side > 0 else "info",
+                    level="strong" if side != 0 else "info",
+                    side="buy" if side > 0 else ("sell" if side < 0 else ""),
                     message=(f"大單成交（{side_txt}）：{volume:.0f} 張 @ {price:.2f} "
                              f"（{volume/self.avg_trade_vol:.1f}×均量）"),
                     price=price,
@@ -293,16 +325,29 @@ class LargeOrderMonitor:
         # --- 起漲點：外盤大單 + 價格向上跳檔連續發生 ---
         if is_large and side > 0 and self._last_price > 0 and price > self._last_price:
             self._attack_streak += 1
+            self._down_streak = 0
             if self._attack_streak >= cfg.attack_consecutive:
                 alerts.append(Alert(
-                    time=time, kind="attack", level="strong",
+                    time=time, kind="attack", level="strong", side="buy",
                     message=(f"🚀 起漲點攻擊訊號：連續 {self._attack_streak} 筆外盤大單"
                              f"上攻掃貨，價格跳檔至 {price:.2f}"),
                     price=price,
                 ))
-        elif side < 0 or (self._last_price > 0 and price < self._last_price):
-            # 出現內盤大單或下跌 → 中斷連續攻擊
+        # --- 起跌點：內盤大單 + 價格向下跳檔連續發生 ---
+        elif is_large and side < 0 and self._last_price > 0 and price < self._last_price:
+            self._down_streak += 1
             self._attack_streak = 0
+            if self._down_streak >= cfg.attack_consecutive:
+                alerts.append(Alert(
+                    time=time, kind="attack", level="strong", side="sell",
+                    message=(f"⚠ 起跌點殺盤訊號：連續 {self._down_streak} 筆內盤大單"
+                             f"下殺，價格跳檔至 {price:.2f}"),
+                    price=price,
+                ))
+        elif (self._last_price > 0 and price != self._last_price):
+            # 一般漲跌但非連續大單攻擊 → 中斷計數
+            self._attack_streak = 0
+            self._down_streak = 0
 
         # --- 更新滑動平均（放最後，門檻用的是「之前」的均量）---
         self._trade_vols.append(volume)
@@ -341,6 +386,10 @@ class MicrostructureEngine:
         self.buy_vol_total = 0.0   # 累積外盤量
         self.sell_vol_total = 0.0  # 累積內盤量
         self._alerts: list[Alert] = []
+        self.trade_points: deque[dict] = deque(maxlen=50)  # 彙整後的買/賣點
+
+    # 會轉成「買賣點」的訊號類型（confluence 較高者）
+    _POINT_KINDS = {"attack": "強", "momentum": "中", "iceberg": "中"}
 
     # ---- classification：優先 tick_type，退回 Tick Test ----
     def _classify(self, price: float, tick_type: int) -> int:
@@ -368,7 +417,7 @@ class MicrostructureEngine:
             price = _f(tick.get("close"))
             volume = _f(tick.get("volume"))
             tick_type = int(tick.get("tick_type", 0) or 0)
-            time = tick.get("time", "")
+            now = _now_str()
             if price <= 0 or volume <= 0:
                 return
 
@@ -386,15 +435,15 @@ class MicrostructureEngine:
                 self.sell_vol_total += volume
 
             new_alerts: list[Alert] = []
-            a = self.vpin.add(volume, side, time)
+            a = self.vpin.add(volume, side, price, now)
             if a:
                 new_alerts.append(a)
-            new_alerts.extend(self.large.on_tick(price, volume, side, time))
+            new_alerts.extend(self.large.on_tick(price, volume, side, now))
             self._emit(new_alerts)
 
     def on_bidask(self, ba: dict) -> None:
         with self._lock:
-            a = self.ob.update(ba)
+            a = self.ob.update(ba, _now_str())
             self.large.on_bidask(
                 ask1_price=_f(ba.get("ask_price", [0])[0] if ba.get("ask_price") else 0),
                 ask1_vol=_f(ba.get("ask_volume", [0])[0] if ba.get("ask_volume") else 0),
@@ -407,11 +456,34 @@ class MicrostructureEngine:
     def _emit(self, alerts: list[Alert]) -> None:
         for a in alerts:
             self._alerts.append(a)
+            self._maybe_trade_point(a)
             if self._on_alert:
                 try:
                     self._on_alert(a)
                 except Exception:
                     pass
+
+    def _maybe_trade_point(self, a: Alert) -> None:
+        """把 confluence 較高的訊號彙整成一個離散「買點/賣點」。"""
+        if a.kind not in self._POINT_KINDS or a.side not in ("buy", "sell"):
+            return
+        # 依據簡述（去掉冒號後段細節）
+        reason = a.message.split("：", 1)[0]
+        # OBI 同向蓄勢時提升信心強度
+        strength = self._POINT_KINDS[a.kind]
+        if self.ob.setup_side == a.side and strength == "中":
+            strength = "強"
+        point = {
+            "time": a.time, "side": a.side, "price": a.price,
+            "strength": strength, "kind": a.kind, "reason": reason,
+        }
+        # 去重：與上一個買賣點同向、同類、同價則略過（避免洗頻）
+        if self.trade_points:
+            last = self.trade_points[-1]
+            if (last["side"] == point["side"] and last["kind"] == point["kind"]
+                    and abs(last["price"] - point["price"]) < 1e-6):
+                return
+        self.trade_points.append(point)
 
     # ---- 快照供 UI 讀取 ----
     def snapshot(self) -> dict:
@@ -431,6 +503,7 @@ class MicrostructureEngine:
                 "obi1": self.ob.obi1,
                 "obi5": self.ob.obi5,
                 "setup_active": self.ob.setup_active,
+                "setup_side": self.ob.setup_side,
                 "vpin": self.vpin.vpin,
                 "buy_push_ratio": self.vpin.cur_buy_ratio,
                 "avg_trade_vol": self.large.avg_trade_vol,
@@ -439,6 +512,7 @@ class MicrostructureEngine:
                 "ask_price": list(self.ob.ask_price),
                 "ask_volume": list(self.ob.ask_volume),
                 "recent_large": list(self.large.recent_large)[-12:],
+                "trade_points": list(self.trade_points)[-15:],
             }
 
     def set_config(self, cfg: MicroConfig) -> None:
@@ -454,6 +528,7 @@ class MicrostructureEngine:
             self.tick_count = 0
             self.buy_vol_total = 0.0
             self.sell_vol_total = 0.0
+            self.trade_points.clear()
 
     def reset(self) -> None:
         """清空所有狀態（換股票追蹤時呼叫），保留 lock 與 on_alert callback。"""
@@ -471,3 +546,4 @@ class MicrostructureEngine:
             self.buy_vol_total = 0.0
             self.sell_vol_total = 0.0
             self._alerts = []
+            self.trade_points.clear()

@@ -22,6 +22,7 @@ class MicrostructureView(ctk.CTkFrame):
         super().__init__(parent, fg_color="transparent")
         self.vm = viewmodel
         self._tiles: dict[str, ctk.CTkLabel] = {}
+        self._points_tree: ttk.Treeview | None = None
         self._ob_tree: ttk.Treeview | None = None
         self._large_tree: ttk.Treeview | None = None
         self._build_ui()
@@ -134,6 +135,20 @@ class MicrostructureView(ctk.CTkFrame):
             container, text="", font=ctk.CTkFont(size=13, weight="bold"))
         self.flag_label.pack(pady=(2, 6))
 
+        # -------- 買賣點 (trade points) --------
+        pts_card = ctk.CTkFrame(container, corner_radius=12)
+        pts_card.pack(padx=30, pady=6, fill="x")
+        pts_hdr = ctk.CTkFrame(pts_card, fg_color="transparent")
+        pts_hdr.pack(fill="x", padx=16, pady=(12, 4))
+        ctk.CTkLabel(pts_hdr, text="買 / 賣 點",
+                      font=ctk.CTkFont(size=15, weight="bold")).pack(side="left")
+        ctk.CTkLabel(pts_hdr,
+                      text="由微觀結構訊號彙整（起漲/起跌 · 動能點火 · 冰山），僅供參考非投資建議",
+                      font=ctk.CTkFont(size=11), text_color="#888888").pack(
+                          side="left", padx=(10, 0))
+        self.points_frame = ctk.CTkFrame(pts_card, fg_color="transparent")
+        self.points_frame.pack(fill="both", expand=True, padx=10, pady=(0, 12))
+
         # -------- Order book + large orders (side by side) --------
         mid = ctk.CTkFrame(container, fg_color="transparent")
         mid.pack(padx=30, pady=6, fill="x")
@@ -172,6 +187,7 @@ class MicrostructureView(ctk.CTkFrame):
             font=ctk.CTkFont(size=12, family="Consolas"), state="disabled")
         self.log_textbox.pack(fill="x", padx=14, pady=(0, 14))
 
+        self._build_points_tree()
         self._build_ob_tree()
         self._build_large_tree()
 
@@ -276,6 +292,24 @@ class MicrostructureView(ctk.CTkFrame):
                         background="#263238", foreground="#c0c0c0",
                         font=("", 10, "bold"))
 
+    def _build_points_tree(self):
+        self._tree_style()
+        cols = ("time", "type", "price", "strength", "reason")
+        tree = ttk.Treeview(self.points_frame, columns=cols, show="headings",
+                            height=6, style="Micro.Treeview")
+        for c, txt, w, anc in [("time", "時間", 75, "center"), ("type", "訊號", 60, "center"),
+                               ("price", "價格", 65, "e"), ("strength", "強度", 50, "center"),
+                               ("reason", "依據", 200, "w")]:
+            tree.heading(c, text=txt)
+            tree.column(c, width=w, anchor=anc, stretch=(c == "reason"))
+        tree.tag_configure("buy", foreground="#ef5350")   # 買點：紅
+        tree.tag_configure("sell", foreground="#26a69a")  # 賣點：綠
+        sb = ttk.Scrollbar(self.points_frame, orient="vertical", command=tree.yview)
+        tree.configure(yscrollcommand=sb.set)
+        tree.pack(side="left", fill="both", expand=True)
+        sb.pack(side="right", fill="y")
+        self._points_tree = tree
+
     def _build_ob_tree(self):
         self._tree_style()
         cols = ("bvol", "bprice", "aprice", "avol")
@@ -379,6 +413,7 @@ class MicrostructureView(ctk.CTkFrame):
 
         def _u():
             self._update_tiles(data)
+            self._update_points(data)
             self._update_ob(data)
             self._update_large(data)
         self.after(0, _u)
@@ -406,8 +441,11 @@ class MicrostructureView(ctk.CTkFrame):
 
         # 狀態燈
         flags = []
-        if d.get("setup_active"):
-            flags.append("🟡 買盤蓄勢中")
+        setup_side = d.get("setup_side", "")
+        if d.get("setup_active") and setup_side == "buy":
+            flags.append("🔴 買盤蓄勢中")
+        elif d.get("setup_active") and setup_side == "sell":
+            flags.append("🟢 賣壓蓄勢中")
         if d.get("above_avg"):
             flags.append("✅ 站上均價")
         else:
@@ -423,6 +461,22 @@ class MicrostructureView(ctk.CTkFrame):
         if v <= -0.6:
             return "#26a69a"
         return "#e0e0e0"
+
+    def _update_points(self, d: dict):
+        if not self._points_tree:
+            return
+        self._points_tree.delete(*self._points_tree.get_children())
+        kind_txt = {"attack": "起漲/起跌", "momentum": "動能點火", "iceberg": "冰山"}
+        for p in reversed(d.get("trade_points", [])):
+            side = p.get("side", "")
+            type_txt = ("🔴 買點" if side == "buy" else "🟢 賣點")
+            self._points_tree.insert("", "end", values=(
+                p.get("time", ""),
+                type_txt,
+                _fmt(p.get("price", 0), 2),
+                p.get("strength", ""),
+                f"{kind_txt.get(p.get('kind',''), p.get('kind',''))}｜{p.get('reason','')}",
+            ), tags=(side,))
 
     def _update_ob(self, d: dict):
         if not self._ob_tree:
