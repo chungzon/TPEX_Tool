@@ -100,6 +100,7 @@ class BacktestParams:
     min_hold_ticks: int = 3          # 進場後最少持有幾筆才允許出場（濾雜訊）
     sar_skip_open_minutes: float = 10.0  # 點火進出策略：開盤前 N 分鐘不交易（開盤量價未穩）
     sar_exit_consecutive: int = 4    # 點火進出策略：需連續 N 筆反向點火（支撐轉強/轉弱）才出場
+    sar_tp_ticks: int = 4            # 點火進出策略：無反向訊號時，可實現獲利(對手檔+滑價) > N 跳即了結
 
 
 @dataclass
@@ -362,6 +363,46 @@ class MicrostructureBacktester:
                         "detail": detail, "traded": traded,
                         "ret_pct": None if ret is None else round(ret, 4)})
 
+                def _maybe_tp() -> bool:
+                    """無反向訊號出場時的保險：以「可實現出場價(對手檔+滑價)」衡量，
+                    實際落袋獲利 > sar_tp_ticks 跳即獲利了結。每筆 tick 都檢查，回傳是否已出場。"""
+                    nonlocal pos, nav, opp_streak, flat_switch
+                    if pos == 0 or self.p.sar_tp_ticks <= 0 or bid <= 0 or ask <= 0:
+                        return False
+                    tsz = tw_tick_size(entry_price)
+                    # 可實現成交價：做多以 Bid−滑價 賣出、做空以 Ask+滑價 買回
+                    if pos == 1:
+                        fill = self._slip(bid, -1, close)
+                        prof = (fill - entry_price) / tsz
+                    else:
+                        fill = self._slip(ask, +1, close)
+                        prof = (entry_price - fill) / tsz
+                    if prof <= self.p.sar_tp_ticks:
+                        return False
+                    held = i - entry_i
+                    ret = self._net_return(entry_price, fill,
+                                           "long" if pos == 1 else "short")
+                    nav *= (1 + ret / 100)
+                    res.equity_curve.append(nav)
+                    res.trades.append(TradeRecord(
+                        direction="long" if pos == 1 else "short",
+                        entry_time=entry_time, entry_price=round(entry_price, 4),
+                        exit_time=t_str, exit_price=round(fill, 4),
+                        ret_pct=round(ret, 4),
+                        exit_reason=f"獲利了結(>{self.p.sar_tp_ticks}跳)",
+                        hold_ticks=held))
+                    res.sar_events.append({
+                        "time": t_str, "side": "", "signal": "獲利了結", "strength": "",
+                        "price": round(close, 2), "action": "獲利了結",
+                        "detail": (f"無反向訊號，可實現獲利 {prof:.1f} 跳 > "
+                                   f"{self.p.sar_tp_ticks} 跳，了結"
+                                   f"{'多單' if pos == 1 else '空單'}"),
+                        "traded": True, "ret_pct": round(ret, 4)})
+                    pos = 0
+                    opp_streak = 0
+                    flat_switch = 0
+                    return True
+
                 # 開盤前 N 分鐘不交易（引擎仍持續吃 tick 累積狀態，只是不進出場）
                 in_open = (no_trade_until is not None and tk.get("ts") is not None
                            and int(tk["ts"]) < no_trade_until)
@@ -371,7 +412,8 @@ class MicrostructureBacktester:
                             f"開盤前 {self.p.sar_skip_open_minutes:g} 分鐘不交易", False)
                     continue
                 if not sig_side:
-                    continue  # 本筆無明確點火，不記錄
+                    _maybe_tp()  # 無訊號：仍檢查「浮動獲利 > N 跳」的獲利了結
+                    continue
 
                 sig = 1 if sig_side == "buy" else -1
                 need = max(1, self.p.sar_exit_consecutive)
@@ -441,8 +483,10 @@ class MicrostructureBacktester:
 
                 # ---------------- 持倉中：不反手，累計反向點火達 N 筆才出場 ----------------
                 if sig == pos:
-                    # 同向點火＝支撐延續 → 重置反向計數、續抱
+                    # 同向點火＝支撐延續 → 重置反向計數；先看是否已達獲利了結
                     opp_streak = 0
+                    if _maybe_tp():
+                        continue
                     _ev("續抱", f"同向訊號，支撐延續，維持{'多單' if pos == 1 else '空單'}",
                         False)
                     continue
@@ -450,6 +494,9 @@ class MicrostructureBacktester:
                 opp_streak += 1
                 trend_txt = "支撐轉強" if pos == -1 else "支撐轉弱"
                 if opp_streak < need:
+                    # 未達出場門檻 → 若浮動獲利已 > N 跳先獲利了結，否則續抱觀察
+                    if _maybe_tp():
+                        continue
                     _ev("觀察", f"{trend_txt} {opp_streak}/{need}，未達門檻續抱", False)
                     continue
                 # 達門檻 → 出場（做空補回 / 做多賣出），回到空手（不反手，方向 bias 不變）
@@ -672,6 +719,7 @@ class MicrostructureBacktester:
             "ignite_sell_signals": ignite_sell_signals,
             "sar_skip_open_minutes": self.p.sar_skip_open_minutes,
             "sar_exit_consecutive": self.p.sar_exit_consecutive,
+            "sar_tp_ticks": self.p.sar_tp_ticks,
             "sar_bias": sar_bias,
             "sar_long_entries": sar_long_entries,
             "sar_short_entries": sar_short_entries,
@@ -772,6 +820,7 @@ class MicrostructureBacktester:
                 f"（支撐轉強/轉弱）",
                 f"不反手；出場後同向可再進場，換方向需空手時再連續 "
                 f"{d.get('sar_exit_consecutive', 0)} 筆反向訊號確認",
+                f"另：無反向訊號時，可實現獲利 > {d.get('sar_tp_ticks', 0)} 跳即獲利了結",
                 f"最後方向：{bias_txt}",
                 f"賣方訊號：點火 {d.get('ignite_sell_signals', 0)} + "
                 f"起跌點 {d.get('atk_sell_signals', 0)} 次",
