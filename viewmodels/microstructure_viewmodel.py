@@ -50,6 +50,11 @@ class MicrostructureViewModel(BaseViewModel):
     backtest_status = ObservableProperty("")
     backtest_result = ObservableProperty(None)   # dict | None（summary + trades + report）
 
+    # 自動回測（反手輪詢 SAR）：只輸入代碼/日期，其餘全用監控參數，多空由訊號強弱自動決定
+    is_auto_backtesting = ObservableProperty(False)
+    auto_backtest_status = ObservableProperty("")
+    auto_backtest_result = ObservableProperty(None)
+
     REFRESH_INTERVAL = 0.4  # 秒；UI 刷新頻率
 
     def __init__(self, config: ConfigService, shioaji_svc: ShioajiService | None = None):
@@ -68,6 +73,7 @@ class MicrostructureViewModel(BaseViewModel):
         self._point_lock = threading.Lock()
         self._point_history: list[dict] = []
         self._last_bt: BacktestResult | None = None  # 最近一次回測結果（供匯出）
+        self._last_auto_bt: BacktestResult | None = None  # 最近一次自動回測結果
 
     # ================================================================ Parameters
 
@@ -321,6 +327,87 @@ class MicrostructureViewModel(BaseViewModel):
                         t.entry_time, t.entry_price, t.exit_time, t.exit_price,
                         t.ret_pct, t.exit_reason, t.hold_ticks])
             self.export_status = f"✓ 已匯出 {len(res.trades)} 筆交易 → {path}"
+        except Exception as e:
+            self.export_status = f"匯出失敗：{e}"
+
+    # ============================================================ Auto backtest
+
+    def run_auto_backtest(self, stock_code: str, date: str):
+        """全自動回測：只需代碼/日期，其餘全用『監控』當前的偵測參數(MicroConfig)。
+
+        策略固定為反手輪詢(SAR)：系統依訊號強弱自行決定做多/做空——
+        賣方轉強→沖賣、買方轉強→補回反手做多，如此輪詢。無需手動勾多空。
+        """
+        if self.is_auto_backtesting:
+            return
+        stock_code = stock_code.strip()
+        if not stock_code:
+            self.auto_backtest_status = "請輸入股票代碼"
+            return
+        if not date.strip():
+            self.auto_backtest_status = "請輸入回測日期 (YYYY-MM-DD)"
+            return
+        if not self._sj.is_logged_in:
+            self.auto_backtest_status = "尚未連線永豐，請先按『連線』"
+            return
+
+        # 反手輪詢 + 多空全開，方向交由訊號強弱自動判斷；其餘沿用預設交易成本
+        bt_params = BacktestParams(
+            strategy="sar_flip", allow_long=True, allow_short=True)
+
+        self.is_auto_backtesting = True
+        self.auto_backtest_status = f"下載 {stock_code} {date} 逐筆資料中..."
+        self.auto_backtest_result = None
+
+        def _work():
+            try:
+                ticks = self._sj.get_historical_ticks(stock_code, date)
+                if not ticks:
+                    self.auto_backtest_status = "查無逐筆資料（代碼/日期錯誤、非交易日或無權限）"
+                    return
+                self.auto_backtest_status = f"重放 {len(ticks):,} 筆 tick，自動回測中..."
+                # 直接用監控引擎當前的 MicroConfig（與即時偵測完全一致）
+                bt = MicrostructureBacktester(self._engine.cfg, bt_params)
+                res = bt.run(ticks, code=stock_code, date=date)
+                self._last_auto_bt = res
+                self.auto_backtest_result = {
+                    "summary": res.summary_dict(),
+                    "trades": [t.as_dict() for t in res.trades],
+                    "events": list(res.sar_events),
+                    "report": bt.report_text(res),
+                    "equity_curve": res.equity_curve,
+                }
+                if res.error:
+                    self.auto_backtest_status = f"回測失敗：{res.error}"
+                else:
+                    self.auto_backtest_status = (
+                        f"完成：{res.total_trades} 筆交易，勝率 {res.win_rate:.1f}%，"
+                        f"總報酬 {res.total_return_pct:+.2f}%")
+            except Exception as e:
+                self.auto_backtest_status = f"回測發生錯誤：{e}"
+            finally:
+                self.is_auto_backtesting = False
+
+        threading.Thread(target=_work, daemon=True).start()
+
+    def export_auto_backtest_csv(self, path: str):
+        """把最近一次『自動回測』的每筆交易明細匯出成 CSV。"""
+        import csv
+        res = self._last_auto_bt
+        if not res or not res.trades:
+            self.export_status = "目前沒有自動回測交易可匯出"
+            return
+        try:
+            with open(path, "w", newline="", encoding="utf-8-sig") as f:
+                w = csv.writer(f)
+                w.writerow(["方向", "進場時間", "進場價", "出場時間", "出場價",
+                            "報酬率%", "出場原因", "持有筆數"])
+                for t in res.trades:
+                    w.writerow([
+                        "做多" if t.direction == "long" else "做空",
+                        t.entry_time, t.entry_price, t.exit_time, t.exit_price,
+                        t.ret_pct, t.exit_reason, t.hold_ticks])
+            self.export_status = f"✓ 已匯出 {len(res.trades)} 筆自動回測交易 → {path}"
         except Exception as e:
             self.export_status = f"匯出失敗：{e}"
 

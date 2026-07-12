@@ -28,6 +28,8 @@ class MicrostructureView(ctk.CTkFrame):
         self._ob_tree: ttk.Treeview | None = None
         self._large_tree: ttk.Treeview | None = None
         self._bt_tree: ttk.Treeview | None = None
+        self._auto_bt_tree: ttk.Treeview | None = None
+        self._auto_hist_tree: ttk.Treeview | None = None
         self._build_ui()
         self._bind_vm()
         # 進頁時同步共用連線狀態
@@ -204,6 +206,9 @@ class MicrostructureView(ctk.CTkFrame):
         # -------- Backtest card --------
         self._build_backtest_card(container)
 
+        # -------- Auto backtest card（全自動反手輪詢，只輸代碼/日期）--------
+        self._build_auto_backtest_card(container)
+
         self._build_points_tree()
         self._build_ob_tree()
         self._build_large_tree()
@@ -342,7 +347,8 @@ class MicrostructureView(ctk.CTkFrame):
 
         cur0 = self.vm.default_backtest_params()
         self._strategy_map = {"合流計分(多空)": "confluence",
-                              "起漲/起跌點(順勢)": "attack_point"}
+                              "起漲/起跌點(順勢)": "attack_point",
+                              "點火進出(不反手·確認出場)": "sar_flip"}
         self._strategy_rmap = {v: k for k, v in self._strategy_map.items()}
         ctk.CTkLabel(hdr, text="策略：", font=ctk.CTkFont(size=12)).pack(
             side="left", padx=(16, 2))
@@ -351,7 +357,7 @@ class MicrostructureView(ctk.CTkFrame):
                                           "合流計分(多空)"))
         ctk.CTkOptionMenu(
             hdr, values=list(self._strategy_map.keys()), variable=self.bt_strategy_var,
-            width=150, font=ctk.CTkFont(size=12)).pack(side="left")
+            width=185, font=ctk.CTkFont(size=12)).pack(side="left")
 
         # 代碼 + 日期 + 做多/做空
         row1 = ctk.CTkFrame(card, fg_color="transparent")
@@ -474,6 +480,129 @@ class MicrostructureView(ctk.CTkFrame):
         tree.pack(side="left", fill="both", expand=True)
         sb.pack(side="right", fill="y")
         self._bt_tree = tree
+
+    # ---- 全自動回測面板（反手輪詢 SAR，只輸代碼/日期，其餘沿用監控參數）----
+    def _build_auto_backtest_card(self, container):
+        card = ctk.CTkFrame(container, corner_radius=12)
+        card.pack(padx=30, pady=(0, 16), fill="x")
+
+        hdr = ctk.CTkFrame(card, fg_color="transparent")
+        hdr.pack(fill="x", padx=20, pady=(14, 2))
+        ctk.CTkLabel(hdr, text="🤖 全自動回測（點火進出）",
+                      font=ctk.CTkFont(size=15, weight="bold")).pack(side="left")
+        ctk.CTkLabel(
+            hdr, text="只需代碼/日期 · 沿用『監控』參數 · 點火/起漲跌進場，連續反向訊號確認出場，不反手",
+            font=ctk.CTkFont(size=11), text_color="#888888").pack(
+                side="left", padx=(10, 0))
+
+        row1 = ctk.CTkFrame(card, fg_color="transparent")
+        row1.pack(fill="x", padx=20, pady=(8, 2))
+        ctk.CTkLabel(row1, text="代碼：", font=ctk.CTkFont(size=13)).pack(side="left")
+        self.abt_code_entry = ctk.CTkEntry(row1, width=90, font=ctk.CTkFont(size=13))
+        self.abt_code_entry.pack(side="left", padx=(2, 12))
+        ctk.CTkLabel(row1, text="日期：", font=ctk.CTkFont(size=13)).pack(side="left")
+        self.abt_date_entry = ctk.CTkEntry(row1, width=110, font=ctk.CTkFont(size=13),
+                                           placeholder_text="YYYY-MM-DD")
+        self.abt_date_entry.pack(side="left", padx=(2, 12))
+        self.abt_date_entry.insert(0, datetime.now().strftime("%Y-%m-%d"))
+        self.abt_code_entry.bind("<Return>", lambda e: self._on_run_auto_backtest())
+        self.abt_date_entry.bind("<Return>", lambda e: self._on_run_auto_backtest())
+
+        self.abt_run_btn = ctk.CTkButton(
+            row1, text="自動回測", width=110, height=34, corner_radius=8,
+            font=ctk.CTkFont(size=14, weight="bold"),
+            fg_color="#2e9e6b", hover_color="#247e55",
+            command=self._on_run_auto_backtest)
+        self.abt_run_btn.pack(side="left", padx=(4, 0))
+        self.abt_export_btn = ctk.CTkButton(
+            row1, text="匯出交易 CSV", width=110, height=34, corner_radius=8,
+            font=ctk.CTkFont(size=12), fg_color="#1f6aa5", hover_color="#185a8c",
+            command=self._on_export_auto_backtest)
+        self.abt_export_btn.pack(side="left", padx=(8, 0))
+        self.abt_status_label = ctk.CTkLabel(
+            row1, text="", font=ctk.CTkFont(size=12), text_color="#4ECDC4")
+        self.abt_status_label.pack(side="left", padx=(14, 0))
+
+        self.abt_report_label = ctk.CTkLabel(
+            card, text="", font=ctk.CTkFont(size=12, family="Consolas"),
+            justify="left", text_color="#e0e0e0")
+        self.abt_report_label.pack(anchor="w", padx=22, pady=(4, 6))
+
+        # 訊號歷程（每個點火訊號 + 系統動作；買=紅 賣=綠，未成交淡色）
+        ctk.CTkLabel(
+            card, text="訊號歷程（🔴 買方點火　🟢 賣方點火　未成交以淡色表示）",
+            font=ctk.CTkFont(size=12, weight="bold"),
+            text_color="#c0c0c0").pack(anchor="w", padx=22, pady=(2, 2))
+        self.abt_hist_frame = ctk.CTkFrame(card, fg_color="transparent")
+        self.abt_hist_frame.pack(fill="both", expand=True, padx=12, pady=(0, 8))
+        self._build_auto_history_tree()
+
+        ctk.CTkLabel(card, text="交易明細",
+                      font=ctk.CTkFont(size=12, weight="bold"),
+                      text_color="#c0c0c0").pack(anchor="w", padx=22, pady=(2, 2))
+        self.abt_trades_frame = ctk.CTkFrame(card, fg_color="transparent")
+        self.abt_trades_frame.pack(fill="both", expand=True, padx=12, pady=(0, 14))
+        self._build_auto_bt_tree()
+
+    def _build_auto_history_tree(self):
+        self._tree_style()
+        cols = ("time", "sig", "strength", "price", "action", "detail")
+        tree = ttk.Treeview(self.abt_hist_frame, columns=cols, show="headings",
+                            height=10, style="Micro.Treeview")
+        for c, txt, w, anc in [
+            ("time", "時間", 75, "center"), ("sig", "訊號", 75, "center"),
+            ("strength", "強度", 45, "center"), ("price", "價格", 65, "e"),
+            ("action", "動作", 90, "center"), ("detail", "說明", 230, "w"),
+        ]:
+            tree.heading(c, text=txt)
+            tree.column(c, width=w, anchor=anc, stretch=(c == "detail"))
+        # 買=紅、賣=綠；成交＝亮色，未成交＝淡色；收盤＝灰
+        tree.tag_configure("buy", foreground="#ef5350")
+        tree.tag_configure("buy_dim", foreground="#7a4a48")
+        tree.tag_configure("sell", foreground="#26a69a")
+        tree.tag_configure("sell_dim", foreground="#3f6b64")
+        tree.tag_configure("neutral", foreground="#9aa4ad")
+        sb = ttk.Scrollbar(self.abt_hist_frame, orient="vertical", command=tree.yview)
+        tree.configure(yscrollcommand=sb.set)
+        tree.pack(side="left", fill="both", expand=True)
+        sb.pack(side="right", fill="y")
+        self._auto_hist_tree = tree
+
+    def _build_auto_bt_tree(self):
+        self._tree_style()
+        cols = ("dir", "et", "ep", "xt", "xp", "ret", "reason", "hold")
+        tree = ttk.Treeview(self.abt_trades_frame, columns=cols, show="headings",
+                            height=8, style="Micro.Treeview")
+        for c, txt, w, anc in [
+            ("dir", "方向", 45, "center"), ("et", "進場時間", 70, "center"),
+            ("ep", "進場價", 60, "e"), ("xt", "出場時間", 70, "center"),
+            ("xp", "出場價", 60, "e"), ("ret", "報酬%", 60, "e"),
+            ("reason", "出場原因", 85, "center"), ("hold", "持有", 45, "e"),
+        ]:
+            tree.heading(c, text=txt)
+            tree.column(c, width=w, anchor=anc, stretch=(c == "reason"))
+        tree.tag_configure("win", foreground="#ef5350")
+        tree.tag_configure("loss", foreground="#26a69a")
+        sb = ttk.Scrollbar(self.abt_trades_frame, orient="vertical", command=tree.yview)
+        tree.configure(yscrollcommand=sb.set)
+        tree.pack(side="left", fill="both", expand=True)
+        sb.pack(side="right", fill="y")
+        self._auto_bt_tree = tree
+
+    def _on_run_auto_backtest(self):
+        self.vm.run_auto_backtest(
+            self.abt_code_entry.get().strip() or self.code_entry.get().strip(),
+            self.abt_date_entry.get().strip())
+
+    def _on_export_auto_backtest(self):
+        code = self.abt_code_entry.get().strip() or "stock"
+        default_name = f"自動回測交易_{code}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv"
+        path = filedialog.asksaveasfilename(
+            title="匯出自動回測交易", defaultextension=".csv",
+            initialfile=default_name,
+            filetypes=[("CSV 檔", "*.csv"), ("所有檔案", "*.*")])
+        if path:
+            self.vm.export_auto_backtest_csv(path)
 
     def _collect_bt_params(self) -> dict | None:
         """從 UI 收集回測參數；數值格式錯誤時回 None 並顯示訊息。"""
@@ -626,6 +755,9 @@ class MicrostructureView(ctk.CTkFrame):
         self.vm.bind("is_backtesting", self._on_backtesting)
         self.vm.bind("backtest_status", self._on_backtest_status)
         self.vm.bind("backtest_result", self._on_backtest_result)
+        self.vm.bind("is_auto_backtesting", self._on_auto_backtesting)
+        self.vm.bind("auto_backtest_status", self._on_auto_backtest_status)
+        self.vm.bind("auto_backtest_result", self._on_auto_backtest_result)
 
     def _on_backtesting(self, v):
         def _u():
@@ -652,6 +784,60 @@ class MicrostructureView(ctk.CTkFrame):
                 ret = t.get("ret_pct", 0)
                 tag = "win" if ret > 0 else "loss"
                 self._bt_tree.insert("", "end", values=(
+                    "做多" if t.get("direction") == "long" else "做空",
+                    t.get("entry_time", ""), f"{t.get('entry_price', 0):.2f}",
+                    t.get("exit_time", ""), f"{t.get('exit_price', 0):.2f}",
+                    f"{ret:+.3f}", t.get("exit_reason", ""), t.get("hold_ticks", 0),
+                ), tags=(tag,))
+        self.after(0, _u)
+
+    def _on_auto_backtesting(self, v):
+        def _u():
+            if v:
+                self.abt_run_btn.configure(state="disabled", text="回測中...")
+            else:
+                self.abt_run_btn.configure(state="normal", text="自動回測")
+        self.after(0, _u)
+
+    def _on_auto_backtest_status(self, v):
+        clr = "#FF6B6B" if ("失敗" in v or "錯誤" in v or "查無" in v or "請" in v) else "#4ECDC4"
+        self.after(0, lambda: self.abt_status_label.configure(text=v, text_color=clr))
+
+    def _on_auto_backtest_result(self, data):
+        if not data:
+            return
+
+        def _u():
+            self.abt_report_label.configure(text=data.get("report", ""))
+            # 訊號歷程
+            if self._auto_hist_tree:
+                self._auto_hist_tree.delete(*self._auto_hist_tree.get_children())
+                for e in data.get("events", []):
+                    side = e.get("side", "")
+                    traded = e.get("traded", False)
+                    if side == "buy":
+                        tag = "buy" if traded else "buy_dim"
+                    elif side == "sell":
+                        tag = "sell" if traded else "sell_dim"
+                    else:
+                        tag = "neutral"
+                    detail = e.get("detail", "")
+                    ret = e.get("ret_pct")
+                    if ret is not None:
+                        detail = f"{detail}（平倉 {ret:+.3f}%）"
+                    self._auto_hist_tree.insert("", "end", values=(
+                        e.get("time", ""), e.get("signal", ""),
+                        e.get("strength", ""),
+                        f"{e.get('price', 0):.2f}", e.get("action", ""), detail,
+                    ), tags=(tag,))
+            # 交易明細
+            if not self._auto_bt_tree:
+                return
+            self._auto_bt_tree.delete(*self._auto_bt_tree.get_children())
+            for t in data.get("trades", []):
+                ret = t.get("ret_pct", 0)
+                tag = "win" if ret > 0 else "loss"
+                self._auto_bt_tree.insert("", "end", values=(
                     "做多" if t.get("direction") == "long" else "做空",
                     t.get("entry_time", ""), f"{t.get('entry_price', 0):.2f}",
                     t.get("exit_time", ""), f"{t.get('exit_price', 0):.2f}",

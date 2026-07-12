@@ -98,6 +98,8 @@ class BacktestParams:
     fee_discount: float = 0.3        # 手續費折數（電子下單常見 3 折）
     tax_rate: float = 0.0015         # 證交稅（當沖賣出 0.15%）
     min_hold_ticks: int = 3          # 進場後最少持有幾筆才允許出場（濾雜訊）
+    sar_skip_open_minutes: float = 10.0  # 點火進出策略：開盤前 N 分鐘不交易（開盤量價未穩）
+    sar_exit_consecutive: int = 4    # 點火進出策略：需連續 N 筆反向點火（支撐轉強/轉弱）才出場
 
 
 @dataclass
@@ -138,11 +140,14 @@ class BacktestResult:
     error: str = ""
     # --- 診斷：幫忙看「零訊號」到底卡在哪個條件 ---
     diag: dict = field(default_factory=dict)
+    # --- 反手(SAR)策略：完整訊號歷程（每個點火訊號 + 系統動作）---
+    sar_events: list = field(default_factory=list)
 
     def summary_dict(self) -> dict:
         d = asdict(self)
         d.pop("trades", None)
         d.pop("equity_curve", None)
+        d.pop("sar_events", None)
         return d
 
 
@@ -184,6 +189,13 @@ class MicrostructureBacktester:
         peak = 0.0              # 移動停損用：多單記最高、空單記最低
         nav = 1.0
         res.equity_curve.append(nav)
+        # 點火進出(SAR)策略狀態：不反手。方向(sar_bias)由點火進場決定；
+        #   opp_streak  = 持倉時「反向點火」連續數，達門檻→出場(補回/賣出)、回到空手。
+        #   flat_switch = 空手時「與目前方向相反」點火連續數，達門檻→換方向並進場。
+        # 因此：出場後仍可「同向」再進場；要換到另一邊，須空手時再連續 N 筆反向點火確認。
+        sar_bias = 0            # 0 未定 / +1 偏多 / -1 偏空
+        opp_streak = 0
+        flat_switch = 0
 
         W = self.p.confluence_window
         K = max(1, min(3, self.p.entry_min_conditions))
@@ -227,6 +239,18 @@ class MicrostructureBacktester:
         max_consec = 0
         atk_buy_signals = 0     # 起漲/起跌點策略：強起漲點次數
         atk_sell_signals = 0    # 起漲/起跌點策略：強起跌點次數
+        strong_buy_signals = 0  # 反手(SAR)策略：買方轉強(點火/攻擊)次數
+        strong_sell_signals = 0  # 反手(SAR)策略：賣方轉強次數
+        ignite_buy_signals = 0   # 反手(SAR)策略：明確買方點火(momentum)次數
+        ignite_sell_signals = 0  # 反手(SAR)策略：明確賣方點火(momentum)次數
+        sar_long_entries = 0    # 反手(SAR)策略：翻多進場次數
+        sar_short_entries = 0   # 反手(SAR)策略：翻空(沖賣)進場次數
+
+        # 反手(SAR)：開盤前 N 分鐘不交易 —— 以第一筆有效 ts 為開盤基準 + N 分鐘
+        open_ts = next((int(tk["ts"]) for tk in ticks
+                        if tk.get("ts") is not None), None)
+        no_trade_until = (open_ts + int(self.p.sar_skip_open_minutes * 60 * 1e9)
+                          if open_ts is not None else None)
 
         for i, tk in enumerate(ticks):
             bid = tk["bid_price"]
@@ -251,6 +275,8 @@ class MicrostructureBacktester:
             attack_sell_now = False   # 強起跌點（attack sell）→ 做空進場
             strong_buy_now = False    # 買方訊號轉強（起漲攻擊/動能點火）→ 空單補回
             strong_sell_now = False   # 賣方訊號轉強（起跌殺盤/動能點火）→ 多單獲利了結
+            ignite_buy_now = False    # 明確「動能點火」買訊（momentum,強）→ 反手做多依據
+            ignite_sell_now = False   # 明確「動能點火」賣訊（momentum,強）→ 反手做空依據
             for a in tick_alerts:
                 if a.kind == "attack" and a.side == "buy":
                     last_attack_buy = i
@@ -258,6 +284,11 @@ class MicrostructureBacktester:
                 elif a.kind == "attack" and a.side == "sell":
                     last_attack_sell = i
                     attack_sell_now = True
+                if a.kind == "momentum":  # 動能點火（明確的買/賣點火訊號）
+                    if a.side == "buy":
+                        ignite_buy_now = True
+                    elif a.side == "sell":
+                        ignite_sell_now = True
                 if a.level == "strong":  # 動能點火/起漲起跌攻擊皆為 strong
                     if a.side == "buy":
                         strong_buy_now = True
@@ -267,6 +298,14 @@ class MicrostructureBacktester:
                 atk_buy_signals += 1
             if attack_sell_now:
                 atk_sell_signals += 1
+            if strong_buy_now:
+                strong_buy_signals += 1
+            if strong_sell_now:
+                strong_sell_signals += 1
+            if ignite_buy_now:
+                ignite_buy_signals += 1
+            if ignite_sell_now:
+                ignite_sell_signals += 1
 
             snap = engine.snapshot()
             obi = snap["obi5"]
@@ -287,6 +326,157 @@ class MicrostructureBacktester:
             mc = max(snap["consec_buy_buckets"], snap["consec_sell_buckets"])
             if mc > max_consec:
                 max_consec = mc
+
+            # ============ 點火進出策略（不反手；確認式出場）============
+            # 進場：明確動能點火 → 依「當日方向(第一次進場決定)」進場，之後不反手。
+            # 出場：做空時連續 N 筆「買方點火(支撐轉強)」→ 補回；做多時連續 N 筆
+            #       「賣方點火(支撐轉弱)」→ 賣出。出場後回到空手，僅同向點火可再進場。
+            if self.p.strategy == "sar_flip":
+                # 進出訊號＝「動能點火」或「起漲/起跌點(attack)」擇一觸發即算。
+                # 同一 tick 買賣兩邊皆有訊號＝矛盾，不動作。
+                trig_buy = ignite_buy_now or attack_buy_now
+                trig_sell = ignite_sell_now or attack_sell_now
+                sig_side = ""
+                if trig_buy and not trig_sell:
+                    sig_side = "buy"
+                elif trig_sell and not trig_buy:
+                    sig_side = "sell"
+                # 訊號名稱與強度（與監控買賣點一致）：
+                #   起漲/起跌點(attack)=「強」；動能點火(momentum)=「中」，OBI 蓄勢同向升「強」。
+                sig_name = ""
+                sig_strength = ""
+                if sig_side == "buy":
+                    sig_name = "買方起漲點" if attack_buy_now else "買方點火"
+                    sig_strength = "強" if (attack_buy_now
+                                            or engine.ob.setup_side == "buy") else "中"
+                elif sig_side == "sell":
+                    sig_name = "賣方起跌點" if attack_sell_now else "賣方點火"
+                    sig_strength = "強" if (attack_sell_now
+                                            or engine.ob.setup_side == "sell") else "中"
+
+                def _ev(action: str, detail: str, traded: bool, ret=None):
+                    res.sar_events.append({
+                        "time": t_str, "side": sig_side,
+                        "signal": sig_name, "strength": sig_strength,
+                        "price": round(close, 2), "action": action,
+                        "detail": detail, "traded": traded,
+                        "ret_pct": None if ret is None else round(ret, 4)})
+
+                # 開盤前 N 分鐘不交易（引擎仍持續吃 tick 累積狀態，只是不進出場）
+                in_open = (no_trade_until is not None and tk.get("ts") is not None
+                           and int(tk["ts"]) < no_trade_until)
+                if in_open:
+                    if sig_side:
+                        _ev("開盤前忽略",
+                            f"開盤前 {self.p.sar_skip_open_minutes:g} 分鐘不交易", False)
+                    continue
+                if not sig_side:
+                    continue  # 本筆無明確點火，不記錄
+
+                sig = 1 if sig_side == "buy" else -1
+                need = max(1, self.p.sar_exit_consecutive)
+
+                def _enter(direction: int, label: str):
+                    nonlocal pos, entry_price, entry_i, entry_time, peak
+                    nonlocal opp_streak, flat_switch, sar_long_entries, sar_short_entries
+                    if direction == 1:
+                        entry_price = self._slip(ask, +1, close)  # 吃 Ask + 滑價
+                        pos = 1
+                        sar_long_entries += 1
+                    else:
+                        entry_price = self._slip(bid, -1, close)  # 砍 Bid - 滑價
+                        pos = -1
+                        sar_short_entries += 1
+                    entry_i = i
+                    entry_time = t_str
+                    peak = close
+                    opp_streak = 0
+                    flat_switch = 0
+                    _ev("進場", label, True)
+
+                if pos == 0:
+                    # ---------------- 空手 ----------------
+                    allow_sig = (self.p.allow_long if sig == 1
+                                 else self.p.allow_short)
+                    if sar_bias == 0:
+                        # 尚未定方向：第一個(允許的)點火即定方向並進場
+                        if not allow_sig:
+                            _ev("略過", "該方向未啟用，不進場", False)
+                            continue
+                        if bid <= 0 or ask <= 0:
+                            _ev("略過", "無對手報價可成交", False)
+                            continue
+                        sar_bias = sig
+                        _enter(sig, f"訊號進場 {'做多' if sig == 1 else '沖賣(做空)'}"
+                                    f"（起始方向）")
+                        continue
+                    if sig == sar_bias:
+                        # 同向點火 → 直接進場，重置換方向計數
+                        flat_switch = 0
+                        if not allow_sig:
+                            _ev("略過", "該方向未啟用，不進場", False)
+                            continue
+                        if bid <= 0 or ask <= 0:
+                            _ev("略過", "無對手報價可成交", False)
+                            continue
+                        _enter(sig, f"同向訊號進場 {'做多' if sig == 1 else '沖賣(做空)'}")
+                        continue
+                    # 反向點火（與目前方向相反）→ 累計，達門檻才「換方向」進場（不類反手）
+                    flat_switch += 1
+                    swing = "買方轉強" if sig == 1 else "賣方轉弱"
+                    if flat_switch < need:
+                        _ev("觀察", f"{swing} {flat_switch}/{need}，未達門檻，暫不換方向",
+                            False)
+                        continue
+                    if not allow_sig:
+                        _ev("略過", "擬換方向但該方向未啟用", False)
+                        flat_switch = 0
+                        continue
+                    if bid <= 0 or ask <= 0:
+                        _ev("略過", "換方向訊號成立但無對手報價", False)
+                        continue
+                    sar_bias = sig
+                    _enter(sig, f"連續{need}筆{swing} → 換{'做多' if sig == 1 else '做空'}進場")
+                    continue
+
+                # ---------------- 持倉中：不反手，累計反向點火達 N 筆才出場 ----------------
+                if sig == pos:
+                    # 同向點火＝支撐延續 → 重置反向計數、續抱
+                    opp_streak = 0
+                    _ev("續抱", f"同向訊號，支撐延續，維持{'多單' if pos == 1 else '空單'}",
+                        False)
+                    continue
+                # 反向點火：累計「支撐轉強(空單)／支撐轉弱(多單)」
+                opp_streak += 1
+                trend_txt = "支撐轉強" if pos == -1 else "支撐轉弱"
+                if opp_streak < need:
+                    _ev("觀察", f"{trend_txt} {opp_streak}/{need}，未達門檻續抱", False)
+                    continue
+                # 達門檻 → 出場（做空補回 / 做多賣出），回到空手（不反手，方向 bias 不變）
+                if bid <= 0 or ask <= 0:
+                    _ev("略過", "出場訊號成立但無對手報價", False)
+                    continue
+                held = i - entry_i
+                if pos == 1:
+                    fill = self._slip(bid, -1, close)
+                    ret = self._net_return(entry_price, fill, "long")
+                    act, reason = "賣出", f"賣出（連續{need}筆{trend_txt}）"
+                else:
+                    fill = self._slip(ask, +1, close)
+                    ret = self._net_return(entry_price, fill, "short")
+                    act, reason = "補回", f"補回（連續{need}筆{trend_txt}）"
+                nav *= (1 + ret / 100)
+                res.equity_curve.append(nav)
+                res.trades.append(TradeRecord(
+                    direction="long" if pos == 1 else "short",
+                    entry_time=entry_time, entry_price=round(entry_price, 4),
+                    exit_time=t_str, exit_price=round(fill, 4),
+                    ret_pct=round(ret, 4), exit_reason=reason, hold_ticks=held))
+                _ev(act, reason, True, ret)
+                pos = 0
+                opp_streak = 0
+                flat_switch = 0
+                continue
 
             # ===================== 出場判斷 =====================
             if pos != 0:
@@ -456,6 +646,12 @@ class MicrostructureBacktester:
                 exit_time=t_str, exit_price=round(fill, 4),
                 ret_pct=round(ret, 4), exit_reason="收盤平倉",
                 hold_ticks=len(ticks) - 1 - entry_i))
+            if self.p.strategy == "sar_flip":
+                res.sar_events.append({
+                    "time": t_str, "side": "", "signal": "收盤", "strength": "",
+                    "price": round(close, 2), "action": "收盤平倉",
+                    "detail": f"收盤強制平倉{'多單' if pos == 1 else '空單'}",
+                    "traded": True, "ret_pct": round(ret, 4)})
 
         # 診斷彙整（供報告顯示零訊號卡點）
         ft = max(1, flat_ticks)
@@ -470,6 +666,15 @@ class MicrostructureBacktester:
             "strategy": self.p.strategy,
             "atk_buy_signals": atk_buy_signals,
             "atk_sell_signals": atk_sell_signals,
+            "strong_buy_signals": strong_buy_signals,
+            "strong_sell_signals": strong_sell_signals,
+            "ignite_buy_signals": ignite_buy_signals,
+            "ignite_sell_signals": ignite_sell_signals,
+            "sar_skip_open_minutes": self.p.sar_skip_open_minutes,
+            "sar_exit_consecutive": self.p.sar_exit_consecutive,
+            "sar_bias": sar_bias,
+            "sar_long_entries": sar_long_entries,
+            "sar_short_entries": sar_short_entries,
             "cond_hits": cond_hits,
             "cond_pct": {k: v / ft * 100 for k, v in cond_hits.items()},
             "score_hist_long": score_hist_long,
@@ -556,6 +761,30 @@ class MicrostructureBacktester:
         d = res.diag
         if not d:
             return ""
+        # 反手輪詢(SAR)策略：專屬診斷
+        if d.get("strategy") == "sar_flip":
+            bias = d.get("sar_bias", 0)
+            bias_txt = ("做多" if bias == 1 else "做空" if bias == -1 else "未觸發")
+            lines = [
+                "—— 點火進出(不反手)診斷 ——",
+                f"開盤前 {d.get('sar_skip_open_minutes', 0):g} 分鐘不交易；訊號＝動能點火"
+                f"或起漲/起跌點(擇一)，出場＝連續 {d.get('sar_exit_consecutive', 0)} 筆反向訊號"
+                f"（支撐轉強/轉弱）",
+                f"不反手；出場後同向可再進場，換方向需空手時再連續 "
+                f"{d.get('sar_exit_consecutive', 0)} 筆反向訊號確認",
+                f"最後方向：{bias_txt}",
+                f"賣方訊號：點火 {d.get('ignite_sell_signals', 0)} + "
+                f"起跌點 {d.get('atk_sell_signals', 0)} 次",
+                f"買方訊號：點火 {d.get('ignite_buy_signals', 0)} + "
+                f"起漲點 {d.get('atk_buy_signals', 0)} 次",
+                f"實際進場：做多 {d.get('sar_long_entries', 0)} 次 / "
+                f"做空 {d.get('sar_short_entries', 0)} 次",
+            ]
+            if res.total_trades == 0:
+                lines.append("→ 未觸發交易：該日開盤 10 分鐘後無明確『動能點火』買/賣訊號，"
+                             "或桶量(bucket_size)/推進率(buy_push_ratio)門檻過高。"
+                             "可調低門檻或用「依股價自動」放寬。")
+            return "\n".join(lines)
         # 起漲/起跌點策略：專屬診斷
         if d.get("strategy") in ("attack_point", "attack_short"):
             lines = [
@@ -623,7 +852,9 @@ class MicrostructureBacktester:
             return (f"{res.code} {res.date}｜{res.tick_count:,} 筆 tick\n"
                     f"未觸發任何交易。\n" + self._diag_text(res))
         pf = "∞" if res.profit_factor == float("inf") else f"{res.profit_factor:.2f}"
-        if res.diag.get("strategy") in ("attack_point", "attack_short"):
+        if res.diag.get("strategy") == "sar_flip":
+            mode = "點火進出(不反手)"
+        elif res.diag.get("strategy") in ("attack_point", "attack_short"):
             mode = "起漲/起跌點"
         else:
             mode = "反向(fade)" if res.diag.get("invert") else "順勢"
