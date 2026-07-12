@@ -464,6 +464,24 @@ class MicrostructureEngine:
             return self._daily_short_ok and (itf is None or itf.short_ok)
         return True
 
+    def _gate_reason(self, side: str) -> str:
+        """說明該方向為何被濾網擋下（供 CSV 標註）。"""
+        if not self._filter_active:
+            return ""
+        itf = self._intraday_tf
+        parts: list[str] = []
+        if side == "buy":
+            if not self._daily_long_ok:
+                parts.append("日線非多方")
+            if itf is not None and not itf.long_ok:
+                parts.append("分線未站上")
+        elif side == "sell":
+            if not self._daily_short_ok:
+                parts.append("日線非空方")
+            if itf is not None and not itf.short_ok:
+                parts.append("分線未跌破")
+        return "、".join(parts) or "逆勢"
+
     # 會轉成「買賣點」的訊號類型（confluence 較高者）
     _POINT_KINDS = {"attack": "強", "momentum": "中", "iceberg": "中"}
 
@@ -544,12 +562,11 @@ class MicrostructureEngine:
                     pass
 
     def _maybe_trade_point(self, a: Alert) -> None:
-        """把 confluence 較高的訊號彙整成一個離散「買點/賣點」。"""
+        """把 confluence 較高的訊號彙整成一個離散「買點/賣點」。
+
+        趨勢濾網擋下的點「不亮」到即時買賣點清單，但仍以 filtered=True 標記
+        並轉發給 VM，供匯出 CSV 時完整保留（含被濾原因）。"""
         if a.kind not in self._POINT_KINDS or a.side not in ("buy", "sell"):
-            return
-        # 趨勢濾網：方向與大局不符（逆勢/未突破）則不亮買賣點，只留在訊號紀錄
-        if not self._gate_side(a.side):
-            self.filtered_points += 1
             return
         # 依據簡述（去掉冒號後段細節）
         reason = a.message.split("：", 1)[0]
@@ -557,17 +574,27 @@ class MicrostructureEngine:
         strength = self._POINT_KINDS[a.kind]
         if self.ob.setup_side == a.side and strength == "中":
             strength = "強"
+        gated = not self._gate_side(a.side)
         point = {
             "time": a.time, "side": a.side, "price": a.price,
             "strength": strength, "kind": a.kind, "reason": reason,
+            "filtered": gated,
+            "filter_reason": self._gate_reason(a.side) if gated else "",
         }
-        # 去重：與上一個買賣點同向、同類、同價則略過（避免洗頻）
+        if gated:
+            self.filtered_points += 1
+        # 去重：與上一個買賣點同向、同類、同價、同濾網狀態則略過（避免洗頻）
         if self.trade_points:
             last = self.trade_points[-1]
             if (last["side"] == point["side"] and last["kind"] == point["kind"]
+                    and last.get("filtered", False) == gated
                     and abs(last["price"] - point["price"]) < 1e-6):
                 return
+        # 被濾的點以淡色列入清單（不代表進場），仍轉發供匯出
         self.trade_points.append(point)
+        self._forward_point(point)
+
+    def _forward_point(self, point: dict) -> None:
         if self._on_point:
             try:
                 self._on_point(point)

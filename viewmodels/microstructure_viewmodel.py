@@ -487,9 +487,16 @@ class MicrostructureViewModel(BaseViewModel):
         side_txt = "買點" if point.get("side") == "buy" else "賣點"
         kind_txt = {"attack": "起漲/起跌", "momentum": "動能點火",
                     "iceberg": "冰山"}.get(point.get("kind", ""), point.get("kind", ""))
-        self._append_alert(
-            f"★ [{point.get('time','')}] {side_txt} @{point.get('price',0):.2f} "
-            f"{point.get('strength','')}｜{kind_txt}：{point.get('reason','')}")
+        if point.get("filtered"):
+            fr = point.get("filter_reason", "") or "逆勢"
+            self._append_alert(
+                f"☆ [{point.get('time','')}] {side_txt}（濾網擋下·未亮燈：{fr}） "
+                f"@{point.get('price',0):.2f} {point.get('strength','')}｜"
+                f"{kind_txt}：{point.get('reason','')}")
+        else:
+            self._append_alert(
+                f"★ [{point.get('time','')}] {side_txt} @{point.get('price',0):.2f} "
+                f"{point.get('strength','')}｜{kind_txt}：{point.get('reason','')}")
 
     def export_csv(self, path: str):
         """把本次追蹤累積的所有買賣點匯出成 CSV（Excel 可直接開）。"""
@@ -500,11 +507,18 @@ class MicrostructureViewModel(BaseViewModel):
             self.export_status = "目前沒有買賣點可匯出"
             return
         try:
+            n_filtered = 0
             with open(path, "w", newline="", encoding="utf-8-sig") as f:
                 w = csv.writer(f)
-                w.writerow(["時間", "方向", "價格", "強度", "類型", "依據"])
+                w.writerow(["時間", "方向", "價格", "強度", "類型", "依據", "濾網"])
                 kmap = {"attack": "起漲/起跌", "momentum": "動能點火", "iceberg": "冰山"}
                 for p in rows:
+                    if p.get("filtered"):
+                        n_filtered += 1
+                        fr = p.get("filter_reason", "")
+                        gate = f"被濾網擋下（{fr}）" if fr else "被濾網擋下"
+                    else:
+                        gate = "通過"
                     w.writerow([
                         p.get("time", ""),
                         "買點" if p.get("side") == "buy" else "賣點",
@@ -512,8 +526,10 @@ class MicrostructureViewModel(BaseViewModel):
                         p.get("strength", ""),
                         kmap.get(p.get("kind", ""), p.get("kind", "")),
                         p.get("reason", ""),
+                        gate,
                     ])
-            self.export_status = f"✓ 已匯出 {len(rows)} 筆買賣點 → {path}"
+            tail = f"（含 {n_filtered} 筆被濾網擋下）" if n_filtered else ""
+            self.export_status = f"✓ 已匯出 {len(rows)} 筆買賣點{tail} → {path}"
         except Exception as e:
             self.export_status = f"匯出失敗：{e}"
 

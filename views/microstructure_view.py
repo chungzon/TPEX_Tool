@@ -336,9 +336,22 @@ class MicrostructureView(ctk.CTkFrame):
         hdr.pack(fill="x", padx=20, pady=(14, 2))
         ctk.CTkLabel(hdr, text="策略回測（永豐歷史逐筆）",
                       font=ctk.CTkFont(size=15, weight="bold")).pack(side="left")
-        ctk.CTkLabel(hdr, text="套用上方偵測參數，做多/做空事件驅動回測 · 已計滑價與手續費稅",
+        ctk.CTkLabel(hdr, text="套用上方偵測參數，事件驅動回測 · 已計滑價與手續費稅",
                       font=ctk.CTkFont(size=11), text_color="#888888").pack(
                           side="left", padx=(10, 0))
+
+        cur0 = self.vm.default_backtest_params()
+        self._strategy_map = {"合流計分(多空)": "confluence",
+                              "起漲/起跌點(順勢)": "attack_point"}
+        self._strategy_rmap = {v: k for k, v in self._strategy_map.items()}
+        ctk.CTkLabel(hdr, text="策略：", font=ctk.CTkFont(size=12)).pack(
+            side="left", padx=(16, 2))
+        self.bt_strategy_var = ctk.StringVar(
+            value=self._strategy_rmap.get(cur0.get("strategy", "confluence"),
+                                          "合流計分(多空)"))
+        ctk.CTkOptionMenu(
+            hdr, values=list(self._strategy_map.keys()), variable=self.bt_strategy_var,
+            width=150, font=ctk.CTkFont(size=12)).pack(side="left")
 
         # 代碼 + 日期 + 做多/做空
         row1 = ctk.CTkFrame(card, fg_color="transparent")
@@ -365,7 +378,12 @@ class MicrostructureView(ctk.CTkFrame):
         ctk.CTkCheckBox(row1, text="需大單", variable=self.bt_req_attack_var,
                          font=ctk.CTkFont(size=13)).pack(side="left", padx=(0, 8))
         ctk.CTkCheckBox(row1, text="需突破", variable=self.bt_req_breakout_var,
-                         font=ctk.CTkFont(size=13)).pack(side="left")
+                         font=ctk.CTkFont(size=13)).pack(side="left", padx=(0, 16))
+
+        self.bt_invert_var = ctk.BooleanVar(value=bool(cur.get("invert_signals", False)))
+        ctk.CTkCheckBox(row1, text="反向(fade)", variable=self.bt_invert_var,
+                         font=ctk.CTkFont(size=13, weight="bold"),
+                         fg_color="#d98324", hover_color="#b86a1a").pack(side="left")
 
         # 濾網列：雙層濾網（上層決定方向，微觀訊號只在閘門開啟時扣板機）
         rowf = ctk.CTkFrame(card, fg_color="transparent")
@@ -460,10 +478,12 @@ class MicrostructureView(ctk.CTkFrame):
     def _collect_bt_params(self) -> dict | None:
         """從 UI 收集回測參數；數值格式錯誤時回 None 並顯示訊息。"""
         params = {
+            "strategy": self._strategy_map.get(self.bt_strategy_var.get(), "confluence"),
             "allow_long": self.bt_long_var.get(),
             "allow_short": self.bt_short_var.get(),
             "require_attack": self.bt_req_attack_var.get(),
             "require_breakout": self.bt_req_breakout_var.get(),
+            "invert_signals": self.bt_invert_var.get(),
             "daily_trend_filter": self.bt_daily_filter_var.get(),
             "intraday_filter": self._intraday_map.get(self.bt_intraday_var.get(), "off"),
         }
@@ -530,6 +550,8 @@ class MicrostructureView(ctk.CTkFrame):
             tree.column(c, width=w, anchor=anc, stretch=(c == "reason"))
         tree.tag_configure("buy", foreground="#ef5350")   # 買點：紅
         tree.tag_configure("sell", foreground="#26a69a")  # 賣點：綠
+        tree.tag_configure("buy_dim", foreground="#7a4a48")   # 買點·被濾：暗紅
+        tree.tag_configure("sell_dim", foreground="#3f6b64")  # 賣點·被濾：暗綠
         sb = ttk.Scrollbar(self.points_frame, orient="vertical", command=tree.yview)
         tree.configure(yscrollcommand=sb.set)
         tree.pack(side="left", fill="both", expand=True)
@@ -768,14 +790,26 @@ class MicrostructureView(ctk.CTkFrame):
         kind_txt = {"attack": "起漲/起跌", "momentum": "動能點火", "iceberg": "冰山"}
         for p in reversed(d.get("trade_points", [])):
             side = p.get("side", "")
-            type_txt = ("🔴 買點" if side == "buy" else "🟢 賣點")
+            filtered = p.get("filtered", False)
+            if filtered:
+                type_txt = ("⚪ 買點" if side == "buy" else "⚪ 賣點")
+                tag = f"{side}_dim"
+                fr = p.get("filter_reason", "") or "逆勢"
+                reason_txt = (f"[濾網擋下·{fr}] "
+                              f"{kind_txt.get(p.get('kind',''), p.get('kind',''))}"
+                              f"｜{p.get('reason','')}")
+            else:
+                type_txt = ("🔴 買點" if side == "buy" else "🟢 賣點")
+                tag = side
+                reason_txt = (f"{kind_txt.get(p.get('kind',''), p.get('kind',''))}"
+                              f"｜{p.get('reason','')}")
             self._points_tree.insert("", "end", values=(
                 p.get("time", ""),
                 type_txt,
                 _fmt(p.get("price", 0), 2),
                 p.get("strength", ""),
-                f"{kind_txt.get(p.get('kind',''), p.get('kind',''))}｜{p.get('reason','')}",
-            ), tags=(side,))
+                reason_txt,
+            ), tags=(tag,))
 
     def _update_ob(self, d: dict):
         if not self._ob_tree:

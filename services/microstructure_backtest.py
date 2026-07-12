@@ -59,6 +59,12 @@ def tw_tick_size(price: float) -> float:
 
 @dataclass
 class BacktestParams:
+    # 回測策略：
+    #   'confluence'   — K-of-N 合流計分（多空對稱，原策略）
+    #   'attack_point' — 起漲/起跌點（順勢，照即時監控買賣點邏輯）：
+    #                    做多→強起漲點(attack buy)買進、遇強賣訊出場；
+    #                    做空→強起跌點(attack sell)沖賣、遇強買訊補回。方向由 allow_long/short 決定。
+    strategy: str = "confluence"
     allow_long: bool = True
     allow_short: bool = True
     confluence_window: int = 40      # 各訊號的「新鮮度」窗口：最近 N 筆 tick 內成立才算數
@@ -67,6 +73,9 @@ class BacktestParams:
     min_consec_buckets: int = 1      # VPIN 條件：需連續幾個量桶同向推進（舊版硬寫 2）
     require_attack: bool = False     # 是否「強制」需有大單起漲訊號（無論 K）
     require_breakout: bool = False   # 是否「強制」需價格突破近 N 筆高/低點
+    invert_signals: bool = False     # 反向(fade)模式：買訊號叢集開空、賣訊號叢集開多
+                                     #（微觀訊號常標的是短線頂/底，fade 反而有 edge）
+                                     # 預設關閉＝順勢：買訊號做多(起漲點買)、賣訊號做空(起跌點空)
     breakout_lookback: int = 120     # 突破判斷回看的 tick 數（近似「近一分鐘高低」）
     debug_every: int = 1000          # 每 N 筆 tick 記一次診斷快照（0=關閉），用於觀察哪個門檻太嚴
     # --- 雙層濾網：上層決定方向，微觀訊號只在閘門開啟時扣板機 ---
@@ -180,6 +189,12 @@ class MicrostructureBacktester:
         K = max(1, min(3, self.p.entry_min_conditions))
         min_buckets = max(1, self.p.min_consec_buckets)
 
+        # 反向(fade)模式：進場方向鏡射；且順勢式訊號出場(OBI反轉/反向訊號)對 fade
+        # 無意義會扯後腿，故自動關閉，只留停利/停損/移動停損/收盤。
+        inv = self.p.invert_signals
+        exit_obi_flip = self.p.exit_on_obi_flip and not inv
+        exit_reverse = self.p.exit_on_reverse and not inv
+
         # --- 上層濾網 ---
         # 日線方向偏向（整日固定）
         daily_long_ok, daily_short_ok, daily_note = True, True, ""
@@ -210,6 +225,8 @@ class MicrostructureBacktester:
         obi_sum = 0.0
         max_volume = 0.0
         max_consec = 0
+        atk_buy_signals = 0     # 起漲/起跌點策略：強起漲點次數
+        atk_sell_signals = 0    # 起漲/起跌點策略：強起跌點次數
 
         for i, tk in enumerate(ticks):
             bid = tk["bid_price"]
@@ -229,11 +246,27 @@ class MicrostructureBacktester:
                 "tick_type": tk["tick_type"],
             })
 
+            # 起漲/起跌點策略用的本筆訊號旗標
+            attack_buy_now = False    # 強起漲點（attack buy）→ 做多進場
+            attack_sell_now = False   # 強起跌點（attack sell）→ 做空進場
+            strong_buy_now = False    # 買方訊號轉強（起漲攻擊/動能點火）→ 空單補回
+            strong_sell_now = False   # 賣方訊號轉強（起跌殺盤/動能點火）→ 多單獲利了結
             for a in tick_alerts:
                 if a.kind == "attack" and a.side == "buy":
                     last_attack_buy = i
+                    attack_buy_now = True
                 elif a.kind == "attack" and a.side == "sell":
                     last_attack_sell = i
+                    attack_sell_now = True
+                if a.level == "strong":  # 動能點火/起漲起跌攻擊皆為 strong
+                    if a.side == "buy":
+                        strong_buy_now = True
+                    elif a.side == "sell":
+                        strong_sell_now = True
+            if attack_buy_now:
+                atk_buy_signals += 1
+            if attack_sell_now:
+                atk_sell_signals += 1
 
             snap = engine.snapshot()
             obi = snap["obi5"]
@@ -276,13 +309,20 @@ class MicrostructureBacktester:
                         exit_reason = "停損"
                     elif self.p.trailing_pct > 0 and draw >= self.p.trailing_pct:
                         exit_reason = "移動停損"
-                    elif self.p.exit_on_obi_flip and (
+                    elif self.p.strategy in ("attack_point", "attack_short"):
+                        # 起漲/起跌點：遇反向強訊號出場（適合時機）——
+                        # 空單見買方轉強補回、多單見賣方轉強獲利了結；否則續抱靠停利停損。
+                        if pos == -1 and strong_buy_now:
+                            exit_reason = "訊號轉強(補回)"
+                        elif pos == 1 and strong_sell_now:
+                            exit_reason = "訊號轉弱(賣出)"
+                    elif exit_obi_flip and (
                             (pos == 1 and snap["setup_side"] == "sell") or
                             (pos == -1 and snap["setup_side"] == "buy")):
                         # 與進場對稱：OBI 蓄勢「翻向」（連續數筆 obi5 壓過反向門檻）才出場，
                         # 而非單純穿越 0，避免雜訊把停利提前洗掉。
                         exit_reason = "OBI反轉"
-                    elif self.p.exit_on_reverse and (
+                    elif exit_reverse and (
                             (pos == 1 and last_attack_sell == i) or
                             (pos == -1 and last_attack_buy == i)):
                         exit_reason = "反向訊號"
@@ -306,7 +346,25 @@ class MicrostructureBacktester:
                     pos = 0
                     continue  # 出場當筆不再進場
 
-            # ===================== 進場判斷（K-of-N 合流計分）=====================
+            # ===================== 進場判斷 =====================
+            if pos == 0 and self.p.strategy in ("attack_point", "attack_short"):
+                # 起漲/起跌點（順勢，照即時監控邏輯，不走合流計分）：
+                #   做多 → 強起漲點(attack buy)買進；做空 → 強起跌點(attack sell)沖賣。
+                if self.p.allow_long and attack_buy_now and bid > 0 and ask > 0:
+                    entry_price = self._slip(ask, +1, close)  # 吃 Ask + 滑價
+                    pos = 1
+                    entry_i = i
+                    entry_time = t_str
+                    peak = close
+                elif self.p.allow_short and attack_sell_now and bid > 0 and ask > 0:
+                    entry_price = self._slip(bid, -1, close)  # 砍 Bid - 滑價
+                    pos = -1
+                    entry_i = i
+                    entry_time = t_str
+                    peak = close
+                continue
+
+            # ---------------- 進場判斷（K-of-N 合流計分）----------------
             if pos == 0:
                 flat_ticks += 1
 
@@ -332,26 +390,30 @@ class MicrostructureBacktester:
                     if flag:
                         cond_hits[key] += 1
 
-                long_ok = (
-                    self.p.allow_long and score_long >= K
-                    and (not self.p.require_attack or c_buy)
-                    and (not self.p.require_breakout or d_up))
-                short_ok = (
-                    self.p.allow_short and score_short >= K
-                    and (not self.p.require_attack or c_sell)
-                    and (not self.p.require_breakout or d_dn))
+                # 訊號叢集是否成立（尚未決定做多/做空方向）
+                buy_sig = (score_long >= K
+                           and (not self.p.require_attack or c_buy)
+                           and (not self.p.require_breakout or d_up))
+                sell_sig = (score_short >= K
+                            and (not self.p.require_attack or c_sell)
+                            and (not self.p.require_breakout or d_dn))
+                # 正常：買訊→多、賣訊→空；反向(fade)：買訊→空、賣訊→多
+                want_long = sell_sig if inv else buy_sig
+                want_short = buy_sig if inv else sell_sig
+                pre_long = self.p.allow_long and want_long
+                pre_short = self.p.allow_short and want_short
 
-                # ===== 上層濾網閘門：微觀訊號成立，還要方向大局點頭才放行 =====
+                # ===== 上層濾網閘門：實際部位方向須大局點頭才放行 =====
                 gate_long = daily_long_ok and (
                     intraday_tf is None or intraday_tf.long_ok)
                 gate_short = daily_short_ok and (
                     intraday_tf is None or intraday_tf.short_ok)
-                if long_ok and not gate_long:
+                if pre_long and not gate_long:
                     filter_blocked_long += 1
-                if short_ok and not gate_short:
+                if pre_short and not gate_short:
                     filter_blocked_short += 1
-                long_ok = long_ok and gate_long
-                short_ok = short_ok and gate_short
+                long_ok = pre_long and gate_long
+                short_ok = pre_short and gate_short
 
                 if self.p.debug_every and i > 0 and i % self.p.debug_every == 0:
                     log.info(
@@ -404,6 +466,10 @@ class MicrostructureBacktester:
             "max_consec_buckets": max_consec,
             "K": K,
             "min_buckets": min_buckets,
+            "invert": inv,
+            "strategy": self.p.strategy,
+            "atk_buy_signals": atk_buy_signals,
+            "atk_sell_signals": atk_sell_signals,
             "cond_hits": cond_hits,
             "cond_pct": {k: v / ft * 100 for k, v in cond_hits.items()},
             "score_hist_long": score_hist_long,
@@ -490,6 +556,17 @@ class MicrostructureBacktester:
         d = res.diag
         if not d:
             return ""
+        # 起漲/起跌點策略：專屬診斷
+        if d.get("strategy") in ("attack_point", "attack_short"):
+            lines = [
+                "—— 起漲/起跌點診斷 ——",
+                f"強起漲點(attack buy)：{d.get('atk_buy_signals', 0)} 次（做多進場機會）",
+                f"強起跌點(attack sell)：{d.get('atk_sell_signals', 0)} 次（做空進場機會）",
+            ]
+            if res.total_trades == 0:
+                lines.append("→ 未觸發交易：該日無對應方向的起漲/起跌點，或大單門檻過高。"
+                             "確認已勾做多/做空，並可調低『大單倍數/最低張』或用「依股價自動」放寬。")
+            return "\n".join(lines)
         cp = d.get("cond_pct", {})
         sl = d.get("score_hist_long", {})
         ss = d.get("score_hist_short", {})
@@ -546,8 +623,12 @@ class MicrostructureBacktester:
             return (f"{res.code} {res.date}｜{res.tick_count:,} 筆 tick\n"
                     f"未觸發任何交易。\n" + self._diag_text(res))
         pf = "∞" if res.profit_factor == float("inf") else f"{res.profit_factor:.2f}"
+        if res.diag.get("strategy") in ("attack_point", "attack_short"):
+            mode = "起漲/起跌點"
+        else:
+            mode = "反向(fade)" if res.diag.get("invert") else "順勢"
         lines = [
-            f"===== 微觀結構回測報告 =====",
+            f"===== 微觀結構回測報告（{mode}）=====",
             f"標的：{res.code}　日期：{res.date}　Tick 數：{res.tick_count:,}",
             f"總交易：{res.total_trades}（多 {res.long_trades} / 空 {res.short_trades}）",
             f"勝率：{res.win_rate:.1f}%（{res.wins} 勝 / {res.losses} 敗）",
