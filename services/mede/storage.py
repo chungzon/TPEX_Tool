@@ -185,6 +185,15 @@ class SqliteStorage(Storage):
             out.append(d)
         return out
 
+    def read_codes(self, trade_date: str) -> list[str]:
+        """回傳當日 raw_tick 中有錄到資料的股票代碼（供偵測重播列舉）。"""
+        if not os.path.exists(self._db_path(trade_date)):
+            return []
+        self.open(trade_date)
+        cur = self._conn.execute(
+            "SELECT DISTINCT code FROM raw_tick WHERE code IS NOT NULL ORDER BY code")
+        return [r[0] for r in cur.fetchall()]
+
     def read_ticks(self, code: str, trade_date: str) -> list[dict]:
         self.open(trade_date)
         cur = self._conn.execute(
