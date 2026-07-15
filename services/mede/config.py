@@ -57,7 +57,19 @@ class MedeConfig:
     exhaustion_timeout_ms: int = 5000    # 衰竭觀察期
     momentum_min_categories: int = 4     # 動能點火：至少幾類不同證據共振
     detector_enabled: dict = field(default_factory=dict)   # name -> bool（預設全開）
-    detector_weights: dict = field(default_factory=dict)   # name -> weight（Phase 5 融合）
+    detector_weights: dict = field(default_factory=dict)   # name -> weight
+
+    # --- Phase 5 融合 / 狀態機 ---
+    spread_max_ticks: float = 4.0            # 必要條件：點差不得超過此
+    bull_trigger_score: float = 120.0        # 加權多方分門檻
+    bear_trigger_score: float = 120.0
+    trigger_min_detector_categories: int = 3  # 觸發需至少幾類不同證據
+    veto_absorption_score: float = 50.0      # 反向吸收分數過高 → 否決
+    continuation_min_score: float = 40.0     # 延續門檻
+    cooldown_ms: int = 5000                  # 觸發後冷卻
+    merge_window_ms: int = 3000              # 同波同向事件合併窗
+    max_events_per_stock_per_day: int = 200
+    pattern_enabled: dict = field(default_factory=dict)
 
     # --- 版本 ---
     algorithm_version: str = "mede-0.1"

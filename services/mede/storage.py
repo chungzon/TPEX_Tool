@@ -92,8 +92,21 @@ class SqliteStorage(Storage):
                 first_tick_time TEXT, last_tick_time TEXT,
                 status TEXT, config_hash TEXT, saved_at TEXT,
                 PRIMARY KEY (trade_date, code))""")
+        c.execute("""
+            CREATE TABLE IF NOT EXISTS mede_event (
+                event_id TEXT PRIMARY KEY, code TEXT, event_time_ns INTEGER,
+                seq INTEGER, event_type TEXT, direction INTEGER, score REAL,
+                confidence REAL, trigger_price REAL, reasons TEXT,
+                matched_patterns TEXT, detector_scores TEXT,
+                consolidated_trigger_id TEXT, parameter_version TEXT,
+                algorithm_version TEXT)""")
+        c.execute("""
+            CREATE TABLE IF NOT EXISTS mede_state_transition (
+                code TEXT, from_state TEXT, to_state TEXT, t_ns INTEGER,
+                reason TEXT, reference_price REAL)""")
         c.execute("CREATE INDEX IF NOT EXISTS ix_tick_code ON raw_tick(code, seq)")
         c.execute("CREATE INDEX IF NOT EXISTS ix_ba_code ON raw_bidask(code, seq)")
+        c.execute("CREATE INDEX IF NOT EXISTS ix_event_code ON mede_event(code, seq)")
         c.commit()
 
     def write_ticks(self, rows: list[tuple]) -> None:
@@ -124,6 +137,53 @@ class SqliteStorage(Storage):
             f"INSERT OR REPLACE INTO mede_data_quality ({','.join(cols)}) "
             f"VALUES ({','.join('?' * len(cols))})", vals)
         self._conn.commit()
+
+    _EVENT_COLS = ("event_id", "code", "event_time_ns", "seq", "event_type",
+                   "direction", "score", "confidence", "trigger_price", "reasons",
+                   "matched_patterns", "detector_scores", "consolidated_trigger_id",
+                   "parameter_version", "algorithm_version")
+
+    def write_events(self, events: list) -> None:
+        """events: list[Event]。以 JSON 存 reasons/patterns/detector_scores。"""
+        if not events or self._conn is None:
+            return
+        rows = []
+        for e in events:
+            rows.append((e.event_id, e.code, e.event_time_ns, e.seq, e.event_type,
+                         e.direction, e.score, e.confidence, e.trigger_price,
+                         json.dumps(e.reasons, ensure_ascii=False),
+                         json.dumps(e.matched_patterns, ensure_ascii=False),
+                         json.dumps(e.detector_scores, ensure_ascii=False),
+                         e.consolidated_trigger_id, e.parameter_version,
+                         e.algorithm_version))
+        self._conn.executemany(
+            f"INSERT OR REPLACE INTO mede_event ({','.join(self._EVENT_COLS)}) "
+            f"VALUES ({','.join('?' * len(self._EVENT_COLS))})", rows)
+        self._conn.commit()
+
+    def write_transitions(self, trans: list) -> None:
+        if not trans or self._conn is None:
+            return
+        rows = [(t.code, t.from_state, t.to_state, t.t_ns, t.reason,
+                 t.reference_price) for t in trans]
+        self._conn.executemany(
+            "INSERT INTO mede_state_transition "
+            "(code, from_state, to_state, t_ns, reason, reference_price) "
+            "VALUES (?,?,?,?,?,?)", rows)
+        self._conn.commit()
+
+    def read_events(self, code: str, trade_date: str) -> list[dict]:
+        self.open(trade_date)
+        cur = self._conn.execute(
+            f"SELECT {','.join(self._EVENT_COLS)} FROM mede_event "
+            f"WHERE code=? ORDER BY seq", (code,))
+        out = []
+        for r in cur.fetchall():
+            d = dict(zip(self._EVENT_COLS, r))
+            for k in ("reasons", "matched_patterns", "detector_scores"):
+                d[k] = json.loads(d[k]) if d[k] else None
+            out.append(d)
+        return out
 
     def read_ticks(self, code: str, trade_date: str) -> list[dict]:
         self.open(trade_date)

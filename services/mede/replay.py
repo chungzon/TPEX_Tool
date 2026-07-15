@@ -78,3 +78,28 @@ class TickReplayEngine:
                     "ask_volume": data.get("ask_volume", []),
                     "seq": data.get("seq", 0)})
         return snaps, has_ba
+
+    def replay_detect(self, code: str, trade_date: str, cfg, on_event=None,
+                      stop_flag=None):
+        """完整偵測重播：跑 MedeEngine → 產生候選事件與狀態轉移（決定性，依 seq）。
+        回傳 (events, transitions, has_bidask)。"""
+        from services.mede.engine import MedeEngine
+        events, has_ba = self.load_events(code, trade_date)
+        eng = MedeEngine(code, cfg, self._tsf, on_event=on_event)
+        for seq, kind, data in events:
+            if stop_flag is not None and stop_flag.is_set():
+                break
+            if kind == "tick":
+                eng.on_tick({
+                    "code": data.get("code", ""), "time": data.get("exchange_time", ""),
+                    "close": data.get("close"), "volume": data.get("volume"),
+                    "tick_type": data.get("tick_type", 0), "seq": data.get("seq", 0)})
+            else:
+                eng.on_bidask({
+                    "code": data.get("code", ""), "time": data.get("exchange_time", ""),
+                    "bid_price": data.get("bid_price", []),
+                    "bid_volume": data.get("bid_volume", []),
+                    "ask_price": data.get("ask_price", []),
+                    "ask_volume": data.get("ask_volume", []),
+                    "seq": data.get("seq", 0)})
+        return eng.events, eng.sm.transitions, has_ba

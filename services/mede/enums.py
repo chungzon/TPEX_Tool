@@ -33,3 +33,30 @@ class DataQualityStatus(str, Enum):
     OK = "ok"
     DEGRADED = "degraded"     # 有缺口/延遲/亂序，但仍可用
     INVALID = "invalid"       # 資料不足或異常，不納入正式統計
+
+
+class StateType(str, Enum):
+    """市場狀態（狀態機輸出，對應 spec §2）。"""
+    IDLE = "IDLE"
+    WATCH = "WATCH"
+    BULL_TRIGGER = "BULL_TRIGGER"
+    BEAR_TRIGGER = "BEAR_TRIGGER"
+    BULL_CONTINUATION = "BULL_CONTINUATION"
+    BEAR_CONTINUATION = "BEAR_CONTINUATION"
+    EXHAUSTION_UP = "EXHAUSTION_UP"
+    EXHAUSTION_DOWN = "EXHAUSTION_DOWN"
+    FAILED_BREAKOUT_UP = "FAILED_BREAKOUT_UP"
+    FAILED_BREAKOUT_DOWN = "FAILED_BREAKOUT_DOWN"
+    BUY_ABSORPTION = "BUY_ABSORPTION"
+    SELL_ABSORPTION = "SELL_ABSORPTION"
+    COOLDOWN = "COOLDOWN"
+    DATA_INVALID = "DATA_INVALID"
+
+
+# 會落地為「事件」的觸發型狀態
+TRIGGER_STATES = {
+    StateType.BULL_TRIGGER, StateType.BEAR_TRIGGER,
+    StateType.FAILED_BREAKOUT_UP, StateType.FAILED_BREAKOUT_DOWN,
+    StateType.EXHAUSTION_UP, StateType.EXHAUSTION_DOWN,
+    StateType.BUY_ABSORPTION, StateType.SELL_ABSORPTION,
+}
