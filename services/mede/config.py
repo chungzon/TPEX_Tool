@@ -34,9 +34,21 @@ class MedeConfig:
     max_unknown_dir_ratio: float = 0.30  # unknown 方向比例超過 → 標 DEGRADED
     min_ticks_valid_day: int = 200       # 當日 tick 數低於此 → 標 INVALID
 
+    # --- Phase 4 偵測器 ---
+    minimum_warmup_ticks: int = 100     # 暖身不足不觸發
+    baseline_window: int = 300          # z-score 基準樣本數
+    trade_burst_zscore: float = 3.0
+    volume_burst_zscore: float = 3.0
+    flow_imbalance_threshold: float = 0.55
+    ofi_shock_zscore: float = 2.5
+    book_imbalance_threshold: float = 0.5
+    burst_window_label: str = "1s"      # burst/flow 主要參考視窗
+    detector_enabled: dict = field(default_factory=dict)   # name -> bool（預設全開）
+    detector_weights: dict = field(default_factory=dict)   # name -> weight（Phase 5 融合）
+
     # --- 版本 ---
     algorithm_version: str = "mede-0.1"
-    parameter_version: str = "p2-0.1"
+    parameter_version: str = "p4-0.1"
 
     def config_hash(self) -> str:
         raw = json.dumps(asdict(self), sort_keys=True, ensure_ascii=False)

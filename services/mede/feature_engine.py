@@ -159,6 +159,7 @@ class FeatureSnapshot:
     last_price: float
     # book（最新五檔）
     bidask_available: bool
+    bidask_updates: int
     best_bid: float
     best_ask: float
     spread_ticks: float
@@ -204,6 +205,7 @@ class FeatureEngine:
         self._last_seq = 0
         # book
         self._has_ba = False
+        self._ba_updates = 0
         self._bid_p = [0.0] * 5
         self._bid_q = [0.0] * 5
         self._ask_p = [0.0] * 5
@@ -240,6 +242,7 @@ class FeatureEngine:
     # ---------------- BidAsk ----------------
     def on_bidask(self, ba: dict) -> None:
         self._has_ba = True
+        self._ba_updates += 1
         bp = [_f(x) for x in (ba.get("bid_price") or [])][:5]
         bq = [_f(x) for x in (ba.get("bid_volume") or [])][:5]
         ap = [_f(x) for x in (ba.get("ask_price") or [])][:5]
@@ -301,7 +304,7 @@ class FeatureEngine:
         return FeatureSnapshot(
             t_ns=self._last_t_ns, seq=self._last_seq, code=self.code,
             last_price=self.last_price,
-            bidask_available=self._has_ba,
+            bidask_available=self._has_ba, bidask_updates=self._ba_updates,
             best_bid=self._bid_p[0], best_ask=self._ask_p[0],
             spread_ticks=round(spread_ticks, 4),
             bid_qty1=b1, ask_qty1=a1,
