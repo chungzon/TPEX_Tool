@@ -5,9 +5,23 @@ from __future__ import annotations
 from datetime import datetime
 
 import customtkinter as ctk
+import tkinter as tk
 from tkinter import ttk, filedialog
 
 from viewmodels.microstructure_viewmodel import MicrostructureViewModel
+
+try:
+    import matplotlib
+    matplotlib.use("Agg")
+    import matplotlib.ticker as mticker
+    from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
+    from matplotlib.figure import Figure
+    matplotlib.rcParams["font.sans-serif"] = [
+        "Microsoft JhengHei", "Microsoft YaHei", "SimHei", "sans-serif"]
+    matplotlib.rcParams["axes.unicode_minus"] = False
+    HAS_MPL = True
+except ImportError:
+    HAS_MPL = False
 
 
 def _fmt(n, nd=0) -> str:
@@ -159,6 +173,9 @@ class MicrostructureView(ctk.CTkFrame):
         ctk.CTkButton(pts_hdr, text="匯出 CSV", width=90, height=28, corner_radius=6,
                        font=ctk.CTkFont(size=12), fg_color="#1f6aa5", hover_color="#185a8c",
                        command=self._on_export_csv).pack(side="right")
+        ctk.CTkButton(pts_hdr, text="📊 顯示圖表", width=100, height=28, corner_radius=6,
+                       font=ctk.CTkFont(size=12), fg_color="#2e9e6b", hover_color="#247e55",
+                       command=self._on_show_chart).pack(side="right", padx=(0, 8))
         self.points_frame = ctk.CTkFrame(pts_card, fg_color="transparent")
         self.points_frame.pack(fill="both", expand=True, padx=10, pady=(0, 12))
         self.export_label = ctk.CTkLabel(
@@ -197,6 +214,12 @@ class MicrostructureView(ctk.CTkFrame):
         ctk.CTkButton(log_hdr, text="清除", width=60, height=26, corner_radius=6,
                        font=ctk.CTkFont(size=12), fg_color="#555", hover_color="#777",
                        command=self.vm.clear_alerts).pack(side="right")
+        ctk.CTkButton(log_hdr, text="匯出 CSV", width=90, height=26, corner_radius=6,
+                       font=ctk.CTkFont(size=12), fg_color="#1f6aa5", hover_color="#185a8c",
+                       command=self._on_export_alerts).pack(side="right", padx=(0, 8))
+        ctk.CTkButton(log_hdr, text="📊 顯示圖表", width=100, height=26, corner_radius=6,
+                       font=ctk.CTkFont(size=12), fg_color="#2e9e6b", hover_color="#247e55",
+                       command=self._on_show_alert_chart).pack(side="right", padx=(0, 8))
 
         self.log_textbox = ctk.CTkTextbox(
             log_card, height=200,
@@ -445,6 +468,11 @@ class MicrostructureView(ctk.CTkFrame):
             font=ctk.CTkFont(size=12), fg_color="#1f6aa5", hover_color="#185a8c",
             command=self._on_export_backtest)
         self.bt_export_btn.pack(side="left", padx=(8, 0))
+        self.bt_chart_btn = ctk.CTkButton(
+            row3, text="📊 顯示圖表", width=100, height=34, corner_radius=8,
+            font=ctk.CTkFont(size=12), fg_color="#2e9e6b", hover_color="#247e55",
+            command=self._on_show_bt_chart)
+        self.bt_chart_btn.pack(side="left", padx=(8, 0))
         self.bt_status_label = ctk.CTkLabel(
             row3, text="", font=ctk.CTkFont(size=12), text_color="#4ECDC4")
         self.bt_status_label.pack(side="left", padx=(14, 0))
@@ -491,7 +519,7 @@ class MicrostructureView(ctk.CTkFrame):
         ctk.CTkLabel(hdr, text="🤖 全自動回測（點火進出）",
                       font=ctk.CTkFont(size=15, weight="bold")).pack(side="left")
         ctk.CTkLabel(
-            hdr, text="只需代碼/日期 · 沿用『監控』參數 · 點火/起漲跌進場，連續反向訊號確認出場，不反手",
+            hdr, text="只需代碼/日期 · 沿用『監控』參數 · 起漲/起跌點啟動，連續反向訊號或>N跳可實現獲利出場",
             font=ctk.CTkFont(size=11), text_color="#888888").pack(
                 side="left", padx=(10, 0))
 
@@ -519,6 +547,11 @@ class MicrostructureView(ctk.CTkFrame):
             font=ctk.CTkFont(size=12), fg_color="#1f6aa5", hover_color="#185a8c",
             command=self._on_export_auto_backtest)
         self.abt_export_btn.pack(side="left", padx=(8, 0))
+        self.abt_chart_btn = ctk.CTkButton(
+            row1, text="📊 訊號圖表", width=100, height=34, corner_radius=8,
+            font=ctk.CTkFont(size=12), fg_color="#2e9e6b", hover_color="#247e55",
+            command=self._on_show_auto_chart)
+        self.abt_chart_btn.pack(side="left", padx=(8, 0))
         self.abt_status_label = ctk.CTkLabel(
             row1, text="", font=ctk.CTkFont(size=12), text_color="#4ECDC4")
         self.abt_status_label.pack(side="left", padx=(14, 0))
@@ -737,6 +770,408 @@ class MicrostructureView(ctk.CTkFrame):
             filetypes=[("CSV 檔", "*.csv"), ("所有檔案", "*.*")])
         if path:
             self.vm.export_csv(path)
+
+    def _on_export_alerts(self):
+        code = self.vm.tracked_code or "stock"
+        default_name = f"訊號紀錄_{code}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv"
+        path = filedialog.asksaveasfilename(
+            title="匯出訊號紀錄", defaultextension=".csv",
+            initialfile=default_name,
+            filetypes=[("CSV 檔", "*.csv"), ("所有檔案", "*.*")])
+        if path:
+            self.vm.export_alerts_csv(path)
+
+    # ------------------------------------------------ 買賣點 × 價量 統計圖表
+    def _on_show_chart(self):
+        if not HAS_MPL:
+            self.export_label.configure(
+                text="需安裝 matplotlib 才能顯示圖表（pip install matplotlib）",
+                text_color="#FF6B6B")
+            return
+        data = self.vm.chart_data()
+        ticks = data.get("ticks", [])
+        if len(ticks) < 2:
+            self.export_label.configure(
+                text="尚無足夠逐筆資料可繪圖（請先開始追蹤）", text_color="#FF6B6B")
+            return
+        self._render_session_chart(data)
+
+    # ---- 大戶/散戶 累積買賣超：以「單筆張數」分流（大戶＝單筆量在高分位者）----
+    @staticmethod
+    def _bigsmall_cum(vols: list, sides: list):
+        sv = sorted(vols)
+        thr = sv[int(len(sv) * 0.90)] if sv else 0.0   # 單筆量第 90 百分位當大戶門檻
+        thr = max(thr, 5.0)                             # 至少 5 張才算大戶
+        big, small, b, s = [], [], 0.0, 0.0
+        for v, sd in zip(vols, sides):
+            signed = sd * v
+            if v >= thr:
+                b += signed
+            else:
+                s += signed
+            big.append(b)
+            small.append(s)
+        return big, small, thr
+
+    # ---- 共用：三面板圖（價格；大戶；散戶）；下兩格＝區間長條 + 累積線 ----
+    def _price_volume_panels(self, xs, prices, big, small, thr, times):
+        bg, panel, txt, grid = "#1c1c1e", "#1c1c1e", "#c0c0c0", "#2c2c2e"
+        n = len(xs)
+        fig = Figure(figsize=(13, 8.4), dpi=100, facecolor=bg)
+        gs = fig.add_gridspec(3, 1, height_ratios=[2.4, 1, 1], hspace=0.14,
+                              left=0.07, right=0.93, top=0.95, bottom=0.06)
+        ax1 = fig.add_subplot(gs[0])
+        ax1.set_facecolor(panel)
+        ax1.plot(xs, prices, color="#e0e0e0", linewidth=1.1, label="成交價")
+        ax1.set_ylabel("價格", fontsize=11, color=txt)
+        if prices:
+            pmin, pmax = min(prices), max(prices)
+            pad = max((pmax - pmin) * 0.06, 0.05)
+            ax1.set_ylim(pmin - pad, pmax + pad)   # 緊縮 y 軸讓走勢清楚
+
+        ax_big = fig.add_subplot(gs[1], sharex=ax1)
+        ax_big.set_facecolor(panel)
+        self._group_panel(ax_big, xs, big, "#ffb74d", f"大戶 (單筆 {thr:g} 張↑)", n)
+        ax_small = fig.add_subplot(gs[2], sharex=ax1)
+        ax_small.set_facecolor(panel)
+        self._group_panel(ax_small, xs, small, "#4fc3f7", f"散戶 (單筆 {thr:g} 張↓)", n)
+
+        for ax in (ax1, ax_big, ax_small):
+            ax.tick_params(axis="both", colors=txt, labelsize=8)
+            for sp in ax.spines.values():
+                sp.set_color(grid)
+            ax.grid(True, axis="x", alpha=0.12, color=grid, linewidth=0.5)
+        ax1.grid(True, axis="y", alpha=0.12, color=grid, linewidth=0.5)
+        step = max(n // 12, 1)
+        xt = list(range(0, n, step))
+        ax_small.set_xticks(xt)
+        ax_small.set_xticklabels([times[i] for i in xt], fontsize=8, color=txt,
+                                 rotation=30, ha="right")
+        ax1.tick_params(labelbottom=False)
+        ax_big.tick_params(labelbottom=False)
+        ax1.set_xlim(-1, n)
+        return fig, ax1, [ax1, ax_big, ax_small]
+
+    def _group_panel(self, ax, xs, cum, line_color, name, n):
+        # 區間長條：以累積差分算每個時間桶的淨買賣超（紅=買超 / 綠=賣超）
+        nb = min(60, max(1, n))
+        bounds = [int(round(k * n / nb)) for k in range(nb + 1)]
+        centers, heights, widths = [], [], []
+        for b in range(nb):
+            i0, i1 = bounds[b], bounds[b + 1]
+            if i1 <= i0:
+                continue
+            sv = cum[i0 - 1] if i0 > 0 else 0.0
+            heights.append(cum[i1 - 1] - sv)
+            centers.append((i0 + i1) / 2)
+            widths.append((i1 - i0) * 0.9)
+        colors = ["#ef5350" if h >= 0 else "#26a69a" for h in heights]
+        ax.bar(centers, heights, width=widths, color=colors, alpha=0.85, zorder=2)
+        ax.axhline(0, color="#2c2c2e", linewidth=0.6)
+        ax.set_ylabel(f"{name}\n區間買賣超(張)", fontsize=9, color=line_color)
+        # 累積線（右軸）
+        axt = ax.twinx()
+        axt.plot(xs, cum, color=line_color, linewidth=1.6, zorder=3, label="累積")
+        axt.set_ylabel("累積(張)", fontsize=9, color=line_color)
+        axt.tick_params(axis="y", colors=line_color, labelsize=8)
+        for sp in axt.spines.values():
+            sp.set_color("#2c2c2e")
+
+    # ---- 共用：即時逐筆(_tick_history 格式) 兩軸圖 ----
+    def _live_chart_base(self, ticks: list):
+        n = len(ticks)
+        xs = list(range(n))
+        prices = [t["price"] for t in ticks]
+        times = [t["time"] for t in ticks]
+        vols = [t["vol"] for t in ticks]
+        sides = [t["side"] for t in ticks]
+        big, small, thr = self._bigsmall_cum(vols, sides)
+        fig, ax1, axes = self._price_volume_panels(xs, prices, big, small, thr, times)
+        return fig, ax1, axes, n, times, prices
+
+    def _render_session_chart(self, data: dict):
+        ticks = data["ticks"]
+        points = data.get("points", [])
+        code = data.get("code", "")
+        fig, ax1, axes, n, times, prices = self._live_chart_base(ticks)
+
+        def _sel(side, attack):
+            xs_ = [p.get("_x", 0) for p in points
+                   if p.get("side") == side and (p.get("kind") == "attack") == attack]
+            ys_ = [p.get("price", 0) for p in points
+                   if p.get("side") == side and (p.get("kind") == "attack") == attack]
+            return xs_, ys_
+
+        ox, oy = _sel("buy", False)
+        if ox:
+            ax1.scatter(ox, oy, marker=".", s=28, color="#c26a66", zorder=4)
+        ox, oy = _sel("sell", False)
+        if ox:
+            ax1.scatter(ox, oy, marker=".", s=28, color="#4f8f85", zorder=4)
+        zx, zy = _sel("buy", True)
+        n_up = len(zx)
+        if zx:
+            ax1.scatter(zx, zy, marker="^", s=200, color="#ff1744",
+                        edgecolors="white", linewidths=1.1, zorder=7,
+                        label=f"起漲點 ×{n_up}")
+        zx, zy = _sel("sell", True)
+        n_dn = len(zx)
+        if zx:
+            ax1.scatter(zx, zy, marker="v", s=200, color="#00e676",
+                        edgecolors="white", linewidths=1.1, zorder=7,
+                        label=f"起跌點 ×{n_dn}")
+        ax1.set_title(
+            f"{code}　起漲/起跌點 × 價量統計（{n:,} 筆逐筆　起漲 {n_up} · 起跌 {n_dn}）",
+            fontsize=12, color="#e0e0e0")
+        ax1.legend(loc="upper left", fontsize=10, framealpha=0.4,
+                   facecolor="#1c1c1e", edgecolor="#2c2c2e", labelcolor="#c0c0c0", ncol=3)
+        self._open_chart_window(f"起漲/起跌點統計圖表 — {code}",
+                                code or "session", fig,
+                                axes=axes, times=times, prices=prices)
+
+    def _on_show_alert_chart(self):
+        if not HAS_MPL:
+            self.export_label.configure(
+                text="需安裝 matplotlib（pip install matplotlib）", text_color="#FF6B6B")
+            return
+        d = self.vm.alerts_chart_data()
+        if len(d.get("ticks", [])) < 2:
+            self.export_label.configure(
+                text="尚無足夠逐筆資料可繪圖（請先開始追蹤）", text_color="#FF6B6B")
+            return
+        code = d.get("code", "")
+        fig, ax1, axes, n, times, prices = self._live_chart_base(d["ticks"])
+        self._plot_alert_markers(ax1, d.get("alerts", []))
+        ax1.set_title(f"{code}　訊號分布 × 價量統計（{n:,} 筆逐筆）",
+                      fontsize=12, color="#e0e0e0")
+        ax1.legend(loc="upper left", fontsize=10, framealpha=0.4,
+                   facecolor="#1c1c1e", edgecolor="#2c2c2e", labelcolor="#c0c0c0", ncol=4)
+        self._open_chart_window(f"訊號分布圖表 — {code}", code or "session", fig,
+                                axes=axes, times=times, prices=prices)
+
+    def _plot_alert_markers(self, ax1, alerts: list):
+        g = {"起漲": ([], []), "起跌": ([], []), "火買": ([], []),
+             "火賣": ([], []), "冰山": ([], [])}
+        for a in alerts:
+            y = a.get("price", 0)
+            if not y:
+                continue
+            x = a.get("_x", 0)
+            kind, side = a.get("kind"), a.get("side")
+            if kind == "attack" and side == "buy":
+                g["起漲"][0].append(x); g["起漲"][1].append(y)
+            elif kind == "attack" and side == "sell":
+                g["起跌"][0].append(x); g["起跌"][1].append(y)
+            elif kind == "momentum" and side == "buy":
+                g["火買"][0].append(x); g["火買"][1].append(y)
+            elif kind == "momentum" and side == "sell":
+                g["火賣"][0].append(x); g["火賣"][1].append(y)
+            elif kind == "iceberg":
+                g["冰山"][0].append(x); g["冰山"][1].append(y)
+        if g["火買"][0]:
+            ax1.scatter(*g["火買"], marker=".", s=18, color="#7a4a48", zorder=3,
+                        label=f"買方點火 ×{len(g['火買'][0])}")
+        if g["火賣"][0]:
+            ax1.scatter(*g["火賣"], marker=".", s=18, color="#3f6b64", zorder=3,
+                        label=f"賣方點火 ×{len(g['火賣'][0])}")
+        if g["冰山"][0]:
+            ax1.scatter(*g["冰山"], marker="D", s=45, color="#ba68c8",
+                        edgecolors="white", linewidths=0.5, zorder=5,
+                        label=f"冰山 ×{len(g['冰山'][0])}")
+        if g["起漲"][0]:
+            ax1.scatter(*g["起漲"], marker="^", s=190, color="#ff1744",
+                        edgecolors="white", linewidths=1.1, zorder=7,
+                        label=f"起漲點 ×{len(g['起漲'][0])}")
+        if g["起跌"][0]:
+            ax1.scatter(*g["起跌"], marker="v", s=190, color="#00e676",
+                        edgecolors="white", linewidths=1.1, zorder=7,
+                        label=f"起跌點 ×{len(g['起跌'][0])}")
+
+    # ---- 共用：圖表視窗（含匯出 PNG）----
+    def _open_chart_window(self, title: str, code: str, fig,
+                           axes=None, times=None, prices=None):
+        win = tk.Toplevel(self)
+        win.title(title)
+        win.geometry("1180x720")
+        win.configure(bg="#1c1c1e")
+
+        def _save_png():
+            fp = filedialog.asksaveasfilename(
+                title="匯出圖片", defaultextension=".png",
+                initialfile=(f"{code or 'chart'}_"
+                             f"{datetime.now().strftime('%Y%m%d_%H%M%S')}.png"),
+                filetypes=[("PNG 圖片", "*.png"), ("所有檔案", "*.*")])
+            if fp:
+                fig.savefig(fp, dpi=150, facecolor=fig.get_facecolor())
+
+        bar = ctk.CTkFrame(win, fg_color="transparent")
+        bar.pack(fill="x", padx=8, pady=(6, 0))
+        readout = ctk.CTkLabel(
+            bar, text="移動游標查價…", font=ctk.CTkFont(size=13, weight="bold"),
+            text_color="#ffd54f")
+        readout.pack(side="left", padx=(4, 0))
+        ctk.CTkButton(bar, text="💾 匯出圖片(PNG)", width=130, height=30,
+                      corner_radius=6, fg_color="#1f6aa5", hover_color="#185a8c",
+                      command=_save_png).pack(side="right")
+        canvas = FigureCanvasTkAgg(fig, win)
+        canvas.draw()
+        canvas.get_tk_widget().pack(fill="both", expand=True)
+        if axes and prices:
+            self._attach_crosshair(win, canvas, axes, times or [], prices, readout)
+
+    # ---- 查價 crosshair：垂直線貫穿兩軸 + 上圖價格橫線 + 讀值 ----
+    def _attach_crosshair(self, win, canvas, axes, times, prices, readout):
+        from matplotlib.widgets import MultiCursor
+        cur = MultiCursor(canvas, tuple(axes), color="#9e9e9e", lw=0.7,
+                          linestyle="--", horizOn=False, vertOn=True, useblit=False)
+        win._crosshair = cur   # 保留參考避免被 GC
+        ax0 = axes[0]
+        hl = ax0.axhline(prices[0] if prices else 0, color="#9e9e9e", lw=0.7,
+                         ls="--", visible=False)
+        n = len(prices)
+
+        def on_move(event):
+            if event.inaxes not in axes or event.xdata is None or n == 0:
+                if hl.get_visible():
+                    hl.set_visible(False)
+                    canvas.draw_idle()
+                return
+            xi = max(0, min(int(round(event.xdata)), n - 1))
+            t = times[xi] if xi < len(times) else ""
+            readout.configure(text=f"🕐 {t}　查價 {prices[xi]:.2f}")
+            hl.set_ydata([prices[xi], prices[xi]])
+            hl.set_visible(True)
+            canvas.draw_idle()
+
+        canvas.mpl_connect("motion_notify_event", on_move)
+
+    # ---- 共用：回測 價格+累積買賣超 兩軸圖（回傳 fig, ax1, 每筆秒數, n）----
+    def _bt_chart_base(self, code: str, date: str, ticks: list):
+        from datetime import datetime as _dt, timezone as _tz
+        prices, secs, times, vols, sides = [], [], [], [], []
+        last = 0.0
+        for tk in ticks:
+            price = float(tk.get("close") or 0)
+            vol = float(tk.get("volume") or 0)
+            tt = int(tk.get("tick_type", 0) or 0)
+            d = _dt.fromtimestamp(int(tk["ts"]) / 1e9, tz=_tz.utc)
+            secs.append(d.hour * 3600 + d.minute * 60 + d.second)
+            times.append(d.strftime("%H:%M:%S"))
+            side = 1 if tt == 1 else (-1 if tt == 2 else
+                                      (1 if price > last else -1 if price < last else 0))
+            if price > 0:
+                last = price
+            prices.append(price)
+            vols.append(vol)
+            sides.append(side)
+        xs = list(range(len(ticks)))
+        big, small, thr = self._bigsmall_cum(vols, sides)
+        fig, ax1, axes = self._price_volume_panels(xs, prices, big, small, thr, times)
+        return fig, ax1, axes, secs, len(ticks), times, prices
+
+    @staticmethod
+    def _x_of(secs: list, hhmmss: str):
+        import bisect
+        try:
+            h, m, s = hhmmss.split(":")
+            sec = int(h) * 3600 + int(m) * 60 + int(s)
+        except (ValueError, AttributeError):
+            return None
+        if not secs:
+            return None
+        i = bisect.bisect_left(secs, sec)
+        return min(i, len(secs) - 1)
+
+    def _plot_trades(self, ax1, trades: list, secs: list):
+        lx, ly, sx, sy, ex, ey = [], [], [], [], [], []
+        for t in trades:
+            xi = self._x_of(secs, t.get("entry_time", ""))
+            if xi is not None:
+                if t.get("direction") == "long":
+                    lx.append(xi); ly.append(t.get("entry_price", 0))
+                else:
+                    sx.append(xi); sy.append(t.get("entry_price", 0))
+            xo = self._x_of(secs, t.get("exit_time", ""))
+            if xo is not None:
+                ex.append(xo); ey.append(t.get("exit_price", 0))
+        if lx:
+            ax1.scatter(lx, ly, marker="^", s=110, color="#ff1744",
+                        edgecolors="white", linewidths=0.7, zorder=6,
+                        label=f"做多進場 ×{len(lx)}")
+        if sx:
+            ax1.scatter(sx, sy, marker="v", s=110, color="#00e676",
+                        edgecolors="white", linewidths=0.7, zorder=6,
+                        label=f"做空進場 ×{len(sx)}")
+        if ex:
+            ax1.scatter(ex, ey, marker="x", s=70, color="#ffd54f", linewidths=1.4,
+                        zorder=5, label=f"出場 ×{len(ex)}")
+
+    def _plot_events(self, ax1, events: list, secs: list):
+        g = {"起漲": ([], []), "起跌": ([], []), "火買": ([], []), "火賣": ([], [])}
+        for e in events:
+            xi = self._x_of(secs, e.get("time", ""))
+            if xi is None:
+                continue
+            y = e.get("price", 0)
+            key = {"買方起漲點": "起漲", "賣方起跌點": "起跌",
+                   "買方點火": "火買", "賣方點火": "火賣"}.get(e.get("signal", ""))
+            if key:
+                g[key][0].append(xi); g[key][1].append(y)
+        if g["火買"][0]:
+            ax1.scatter(*g["火買"], marker=".", s=20, color="#7a4a48", zorder=3)
+        if g["火賣"][0]:
+            ax1.scatter(*g["火賣"], marker=".", s=20, color="#3f6b64", zorder=3)
+        if g["起漲"][0]:
+            ax1.scatter(*g["起漲"], marker="^", s=190, color="#ff1744",
+                        edgecolors="white", linewidths=1.1, zorder=7,
+                        label=f"起漲點 ×{len(g['起漲'][0])}")
+        if g["起跌"][0]:
+            ax1.scatter(*g["起跌"], marker="v", s=190, color="#00e676",
+                        edgecolors="white", linewidths=1.1, zorder=7,
+                        label=f"起跌點 ×{len(g['起跌'][0])}")
+
+    def _on_show_bt_chart(self):
+        if not HAS_MPL:
+            self.bt_status_label.configure(
+                text="需安裝 matplotlib（pip install matplotlib）", text_color="#FF6B6B")
+            return
+        d = self.vm.backtest_chart_data()
+        if not d or len(d.get("ticks", [])) < 2:
+            self.bt_status_label.configure(
+                text="尚無回測資料可繪圖（請先執行回測）", text_color="#FF6B6B")
+            return
+        fig, ax1, axes, secs, n, times, prices = self._bt_chart_base(
+            d["code"], d["date"], d["ticks"])
+        self._plot_trades(ax1, d["trades"], secs)
+        ax1.set_title(f"{d['code']}　{d['date']}　回測交易 × 價量"
+                      f"（{len(d['trades'])} 筆交易）", color="#e0e0e0", fontsize=12)
+        ax1.legend(loc="upper left", fontsize=10, framealpha=0.4, facecolor="#1c1c1e",
+                   edgecolor="#2c2c2e", labelcolor="#c0c0c0", ncol=3)
+        self._open_chart_window(f"回測交易圖表 — {d['code']} {d['date']}",
+                                f"回測_{d['code']}_{d['date']}", fig,
+                                axes=axes, times=times, prices=prices)
+
+    def _on_show_auto_chart(self):
+        if not HAS_MPL:
+            self.abt_status_label.configure(
+                text="需安裝 matplotlib（pip install matplotlib）", text_color="#FF6B6B")
+            return
+        d = self.vm.auto_backtest_chart_data()
+        if not d or len(d.get("ticks", [])) < 2:
+            self.abt_status_label.configure(
+                text="尚無回測資料可繪圖（請先執行自動回測）", text_color="#FF6B6B")
+            return
+        fig, ax1, axes, secs, n, times, prices = self._bt_chart_base(
+            d["code"], d["date"], d["ticks"])
+        self._plot_events(ax1, d["events"], secs)
+        self._plot_trades(ax1, d["trades"], secs)
+        ax1.set_title(f"{d['code']}　{d['date']}　策略訊號(起漲/起跌/點火) × 進出場",
+                      color="#e0e0e0", fontsize=12)
+        ax1.legend(loc="upper left", fontsize=10, framealpha=0.4, facecolor="#1c1c1e",
+                   edgecolor="#2c2c2e", labelcolor="#c0c0c0", ncol=3)
+        self._open_chart_window(f"策略訊號圖表 — {d['code']} {d['date']}",
+                                f"策略訊號_{d['code']}_{d['date']}", fig,
+                                axes=axes, times=times, prices=prices)
 
     # ================================================================ Bindings
 

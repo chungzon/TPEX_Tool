@@ -72,8 +72,16 @@ class MicrostructureViewModel(BaseViewModel):
         # 完整買賣點歷史（供 CSV 匯出，不受畫面 deque maxlen 限制）
         self._point_lock = threading.Lock()
         self._point_history: list[dict] = []
+        # 逐筆歷史（供圖表：價格、成交量、買賣超）與結構化訊號紀錄（供 CSV）
+        self._tick_lock = threading.Lock()
+        self._tick_history: list[dict] = []   # {time, price, vol, side(+1/-1/0)}
+        self._alert_records: list[dict] = []  # {time, kind, level, side, price, message}
+        self._last_chart_price = 0.0
         self._last_bt: BacktestResult | None = None  # 最近一次回測結果（供匯出）
         self._last_auto_bt: BacktestResult | None = None  # 最近一次自動回測結果
+        # 回測用逐筆（供圖表）：(code, date, ticks)
+        self._last_bt_ctx: tuple | None = None
+        self._last_auto_bt_ctx: tuple | None = None
 
     # ================================================================ Parameters
 
@@ -270,6 +278,7 @@ class MicrostructureViewModel(BaseViewModel):
                     self._engine.cfg, bt_params, daily_closes=daily_closes)
                 res = bt.run(ticks, code=stock_code, date=date)
                 self._last_bt = res
+                self._last_bt_ctx = (stock_code, date, ticks)
                 self.backtest_result = {
                     "summary": res.summary_dict(),
                     "trades": [t.as_dict() for t in res.trades],
@@ -370,6 +379,7 @@ class MicrostructureViewModel(BaseViewModel):
                 bt = MicrostructureBacktester(self._engine.cfg, bt_params)
                 res = bt.run(ticks, code=stock_code, date=date)
                 self._last_auto_bt = res
+                self._last_auto_bt_ctx = (stock_code, date, ticks)
                 self.auto_backtest_result = {
                     "summary": res.summary_dict(),
                     "trades": [t.as_dict() for t in res.trades],
@@ -483,9 +493,13 @@ class MicrostructureViewModel(BaseViewModel):
         self._apply_live_trend_filter(stock_code)
         with self._point_lock:
             self._point_history.clear()
+        with self._tick_lock:
+            self._tick_history.clear()
+            self._alert_records.clear()
+        self._last_chart_price = 0.0
         self.state_data = None
         ok = self._sj.subscribe_quote(
-            stock_code, on_tick=self._engine.on_tick,
+            stock_code, on_tick=self._on_tick,
             on_bidask=self._engine.on_bidask)
         if not ok:
             self.error = f"訂閱 {stock_code} 行情失敗（代碼錯誤或非交易時段）"
@@ -561,16 +575,49 @@ class MicrostructureViewModel(BaseViewModel):
 
     # ================================================================ Alerts
 
+    def _on_tick(self, tick: dict):
+        """行情 tick：先存進逐筆歷史（供圖表），再餵給引擎。socket thread 高頻呼叫。"""
+        try:
+            price = float(tick.get("close") or 0)
+            vol = float(tick.get("volume") or 0)
+            tt = int(tick.get("tick_type", 0) or 0)
+            if price > 0 and vol > 0:
+                if tt == 1:
+                    side = 1                       # 外盤（買方）
+                elif tt == 2:
+                    side = -1                      # 內盤（賣方）
+                elif self._last_chart_price and price > self._last_chart_price:
+                    side = 1
+                elif self._last_chart_price and price < self._last_chart_price:
+                    side = -1
+                else:
+                    side = 0
+                self._last_chart_price = price
+                with self._tick_lock:
+                    self._tick_history.append({
+                        "time": _time.strftime("%H:%M:%S"),
+                        "price": price, "vol": vol, "side": side})
+        except Exception:
+            pass
+        self._engine.on_tick(tick)
+
     def _on_alert(self, alert: Alert):
         """engine callback（socket thread）→ 暫存，交給刷新迴圈統一 append。"""
         icon = {"strong": "🔴", "warn": "🟡", "info": "⚪"}.get(alert.level, "•")
         t = (alert.time or "")[-12:]  # 只取時分秒
         self._append_alert(f"{icon} [{t}] {alert.message}")
+        with self._tick_lock:
+            self._alert_records.append({
+                "time": alert.time, "kind": alert.kind, "level": alert.level,
+                "side": alert.side, "price": alert.price, "message": alert.message,
+                "_x": len(self._tick_history)})   # 對齊圖表 x 軸
 
     def _on_point(self, point: dict):
         """engine callback：產生新買/賣點 → 存入歷史 + 寫一行到訊號紀錄。"""
+        rec = dict(point)
+        rec["_x"] = len(self._tick_history)   # 對齊圖表 x 軸（目前逐筆索引）
         with self._point_lock:
-            self._point_history.append(dict(point))
+            self._point_history.append(rec)
         side_txt = "買點" if point.get("side") == "buy" else "賣點"
         kind_txt = {"attack": "起漲/起跌", "momentum": "動能點火",
                     "iceberg": "冰山"}.get(point.get("kind", ""), point.get("kind", ""))
@@ -619,6 +666,68 @@ class MicrostructureViewModel(BaseViewModel):
             self.export_status = f"✓ 已匯出 {len(rows)} 筆買賣點{tail} → {path}"
         except Exception as e:
             self.export_status = f"匯出失敗：{e}"
+
+    def export_alerts_csv(self, path: str):
+        """把本次追蹤的『訊號紀錄』（所有偵測到的訊號）匯出成 CSV。"""
+        import csv
+        with self._tick_lock:
+            rows = list(self._alert_records)
+        if not rows:
+            self.export_status = "目前沒有訊號紀錄可匯出"
+            return
+        kmap = {"setup": "OBI蓄勢", "momentum": "動能點火", "attack": "起漲/起跌點",
+                "large": "大單", "iceberg": "冰山"}
+        lmap = {"strong": "強", "warn": "中", "info": "弱"}
+        try:
+            with open(path, "w", newline="", encoding="utf-8-sig") as f:
+                w = csv.writer(f)
+                w.writerow(["時間", "類型", "強度", "方向", "價格", "訊息"])
+                for a in rows:
+                    side = a.get("side", "")
+                    w.writerow([
+                        a.get("time", ""),
+                        kmap.get(a.get("kind", ""), a.get("kind", "")),
+                        lmap.get(a.get("level", ""), a.get("level", "")),
+                        "買" if side == "buy" else "賣" if side == "sell" else "",
+                        a.get("price", 0),
+                        a.get("message", ""),
+                    ])
+            self.export_status = f"✓ 已匯出 {len(rows)} 筆訊號紀錄 → {path}"
+        except Exception as e:
+            self.export_status = f"匯出失敗：{e}"
+
+    def chart_data(self) -> dict:
+        """回傳供圖表用的資料：逐筆(價格/量/買賣超) + 買賣點。"""
+        with self._tick_lock:
+            ticks = list(self._tick_history)
+        with self._point_lock:
+            points = list(self._point_history)
+        return {"ticks": ticks, "points": points, "code": self.tracked_code}
+
+    def alerts_chart_data(self) -> dict:
+        """訊號紀錄的圖表資料：逐筆 + 所有訊號(含起漲/起跌/點火/冰山)。"""
+        with self._tick_lock:
+            ticks = list(self._tick_history)
+            alerts = list(self._alert_records)
+        return {"ticks": ticks, "alerts": alerts, "code": self.tracked_code}
+
+    def backtest_chart_data(self) -> dict | None:
+        """手動回測的圖表資料：逐筆 + 交易(進出場) + 訊號歷程(若有)。"""
+        if not self._last_bt_ctx or self._last_bt is None:
+            return None
+        code, date, ticks = self._last_bt_ctx
+        return {"code": code, "date": date, "ticks": ticks,
+                "trades": [t.as_dict() for t in self._last_bt.trades],
+                "events": list(self._last_bt.sar_events)}
+
+    def auto_backtest_chart_data(self) -> dict | None:
+        """自動回測的圖表資料：逐筆 + 交易 + 訊號歷程(起漲/起跌/點火)。"""
+        if not self._last_auto_bt_ctx or self._last_auto_bt is None:
+            return None
+        code, date, ticks = self._last_auto_bt_ctx
+        return {"code": code, "date": date, "ticks": ticks,
+                "trades": [t.as_dict() for t in self._last_auto_bt.trades],
+                "events": list(self._last_auto_bt.sar_events)}
 
     def _append_alert(self, line: str):
         with self._alert_lock:
