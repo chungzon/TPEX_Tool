@@ -11,14 +11,26 @@ from services.mede.detectors.volume_burst import VolumeBurstDetector
 from services.mede.detectors.aggressive_flow import AggressiveFlowDetector
 from services.mede.detectors.book_imbalance import BookImbalanceShiftDetector
 from services.mede.detectors.ofi_shock import OFIShockDetector
+from services.mede.detectors.breakout import BreakoutDetector
+from services.mede.detectors.sweep import SweepDetector
+from services.mede.detectors.absorption import AbsorptionDetector
+from services.mede.detectors.queue_collapse import QueueCollapseDetector
+from services.mede.detectors.liquidity_vacuum import LiquidityVacuumDetector
+from services.mede.detectors.replenishment import ReplenishmentDetector
 
-# 已實作偵測器（依 Phase 4 進度擴充；其餘 detector 於後續 turn 加入）
+# 已實作偵測器（依 Phase 4 進度擴充；剩 FailedBreakout/Exhaustion/MomentumIgnition）
 DETECTOR_CLASSES = [
     TradeBurstDetector,
     VolumeBurstDetector,
     AggressiveFlowDetector,
     BookImbalanceShiftDetector,
     OFIShockDetector,
+    BreakoutDetector,
+    SweepDetector,
+    AbsorptionDetector,
+    QueueCollapseDetector,
+    LiquidityVacuumDetector,
+    ReplenishmentDetector,
 ]
 
 

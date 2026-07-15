@@ -43,6 +43,15 @@ class MedeConfig:
     ofi_shock_zscore: float = 2.5
     book_imbalance_threshold: float = 0.5
     burst_window_label: str = "1s"      # burst/flow 主要參考視窗
+    # --- Phase 4 batch2（價格/委託簿動態相關）---
+    breakout_lookback_ticks: int = 100  # 突破：近 N 筆高低
+    velocity_window_ms: int = 1000      # 價速/區間 參考視窗
+    sweep_min_ticks: int = 3            # 掃單：短時間跨價位數門檻
+    queue_collapse_ratio: float = 0.6   # (消耗+撤單)/前量 ≥ 此 → 掛單崩塌
+    replenishment_ratio: float = 2.0    # 累積消耗/顯示量 ≥ 此 → 疑似補單/隱藏流動性
+    absorption_min_volume: float = 40.0  # 吸收：窗內主動量門檻(張)
+    absorption_max_price_ticks: float = 1.0  # 吸收：價格移動 ≤ 此(tick)
+    spread_expansion_ratio: float = 2.0  # 流動性真空：spread ≥ 基準×此
     detector_enabled: dict = field(default_factory=dict)   # name -> bool（預設全開）
     detector_weights: dict = field(default_factory=dict)   # name -> weight（Phase 5 融合）
 

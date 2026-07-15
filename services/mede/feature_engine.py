@@ -178,6 +178,26 @@ class FeatureSnapshot:
     # 連續主動方向
     consec_buy: int
     consec_sell: int
+    # 價格衍生
+    vwap: float
+    recent_high: float
+    recent_low: float
+    price_velocity: float
+    price_accel: float
+    price_range_ticks: float
+    # 委託簿動態（最近一筆 BidAsk）
+    bid_consumed: float
+    bid_cancelled: float
+    bid_replenished: float
+    ask_consumed: float
+    ask_cancelled: float
+    ask_replenished: float
+    bid_moved: int
+    ask_moved: int
+    bid_repl_ratio: float
+    ask_repl_ratio: float
+    bid_collapse_ratio: float
+    ask_collapse_ratio: float
     # 各視窗成交/流動特徵
     time_windows: dict = field(default_factory=dict)
     event_windows: dict = field(default_factory=dict)
@@ -190,12 +210,15 @@ class FeatureSnapshot:
 class FeatureEngine:
     """吃 tick / bidask（與錄製/即時同格式的 dict），增量維護特徵。"""
 
-    def __init__(self, tick_size_fn, time_windows=None, event_windows=None):
+    def __init__(self, tick_size_fn, time_windows=None, event_windows=None,
+                 breakout_lookback_ticks: int = 100, velocity_window_ms: int = 1000):
         self._tick_size = tick_size_fn
         self._tw_spec = time_windows or DEFAULT_TIME_WINDOWS
         self._ew_spec = event_windows or DEFAULT_EVENT_WINDOWS
         self._twins = {lab: _TimeWin(ms * 1_000_000) for lab, ms in self._tw_spec}
         self._ewins = {lab: _CountWin(n) for lab, n in self._ew_spec}
+        self._lookback = max(2, breakout_lookback_ticks)
+        self._vel_span = velocity_window_ms * 1_000_000
         # 即時狀態
         self.code = ""
         self.last_price = 0.0
@@ -216,6 +239,26 @@ class FeatureEngine:
         self._prev_ask_q = None
         self._ofi_l1 = 0.0
         self._mlofi = [0.0] * 5
+        # 價格衍生：VWAP / 近高低 / 價速
+        self._pv_sum = 0.0
+        self._v_sum = 0.0
+        self._price_hist: deque = deque()   # (t_ns, price) 近 lookback 筆
+        self._vel_hist: deque = deque()     # (t_ns, price) 速度窗
+        self._recent_high = 0.0
+        self._recent_low = 0.0
+        self._velocity = 0.0
+        self._accel = 0.0
+        # 委託簿動態（每筆 BidAsk 更新）：消耗 / 撤單 / 補單 / 移價
+        self._traded_at_bid = 0.0
+        self._traded_at_ask = 0.0
+        self._bid_consumed = self._bid_cancelled = self._bid_replenished = 0.0
+        self._ask_consumed = self._ask_cancelled = self._ask_replenished = 0.0
+        self._bid_moved = 0
+        self._ask_moved = 0
+        self._bid_consumed_cum = 0.0   # 同價累積消耗（供補單/隱藏流動性判斷）
+        self._ask_consumed_cum = 0.0
+        self._bid_collapse_ratio = 0.0
+        self._ask_collapse_ratio = 0.0
 
     # ---------------- Tick ----------------
     def on_tick(self, tick: dict) -> None:
@@ -238,6 +281,36 @@ class FeatureEngine:
             w.add_trade(t_ns, side, vol)
         for w in self._ewins.values():
             w.add(side, vol)
+        # VWAP
+        self._pv_sum += price * vol
+        self._v_sum += vol
+        # 近高低（以「加入本筆前」窗為基準 → 突破＝現價越過前高/前低）
+        if self._price_hist:
+            self._recent_high = max(p for _, p in self._price_hist)
+            self._recent_low = min(p for _, p in self._price_hist)
+        else:
+            self._recent_high = self._recent_low = price
+        self._price_hist.append((t_ns, price))
+        while len(self._price_hist) > self._lookback:
+            self._price_hist.popleft()
+        # 價速 / 加速度
+        self._vel_hist.append((t_ns, price))
+        while self._vel_hist and t_ns - self._vel_hist[0][0] > self._vel_span:
+            self._vel_hist.popleft()
+        if len(self._vel_hist) >= 2:
+            t0, p0 = self._vel_hist[0]
+            dt = (t_ns - t0) / 1e9
+            v = (price - p0) / dt if dt > 0 else 0.0
+            self._accel = v - self._velocity
+            self._velocity = v
+        # 成交歸屬最佳檔（供 QueueCollapse / Replenishment）
+        if self._has_ba:
+            if abs(price - self._bid_p[0]) < 1e-9:
+                self._traded_at_bid += vol
+                self._bid_consumed_cum += vol
+            elif abs(price - self._ask_p[0]) < 1e-9:
+                self._traded_at_ask += vol
+                self._ask_consumed_cum += vol
 
     # ---------------- BidAsk ----------------
     def on_bidask(self, ba: dict) -> None:
@@ -259,6 +332,8 @@ class FeatureEngine:
         else:
             self._mlofi = [0.0] * 5
             self._ofi_l1 = 0.0
+        # 委託簿動態（用「前值 self._bid_p」對比「新值 bp」）
+        self._book_dynamics(bp, bq, ap, aq)
         self._bid_p, self._bid_q, self._ask_p, self._ask_q = bp, bq, ap, aq
         self._prev_bid_p, self._prev_bid_q = bp[:], bq[:]
         self._prev_ask_p, self._prev_ask_q = ap[:], aq[:]
@@ -266,6 +341,56 @@ class FeatureEngine:
         self._last_t_ns = t_ns
         for w in self._twins.values():
             w.add_ofi(t_ns, self._ofi_l1)
+
+    def _book_dynamics(self, bp, bq, ap, aq) -> None:
+        """最佳檔量變化拆解為 消耗/撤單/補單/移價（消耗＝打在該檔的主動量）。"""
+        had = self._prev_bid_p is not None
+        pbp, pbq = self._bid_p[0], self._bid_q[0]
+        pap, paq = self._ask_p[0], self._ask_q[0]
+        # ---- bid ----
+        if not had:
+            self._bid_consumed = self._bid_cancelled = self._bid_replenished = 0.0
+            self._bid_moved = 0
+        elif bp[0] < pbp - 1e-9:                 # 最佳買價下移 → 買方支撐被抽/吃掉
+            self._bid_moved = -1
+            self._bid_consumed = min(self._traded_at_bid, pbq)
+            self._bid_cancelled = max(0.0, pbq - self._bid_consumed)
+            self._bid_replenished = 0.0
+            self._bid_consumed_cum = 0.0
+        elif bp[0] > pbp + 1e-9:                 # 最佳買價上移 → 買氣轉強（新高買）
+            self._bid_moved = 1
+            self._bid_consumed = self._bid_cancelled = self._bid_replenished = 0.0
+            self._bid_consumed_cum = 0.0
+        else:                                    # 同價
+            self._bid_moved = 0
+            self._bid_consumed = self._traded_at_bid
+            expected = pbq - self._traded_at_bid
+            self._bid_cancelled = max(0.0, expected - bq[0])
+            self._bid_replenished = max(0.0, bq[0] - expected)
+        # ---- ask ----
+        if not had:
+            self._ask_consumed = self._ask_cancelled = self._ask_replenished = 0.0
+            self._ask_moved = 0
+        elif ap[0] > pap + 1e-9:                 # 最佳賣價上移 → 賣壓被買方吃掉
+            self._ask_moved = 1
+            self._ask_consumed = min(self._traded_at_ask, paq)
+            self._ask_cancelled = max(0.0, paq - self._ask_consumed)
+            self._ask_replenished = 0.0
+            self._ask_consumed_cum = 0.0
+        elif ap[0] < pap - 1e-9:                 # 最佳賣價下移 → 賣壓轉強（新低賣）
+            self._ask_moved = -1
+            self._ask_consumed = self._ask_cancelled = self._ask_replenished = 0.0
+            self._ask_consumed_cum = 0.0
+        else:
+            self._ask_moved = 0
+            self._ask_consumed = self._traded_at_ask
+            expected = paq - self._traded_at_ask
+            self._ask_cancelled = max(0.0, expected - aq[0])
+            self._ask_replenished = max(0.0, aq[0] - expected)
+        self._bid_collapse_ratio = (self._bid_consumed + self._bid_cancelled) / max(pbq, 1.0)
+        self._ask_collapse_ratio = (self._ask_consumed + self._ask_cancelled) / max(paq, 1.0)
+        self._traded_at_bid = 0.0
+        self._traded_at_ask = 0.0
 
     @staticmethod
     def _level_ofi(pb, qb, pb0, qb0, pa, qa, pa0, qa0) -> float:
@@ -301,6 +426,15 @@ class FeatureEngine:
                    if ts > 0 and self._bid_p[1] > 0 else 0.0)
         ask_gap = ((self._ask_p[1] - self._ask_p[0]) / ts
                    if ts > 0 and self._ask_p[1] > 0 else 0.0)
+        vwap = self._pv_sum / self._v_sum if self._v_sum > 0 else self.last_price
+        if self._vel_hist:
+            hi = max(p for _, p in self._vel_hist)
+            lo = min(p for _, p in self._vel_hist)
+            prange = (hi - lo) / ts if ts > 0 else 0.0
+        else:
+            prange = 0.0
+        bid_repl_ratio = self._bid_consumed_cum / max(self._bid_q[0], 1.0)
+        ask_repl_ratio = self._ask_consumed_cum / max(self._ask_q[0], 1.0)
         return FeatureSnapshot(
             t_ns=self._last_t_ns, seq=self._last_seq, code=self.code,
             last_price=self.last_price,
@@ -315,6 +449,20 @@ class FeatureEngine:
             ofi_l1=self._ofi_l1, mlofi=list(self._mlofi),
             integrated_mlofi=sum(self._mlofi),
             consec_buy=self.consec_buy, consec_sell=self.consec_sell,
+            vwap=round(vwap, 4), recent_high=self._recent_high,
+            recent_low=self._recent_low,
+            price_velocity=round(self._velocity, 4),
+            price_accel=round(self._accel, 4),
+            price_range_ticks=round(prange, 2),
+            bid_consumed=self._bid_consumed, bid_cancelled=self._bid_cancelled,
+            bid_replenished=self._bid_replenished,
+            ask_consumed=self._ask_consumed, ask_cancelled=self._ask_cancelled,
+            ask_replenished=self._ask_replenished,
+            bid_moved=self._bid_moved, ask_moved=self._ask_moved,
+            bid_repl_ratio=round(bid_repl_ratio, 2),
+            ask_repl_ratio=round(ask_repl_ratio, 2),
+            bid_collapse_ratio=round(self._bid_collapse_ratio, 3),
+            ask_collapse_ratio=round(self._ask_collapse_ratio, 3),
             time_windows={lab: w.features() for lab, w in self._twins.items()},
             event_windows={lab: w.features() for lab, w in self._ewins.items()},
         )
