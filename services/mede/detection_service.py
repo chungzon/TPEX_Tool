@@ -11,7 +11,9 @@
 
 from __future__ import annotations
 
+import glob
 import logging
+import os
 from dataclasses import dataclass, field
 
 from services.mede.config import MedeConfig
@@ -49,6 +51,16 @@ class DetectionService:
                  storage: SqliteStorage | None = None):
         self.config = config or MedeConfig()
         self._storage = storage or SqliteStorage(self.config.storage_dir)
+
+    def list_dates(self) -> list[str]:
+        """掃描 storage_dir，列出有錄製檔的交易日（yyyy-mm-dd，新→舊）。"""
+        pat = os.path.join(self.config.storage_dir, "mede_*.sqlite")
+        dates = []
+        for p in glob.glob(pat):
+            stem = os.path.basename(p)[len("mede_"):-len(".sqlite")]
+            if len(stem) == 8 and stem.isdigit():
+                dates.append(f"{stem[:4]}-{stem[4:6]}-{stem[6:]}")
+        return sorted(dates, reverse=True)
 
     def list_recorded(self, trade_date: str) -> list[str]:
         """列出當日有錄到 tick 的股票代碼。"""

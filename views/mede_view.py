@@ -87,11 +87,14 @@ class MedeView(ctk.CTkFrame):
 
         # ---- 每檔資料品質 ----
         q_card = ctk.CTkFrame(container, corner_radius=12)
-        q_card.pack(fill="both", expand=True, padx=30, pady=(6, 16))
+        q_card.pack(fill="x", padx=30, pady=6)
         ctk.CTkLabel(q_card, text="每檔資料品質",
                      font=ctk.CTkFont(size=14, weight="bold")).pack(
                          anchor="w", padx=18, pady=(12, 4))
         self._build_quality_tree(q_card)
+
+        # ---- 偵測結果（Phase 5：對已錄製資料跑偵測管線）----
+        self._build_detect_panel(container)
 
     def _build_quality_tree(self, parent):
         style = ttk.Style()
@@ -123,9 +126,76 @@ class MedeView(ctk.CTkFrame):
         sb.pack(side="right", fill="y")
         self._q_tree = tree
 
+    def _build_detect_panel(self, container):
+        card = ctk.CTkFrame(container, corner_radius=12)
+        card.pack(fill="both", expand=True, padx=30, pady=(6, 16))
+        head = ctk.CTkFrame(card, fg_color="transparent")
+        head.pack(fill="x", padx=18, pady=(12, 2))
+        ctk.CTkLabel(head, text="🎯 發動偵測結果（Phase 5）",
+                     font=ctk.CTkFont(size=14, weight="bold")).pack(side="left")
+        ctk.CTkLabel(head, text="對已錄製的逐筆資料跑偵測管線，產生候選事件（僅供檢視，不下單）",
+                     font=ctk.CTkFont(size=11), text_color="#888").pack(
+                         side="left", padx=(8, 0))
+
+        ctrl = ctk.CTkFrame(card, fg_color="transparent")
+        ctrl.pack(fill="x", padx=18, pady=(6, 4))
+        ctk.CTkLabel(ctrl, text="交易日：", font=ctk.CTkFont(size=13)).pack(side="left")
+        self.date_menu = ctk.CTkOptionMenu(
+            ctrl, width=140, values=["—"], command=self._on_pick_date)
+        self.date_menu.pack(side="left", padx=(4, 12))
+        ctk.CTkLabel(ctrl, text="代碼：", font=ctk.CTkFont(size=13)).pack(side="left")
+        self.dcode_menu = ctk.CTkOptionMenu(ctrl, width=110, values=["—"])
+        self.dcode_menu.pack(side="left", padx=(4, 12))
+        self.detect_btn = ctk.CTkButton(
+            ctrl, text="跑偵測", width=90, height=32, corner_radius=8,
+            font=ctk.CTkFont(size=13, weight="bold"),
+            fg_color="#3b6fb3", hover_color="#2f588f", command=self._on_detect)
+        self.detect_btn.pack(side="left")
+        self.refresh_btn = ctk.CTkButton(
+            ctrl, text="⟳ 重整", width=74, height=32, corner_radius=8,
+            font=ctk.CTkFont(size=12), fg_color="#455a64", hover_color="#37474f",
+            command=lambda: self.vm.refresh_dates())
+        self.refresh_btn.pack(side="left", padx=(8, 0))
+
+        self.detect_msg = ctk.CTkLabel(card, text="讀取錄製資料中…",
+                                       font=ctk.CTkFont(size=12), text_color="#9aa4ad")
+        self.detect_msg.pack(anchor="w", padx=18, pady=(2, 6))
+        self._build_event_tree(card)
+
+    def _build_event_tree(self, parent):
+        frame = ctk.CTkFrame(parent, fg_color="transparent")
+        frame.pack(fill="both", expand=True, padx=10, pady=(0, 12))
+        cols = ("time", "type", "dir", "score", "conf", "price", "pattern", "reason")
+        tree = ttk.Treeview(frame, columns=cols, show="headings", height=8,
+                            style="Mede.Treeview")
+        for c, txt, w, anc in [
+            ("time", "時間", 100, "center"), ("type", "事件", 130, "w"),
+            ("dir", "方向", 50, "center"), ("score", "分數", 60, "e"),
+            ("conf", "信心", 60, "e"), ("price", "觸發價", 70, "e"),
+            ("pattern", "型態", 150, "w"), ("reason", "主要理由", 260, "w"),
+        ]:
+            tree.heading(c, text=txt)
+            tree.column(c, width=w, anchor=anc, stretch=(c == "reason"))
+        tree.tag_configure("bull", foreground="#26a69a")
+        tree.tag_configure("bear", foreground="#ef5350")
+        tree.pack(side="left", fill="both", expand=True)
+        sb = ttk.Scrollbar(frame, orient="vertical", command=tree.yview)
+        tree.configure(yscrollcommand=sb.set)
+        sb.pack(side="right", fill="y")
+        self._ev_tree = tree
+
     # ---------------- events ----------------
     def _on_start(self):
         self.vm.start(self.code_entry.get())
+
+    def _on_pick_date(self, date: str):
+        if date and date != "—":
+            self.vm.load_codes(date)
+
+    def _on_detect(self):
+        date = self.date_menu.get()
+        code = self.dcode_menu.get()
+        self.vm.run_detection(date, code)
 
     def _on_stop(self):
         self.vm.stop()
@@ -134,6 +204,12 @@ class MedeView(ctk.CTkFrame):
         self.vm.bind("is_recording", self._on_recording)
         self.vm.bind("status_msg", self._on_msg)
         self.vm.bind("status_data", self._on_status)
+        self.vm.bind("detect_dates", self._on_detect_dates)
+        self.vm.bind("detect_codes", self._on_detect_codes)
+        self.vm.bind("detect_events", self._on_detect_events)
+        self.vm.bind("detect_msg", self._on_detect_msg)
+        self.vm.bind("detect_running", self._on_detect_running)
+        self.vm.refresh_dates()
 
     def _on_recording(self, v):
         def _u():
@@ -184,3 +260,43 @@ class MedeView(ctk.CTkFrame):
                         (q.get("last_tick_time", "") or "")[-12:],
                     ), tags=(stt,))
         self.after(0, _u)
+
+    # ---------------- 偵測結果 callbacks ----------------
+    def _on_detect_dates(self, dates):
+        def _u():
+            vals = list(dates) if dates else ["—"]
+            self.date_menu.configure(values=vals)
+            self.date_menu.set(vals[0])
+        self.after(0, _u)
+
+    def _on_detect_codes(self, codes):
+        def _u():
+            vals = list(codes) if codes else ["—"]
+            self.dcode_menu.configure(values=vals)
+            self.dcode_menu.set(vals[0])
+        self.after(0, _u)
+
+    def _on_detect_events(self, events):
+        def _u():
+            self._ev_tree.delete(*self._ev_tree.get_children())
+            for e in (events or []):
+                d = e.get("dir", 0)
+                arrow = "▲多" if d > 0 else ("▼空" if d < 0 else "—")
+                tag = "bull" if d > 0 else ("bear" if d < 0 else "")
+                self._ev_tree.insert("", "end", values=(
+                    e.get("time", ""), e.get("type", ""), arrow,
+                    f"{e.get('score', 0):.0f}", f"{e.get('conf', 0):.2f}",
+                    f"{e.get('price', 0):g}", e.get("patterns", ""),
+                    e.get("reason", ""),
+                ), tags=(tag,))
+        self.after(0, _u)
+
+    def _on_detect_msg(self, v):
+        clr = "#4ECDC4" if v.startswith("✓") else (
+            "#FF6B6B" if ("失敗" in v or "請先" in v) else "#9aa4ad")
+        self.after(0, lambda: self.detect_msg.configure(text=v, text_color=clr))
+
+    def _on_detect_running(self, running):
+        self.after(0, lambda: self.detect_btn.configure(
+            state="disabled" if running else "normal",
+            text="偵測中…" if running else "跑偵測"))
