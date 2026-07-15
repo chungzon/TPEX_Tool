@@ -51,6 +51,7 @@ class MedeConfig:
     replenishment_ratio: float = 2.0    # 累積消耗/顯示量 ≥ 此 → 疑似補單/隱藏流動性
     absorption_min_volume: float = 40.0  # 吸收：窗內主動量門檻(張)
     absorption_max_price_ticks: float = 1.0  # 吸收：價格移動 ≤ 此(tick)
+    absorption_min_trades: int = 5       # 吸收：窗內成交筆數門檻（避免單一大單誤判）
     spread_expansion_ratio: float = 2.0  # 流動性真空：spread ≥ 基準×此
     failed_breakout_timeout_ms: int = 3000  # 假突破：突破後多久內反向跌回才算
     exhaustion_fade_ratio: float = 0.4   # 衰竭：成交速度/OFI 低於峰值×此
