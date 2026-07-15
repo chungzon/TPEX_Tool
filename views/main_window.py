@@ -9,6 +9,7 @@ from viewmodels.settings_viewmodel import SettingsViewModel
 from viewmodels.strategy_viewmodel import StrategyViewModel
 from viewmodels.trading_viewmodel import TradingViewModel
 from viewmodels.microstructure_viewmodel import MicrostructureViewModel
+from viewmodels.mede_viewmodel import MedeViewModel
 from viewmodels.signal_viewmodel import SignalViewModel
 from views.broker_download_view import BrokerDownloadView
 from views.batch_download_view import BatchDownloadView
@@ -19,6 +20,7 @@ from views.settings_view import SettingsView
 from views.strategy_view import StrategyView
 from views.trading_view import TradingView
 from views.microstructure_view import MicrostructureView
+from views.mede_view import MedeView
 from views.signal_view import SignalView
 from services.config_service import ConfigService
 from services.scheduler_service import SchedulerService
@@ -137,7 +139,15 @@ class MainWindow(ctk.CTk):
         micro_view = MicrostructureView(tab9, self.micro_vm)
         micro_view.pack(fill="both", expand=True)
 
-        # Tab 10: 系統設定
+        # Tab 10: Tick 發動偵測（MEDE，共用同一 Shioaji 連線）
+        tab_mede = self.tabview.add("Tick 發動偵測")
+
+        self.mede_vm = MedeViewModel(
+            self._config_svc, shioaji_svc=self.trading_vm._sj)
+        mede_view = MedeView(tab_mede, self.mede_vm)
+        mede_view.pack(fill="both", expand=True)
+
+        # Tab 11: 系統設定
         tab10 = self.tabview.add("系統設定")
 
         self.settings_vm = SettingsViewModel(
@@ -175,6 +185,7 @@ class MainWindow(ctk.CTk):
         self.strategy_vm.shutdown()
         self.signal_vm.shutdown()
         self.micro_vm.shutdown()
+        self.mede_vm.shutdown()
         self.trading_vm.shutdown()
         self.settings_vm.shutdown()
         self.destroy()

@@ -12,3 +12,9 @@ bsr_*.html
 twse_*.html
 cap_*.png
 captcha_*.png
+
+# MEDE 逐筆錄製資料（勿入版控）
+mede_data/
+*.sqlite
+*.sqlite-wal
+*.sqlite-shm
