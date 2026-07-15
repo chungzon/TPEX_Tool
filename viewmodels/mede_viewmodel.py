@@ -149,9 +149,36 @@ class MedeViewModel(BaseViewModel):
 
         threading.Thread(target=_work, daemon=True).start()
 
+    def run_all_detection(self, trade_date: str):
+        """對當日所有已錄股票批次跑偵測並落地；事件彙整填入 detect_events。"""
+        if not trade_date or "—" in (trade_date,):
+            self.detect_msg = "請先選擇交易日"
+            return
+
+        def _work():
+            self.detect_running = True
+            self.detect_msg = f"批次偵測中：{trade_date} 全部股票 …"
+            try:
+                runs = self._detect.run_all(trade_date, persist=True)
+            except Exception as exc:
+                self.detect_msg = f"批次偵測失敗：{exc}"
+                self.detect_running = False
+                return
+            rows = [self._event_row(e) for r in runs for e in r.events]
+            # 依時間排序，跨檔事件一起看
+            rows.sort(key=lambda d: d.get("seq", 0))
+            total = sum(r.event_count for r in runs)
+            hit = sum(1 for r in runs if r.event_count)
+            self.detect_events = rows
+            self.detect_msg = (f"✓ 批次完成：{len(runs)} 檔、{hit} 檔有觸發、共 {total} 事件"
+                               if runs else f"{trade_date}：無資料")
+            self.detect_running = False
+
+        threading.Thread(target=_work, daemon=True).start()
+
     @staticmethod
     def _event_row(e) -> dict:
-        return {"time": _fmt_ns_time(e.event_time_ns), "seq": e.seq,
+        return {"code": e.code, "time": _fmt_ns_time(e.event_time_ns), "seq": e.seq,
                 "type": e.event_type, "dir": e.direction, "score": e.score,
                 "conf": e.confidence, "price": e.trigger_price,
                 "patterns": "、".join(e.matched_patterns),

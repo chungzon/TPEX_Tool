@@ -151,6 +151,11 @@ class MedeView(ctk.CTkFrame):
             font=ctk.CTkFont(size=13, weight="bold"),
             fg_color="#3b6fb3", hover_color="#2f588f", command=self._on_detect)
         self.detect_btn.pack(side="left")
+        self.detect_all_btn = ctk.CTkButton(
+            ctrl, text="批次偵測（全部）", width=130, height=32, corner_radius=8,
+            font=ctk.CTkFont(size=13), fg_color="#5a4b9e", hover_color="#463b7d",
+            command=self._on_detect_all)
+        self.detect_all_btn.pack(side="left", padx=(8, 0))
         self.refresh_btn = ctk.CTkButton(
             ctrl, text="⟳ 重整", width=74, height=32, corner_radius=8,
             font=ctk.CTkFont(size=12), fg_color="#455a64", hover_color="#37474f",
@@ -165,14 +170,16 @@ class MedeView(ctk.CTkFrame):
     def _build_event_tree(self, parent):
         frame = ctk.CTkFrame(parent, fg_color="transparent")
         frame.pack(fill="both", expand=True, padx=10, pady=(0, 12))
-        cols = ("time", "type", "dir", "score", "conf", "price", "pattern", "reason")
+        cols = ("code", "time", "type", "dir", "score", "conf", "price",
+                "pattern", "reason")
         tree = ttk.Treeview(frame, columns=cols, show="headings", height=8,
                             style="Mede.Treeview")
         for c, txt, w, anc in [
-            ("time", "時間", 100, "center"), ("type", "事件", 130, "w"),
+            ("code", "代碼", 60, "center"), ("time", "時間", 100, "center"),
+            ("type", "事件", 130, "w"),
             ("dir", "方向", 50, "center"), ("score", "分數", 60, "e"),
             ("conf", "信心", 60, "e"), ("price", "觸發價", 70, "e"),
-            ("pattern", "型態", 150, "w"), ("reason", "主要理由", 260, "w"),
+            ("pattern", "型態", 150, "w"), ("reason", "主要理由", 240, "w"),
         ]:
             tree.heading(c, text=txt)
             tree.column(c, width=w, anchor=anc, stretch=(c == "reason"))
@@ -196,6 +203,9 @@ class MedeView(ctk.CTkFrame):
         date = self.date_menu.get()
         code = self.dcode_menu.get()
         self.vm.run_detection(date, code)
+
+    def _on_detect_all(self):
+        self.vm.run_all_detection(self.date_menu.get())
 
     def _on_stop(self):
         self.vm.stop()
@@ -284,7 +294,7 @@ class MedeView(ctk.CTkFrame):
                 arrow = "▲多" if d > 0 else ("▼空" if d < 0 else "—")
                 tag = "bull" if d > 0 else ("bear" if d < 0 else "")
                 self._ev_tree.insert("", "end", values=(
-                    e.get("time", ""), e.get("type", ""), arrow,
+                    e.get("code", ""), e.get("time", ""), e.get("type", ""), arrow,
                     f"{e.get('score', 0):.0f}", f"{e.get('conf', 0):.2f}",
                     f"{e.get('price', 0):g}", e.get("patterns", ""),
                     e.get("reason", ""),
@@ -297,6 +307,9 @@ class MedeView(ctk.CTkFrame):
         self.after(0, lambda: self.detect_msg.configure(text=v, text_color=clr))
 
     def _on_detect_running(self, running):
-        self.after(0, lambda: self.detect_btn.configure(
-            state="disabled" if running else "normal",
-            text="偵測中…" if running else "跑偵測"))
+        def _u():
+            self.detect_btn.configure(
+                state="disabled" if running else "normal",
+                text="偵測中…" if running else "跑偵測")
+            self.detect_all_btn.configure(state="disabled" if running else "normal")
+        self.after(0, _u)
