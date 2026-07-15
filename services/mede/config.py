@@ -52,6 +52,10 @@ class MedeConfig:
     absorption_min_volume: float = 40.0  # 吸收：窗內主動量門檻(張)
     absorption_max_price_ticks: float = 1.0  # 吸收：價格移動 ≤ 此(tick)
     spread_expansion_ratio: float = 2.0  # 流動性真空：spread ≥ 基準×此
+    failed_breakout_timeout_ms: int = 3000  # 假突破：突破後多久內反向跌回才算
+    exhaustion_fade_ratio: float = 0.4   # 衰竭：成交速度/OFI 低於峰值×此
+    exhaustion_timeout_ms: int = 5000    # 衰竭觀察期
+    momentum_min_categories: int = 4     # 動能點火：至少幾類不同證據共振
     detector_enabled: dict = field(default_factory=dict)   # name -> bool（預設全開）
     detector_weights: dict = field(default_factory=dict)   # name -> weight（Phase 5 融合）
 

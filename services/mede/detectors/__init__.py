@@ -17,8 +17,11 @@ from services.mede.detectors.absorption import AbsorptionDetector
 from services.mede.detectors.queue_collapse import QueueCollapseDetector
 from services.mede.detectors.liquidity_vacuum import LiquidityVacuumDetector
 from services.mede.detectors.replenishment import ReplenishmentDetector
+from services.mede.detectors.failed_breakout import FailedBreakoutDetector
+from services.mede.detectors.exhaustion import ExhaustionDetector
+from services.mede.detectors.momentum_ignition import MomentumIgnitionDetector
 
-# 已實作偵測器（依 Phase 4 進度擴充；剩 FailedBreakout/Exhaustion/MomentumIgnition）
+# Phase 4 完成：14 個偵測器
 DETECTOR_CLASSES = [
     TradeBurstDetector,
     VolumeBurstDetector,
@@ -31,6 +34,9 @@ DETECTOR_CLASSES = [
     QueueCollapseDetector,
     LiquidityVacuumDetector,
     ReplenishmentDetector,
+    FailedBreakoutDetector,
+    ExhaustionDetector,
+    MomentumIgnitionDetector,
 ]
 
 
