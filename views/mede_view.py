@@ -98,7 +98,13 @@ class MedeView(ctk.CTkFrame):
 
     def _build_quality_tree(self, parent):
         style = ttk.Style()
-        style.theme_use("default")
+        # ttk 主題是全域的：與其他分頁（大單追蹤）統一用 clam，
+        # 否則後建構的分頁切主題會重置別頁 Treeview 樣式。clam 才會確實
+        # 套用 Treeview 的 background/fieldbackground（default/vista 常忽略）。
+        try:
+            style.theme_use("clam")
+        except Exception:
+            pass
         style.configure("Mede.Treeview", background="#1a222c",
                         fieldbackground="#1a222c", foreground="#e0e0e0",
                         rowheight=22, borderwidth=0)
