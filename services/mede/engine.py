@@ -32,6 +32,8 @@ class MedeEngine:
         self.events: list = []
         self.state = StateType.IDLE
         self.last_fusion = None
+        self.last_results: dict = {}     # 供即時 UI 的 Detector 表
+        self.last_snap = None
 
     def on_bidask(self, ba: dict) -> None:
         self.fe.on_bidask(ba)
@@ -44,6 +46,8 @@ class MedeEngine:
         # 否則冷卻期 fusion.candidate 永遠 False → 反向發動無法被狀態機偵測。
         fusion = self.fusion.evaluate(snap, results, data_ok=data_ok)
         self.last_fusion = fusion
+        self.last_results = results
+        self.last_snap = snap
         state, ev = self.sm.update(fusion, results, snap, data_ok=data_ok)
         self.state = state
         if ev is not None:

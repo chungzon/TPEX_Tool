@@ -10,6 +10,7 @@ from viewmodels.strategy_viewmodel import StrategyViewModel
 from viewmodels.trading_viewmodel import TradingViewModel
 from viewmodels.microstructure_viewmodel import MicrostructureViewModel
 from viewmodels.mede_viewmodel import MedeViewModel
+from viewmodels.bed_viewmodel import BedViewModel
 from viewmodels.signal_viewmodel import SignalViewModel
 from views.broker_download_view import BrokerDownloadView
 from views.batch_download_view import BatchDownloadView
@@ -21,6 +22,7 @@ from views.strategy_view import StrategyView
 from views.trading_view import TradingView
 from views.microstructure_view import MicrostructureView
 from views.mede_view import MedeView
+from views.bed_view import BedView
 from views.signal_view import SignalView
 from services.config_service import ConfigService
 from services.scheduler_service import SchedulerService
@@ -147,7 +149,14 @@ class MainWindow(ctk.CTk):
         mede_view = MedeView(tab_mede, self.mede_vm)
         mede_view.pack(fill="both", expand=True)
 
-        # Tab 11: 系統設定
+        # Tab 11: 空方發動偵測（BED，共用同一 Shioaji 連線與 MEDE core）
+        tab_bed = self.tabview.add("空方發動偵測")
+        self.bed_vm = BedViewModel(
+            self._config_svc, shioaji_svc=self.trading_vm._sj)
+        bed_view = BedView(tab_bed, self.bed_vm)
+        bed_view.pack(fill="both", expand=True)
+
+        # Tab 12: 系統設定
         tab10 = self.tabview.add("系統設定")
 
         self.settings_vm = SettingsViewModel(
@@ -186,6 +195,7 @@ class MainWindow(ctk.CTk):
         self.signal_vm.shutdown()
         self.micro_vm.shutdown()
         self.mede_vm.shutdown()
+        self.bed_vm.shutdown()
         self.trading_vm.shutdown()
         self.settings_vm.shutdown()
         self.destroy()
