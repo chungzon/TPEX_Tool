@@ -57,6 +57,16 @@ class MedeConfig:
     swing_reversal_ticks: float = 3.0    # ZigZag 反轉確認門檻（tick）
     swing_confirm_ticks: int = 3         # swing 確認最少筆數（防未來函數）
     vwap_slope_window_ms: int = 3000     # VWAP 斜率參考視窗
+
+    # --- BED 空方偵測器門檻（Phase 4）---
+    rally_min_rise_ticks: float = 5.0    # 拉高失敗：曾自開盤/VWAP上漲至少此(tick)才算拉高
+    rally_fade_ticks: float = 3.0        # 拉高失敗：自高點回落達此(tick)
+    vwap_break_min_ticks: float = 1.0    # 跌破VWAP：收在VWAP下方至少此(tick)
+    vwap_reject_near_ticks: float = 2.0  # 反彈不過VWAP：反彈逼近VWAP此(tick)內視為測試
+    lower_high_min_ticks: float = 1.0    # Lower High：本次swing high低於前高至少此(tick)
+    structure_break_min_ticks: float = 1.0  # 跌破微結構低點：跌破swing low至少此(tick)
+    efficiency_min_ratio: float = 1.5    # 下跌/反彈效率比 ≥ 此 → 下跌有效反彈無效
+    efficiency_min_volume: float = 20.0  # 效率偵測：每段最低成交量（張），太小不計
     spread_expansion_ratio: float = 2.0  # 流動性真空：spread ≥ 基準×此
     failed_breakout_timeout_ms: int = 3000  # 假突破：突破後多久內反向跌回才算
     exhaustion_fade_ratio: float = 0.4   # 衰竭：成交速度/OFI 低於峰值×此

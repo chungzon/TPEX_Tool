@@ -187,6 +187,7 @@ class FeatureSnapshot:
     price_range_ticks: float
     # BED 空方結構（Phase 3）：開盤價、VWAP 斜率、因果式 swing 擺動點
     open_price: float
+    tick_size: float                 # 當前價位跳動單位（供偵測器把價差換算 tick）
     vwap_slope: float                # VWAP 每秒變化（price/sec，>0 上彎 <0 下彎）
     swing_high: float                # 最近已確認 swing high（0=尚未形成）
     swing_low: float                 # 最近已確認 swing low
@@ -551,6 +552,7 @@ class FeatureEngine:
             price_accel=round(self._accel, 4),
             price_range_ticks=round(prange, 2),
             open_price=self._open_price,
+            tick_size=ts,
             vwap_slope=round(self._vwap_slope, 5),
             swing_high=self._swing.swing_high or 0.0,
             swing_low=self._swing.swing_low or 0.0,

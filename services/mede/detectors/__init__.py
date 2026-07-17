@@ -20,8 +20,15 @@ from services.mede.detectors.replenishment import ReplenishmentDetector
 from services.mede.detectors.failed_breakout import FailedBreakoutDetector
 from services.mede.detectors.exhaustion import ExhaustionDetector
 from services.mede.detectors.momentum_ignition import MomentumIgnitionDetector
+# BED 空方結構偵測器（Phase 4）
+from services.mede.detectors.rally_failure import RallyFailureDetector
+from services.mede.detectors.vwap_break import VwapBreakDetector
+from services.mede.detectors.vwap_rejection import VwapRejectionDetector
+from services.mede.detectors.lower_high import LowerHighDetector
+from services.mede.detectors.structure_break import StructureBreakDetector
+from services.mede.detectors.directional_efficiency import DirectionalEfficiencyDetector
 
-# Phase 4 完成：14 個偵測器
+# MEDE 14 個 + BED 空方 6 個 = 20 個偵測器
 DETECTOR_CLASSES = [
     TradeBurstDetector,
     VolumeBurstDetector,
@@ -37,6 +44,13 @@ DETECTOR_CLASSES = [
     FailedBreakoutDetector,
     ExhaustionDetector,
     MomentumIgnitionDetector,
+    # --- BED 空方結構 ---
+    RallyFailureDetector,
+    VwapBreakDetector,
+    VwapRejectionDetector,
+    LowerHighDetector,
+    StructureBreakDetector,
+    DirectionalEfficiencyDetector,
 ]
 
 
