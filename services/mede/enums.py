@@ -39,6 +39,7 @@ class StateType(str, Enum):
     """市場狀態（狀態機輸出，對應 spec §2）。"""
     IDLE = "IDLE"
     WATCH = "WATCH"
+    CANDIDATE = "CANDIDATE"          # 分數進入候選帶、尚未達觸發（規劃 §五）
     BULL_TRIGGER = "BULL_TRIGGER"
     BEAR_TRIGGER = "BEAR_TRIGGER"
     BULL_CONTINUATION = "BULL_CONTINUATION"

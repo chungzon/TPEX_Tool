@@ -67,6 +67,13 @@ class MedeConfig:
     structure_break_min_ticks: float = 1.0  # 跌破微結構低點：跌破swing low至少此(tick)
     efficiency_min_ratio: float = 1.5    # 下跌/反彈效率比 ≥ 此 → 下跌有效反彈無效
     efficiency_min_volume: float = 20.0  # 效率偵測：每段最低成交量（張），太小不計
+
+    # --- BED 評分引擎 / 狀態機（Phase 5）---
+    veto_far_from_vwap_ticks: float = 15.0  # 否決：已在 VWAP 下方過遠（過度延伸）
+    bed_watch_score: float = 50.0        # final_bear_score 分數帶（0~100）
+    bed_candidate_score: float = 65.0
+    bed_trigger_score: float = 75.0
+    bed_strong_score: float = 85.0
     spread_expansion_ratio: float = 2.0  # 流動性真空：spread ≥ 基準×此
     failed_breakout_timeout_ms: int = 3000  # 假突破：突破後多久內反向跌回才算
     exhaustion_fade_ratio: float = 0.4   # 衰竭：成交速度/OFI 低於峰值×此

@@ -11,6 +11,10 @@ from dataclasses import dataclass, field, asdict
 
 from services.mede.patterns import match_patterns
 
+
+def _clamp(x: float, lo: float = 0.0, hi: float = 100.0) -> float:
+    return lo if x < lo else hi if x > hi else x
+
 # 偵測器 → 證據類別（觸發需多類共振）
 CATEGORY_MAP = {
     "trade_burst": "burst", "volume_burst": "burst",
@@ -19,6 +23,26 @@ CATEGORY_MAP = {
     "queue_collapse": "liquidity", "liquidity_vacuum": "liquidity",
     "breakout": "breakout", "sweep": "breakout",
     "momentum_ignition": "momentum",
+    # BED 空方結構（只在 direction<0 觸發，不影響多方類別）
+    "rally_failure": "rally", "vwap_break": "vwap", "vwap_rejection": "vwap",
+    "lower_high": "swing", "structure_break": "swing",
+    "directional_efficiency": "efficiency",
+}
+
+# 偵測器 → BED 三大評分群（結構/成交/委託簿），供空方分數細分（規劃 §八）
+GROUP_MAP = {
+    # 結構
+    "rally_failure": "structure", "vwap_break": "structure",
+    "vwap_rejection": "structure", "lower_high": "structure",
+    "structure_break": "structure", "breakout": "structure",
+    "failed_breakout": "structure",
+    # 成交
+    "trade_burst": "trade", "volume_burst": "trade", "aggressive_flow": "trade",
+    "directional_efficiency": "trade", "momentum_ignition": "trade",
+    # 委託簿
+    "ofi_shock": "orderbook", "book_imbalance_shift": "orderbook",
+    "queue_collapse": "orderbook", "liquidity_vacuum": "orderbook",
+    "replenishment": "orderbook", "sweep": "orderbook", "absorption": "orderbook",
 }
 
 
@@ -36,6 +60,13 @@ class FusionResult:
     exhaustion_score: float
     bull_categories: int
     bear_categories: int
+    # BED 空方分數細分（規劃 §八）
+    structure_score: float = 0.0
+    trade_score: float = 0.0
+    orderbook_score: float = 0.0
+    veto_score: float = 0.0
+    final_bear_score: float = 0.0      # 0~100（分數帶用）
+    final_bull_score: float = 0.0
     trigger_reasons: list = field(default_factory=list)
     veto_reasons: list = field(default_factory=list)
     matched_patterns: list = field(default_factory=list)
@@ -55,6 +86,7 @@ class FusionEngine:
         w = cfg.detector_weights or {}
         bull = bear = 0.0
         bull_cats, bear_cats = set(), set()
+        groups = {"structure": 0.0, "trade": 0.0, "orderbook": 0.0}  # 空方細分
         dscores = {}
         for name, r in results.items():
             dscores[name] = {"dir": r.direction, "score": round(r.score, 1),
@@ -71,6 +103,9 @@ class FusionEngine:
                 bear += wt * r.score
                 if cat:
                     bear_cats.add(cat)
+                g = GROUP_MAP.get(name)
+                if g:
+                    groups[g] += wt * r.score
 
         absr = results.get("absorption")
         exhr = results.get("exhaustion")
@@ -99,6 +134,13 @@ class FusionEngine:
         if fb and fb.is_triggered:
             (veto_bull if fb.direction < 0 else veto_bear).append(
                 "向上假突破" if fb.direction < 0 else "向下假突破")
+        # BED 空方專屬否決（規劃 §八）：站回 VWAP / 已在 VWAP 下方過遠
+        if snap.vwap > 0 and snap.tick_size > 0:
+            if snap.last_price >= snap.vwap:
+                veto_bear.append("反彈站回 VWAP")
+            elif (snap.vwap - snap.last_price) / snap.tick_size >= cfg.veto_far_from_vwap_ticks:
+                veto_bear.append("已遠離 VWAP（過度延伸）")
+        # 註：大盤急拉 / 接近跌停 / 重要支撐過近 目前無資料源，暫未實作（見 BED Phase 1 已知限制）
 
         bull_ok = (necessary and bull >= cfg.bull_trigger_score
                    and len(bull_cats) >= cfg.trigger_min_detector_categories
@@ -112,6 +154,16 @@ class FusionEngine:
             direction, candidate = 1, True
         elif bear_ok:
             direction, candidate = -1, True
+
+        # --- BED 正規化分數（0~100，對齊分數帶）---
+        def _norm(raw, thr):
+            return _clamp(raw / thr * 75.0) if thr > 0 else 0.0
+
+        final_bull = _norm(bull, cfg.bull_trigger_score)
+        final_bear = _norm(bear, cfg.bear_trigger_score)
+        veto_score = _clamp(25.0 * len(veto_bear))
+        if veto_bear:
+            final_bear = min(final_bear, cfg.bed_candidate_score - 1.0)  # 否決 → 壓到觸發帶以下
 
         patterns = match_patterns(results, snap, cfg) if necessary else []
         reasons = []
@@ -131,6 +183,12 @@ class FusionEngine:
             absorption_score=round(absorption_score, 1),
             exhaustion_score=round(exhaustion_score, 1),
             bull_categories=len(bull_cats), bear_categories=len(bear_cats),
+            structure_score=round(groups["structure"], 1),
+            trade_score=round(groups["trade"], 1),
+            orderbook_score=round(groups["orderbook"], 1),
+            veto_score=round(veto_score, 1),
+            final_bear_score=round(final_bear, 1),
+            final_bull_score=round(final_bull, 1),
             trigger_reasons=reasons,
             veto_reasons=(veto_bull if direction >= 0 else veto_bear),
             matched_patterns=[p for p, _ in patterns], detector_scores=dscores)

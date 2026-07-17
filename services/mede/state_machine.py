@@ -29,6 +29,14 @@ class Event:
     consolidated_trigger_id: str
     parameter_version: str
     algorithm_version: str
+    # BED 空方分數細分（規劃 §八）+ 否決理由落地
+    vwap: float = 0.0
+    structure_score: float = 0.0
+    trade_score: float = 0.0
+    orderbook_score: float = 0.0
+    veto_score: float = 0.0
+    final_score: float = 0.0
+    veto_reasons: list = field(default_factory=list)
 
     def as_dict(self) -> dict:
         return asdict(self)
@@ -123,13 +131,20 @@ class EventStateMachine:
             self._set(cont, t, "觸發→延續" if not merged else "同波合併", ref)
             return self.state, ev
 
+        # ---- CANDIDATE：分數進入候選帶但未達觸發（規劃 §五）----
+        band = max(fusion.final_bear_score, fusion.final_bull_score)
+        if band >= self.cfg.bed_candidate_score:
+            if self.state != StateType.CANDIDATE:
+                self._set(StateType.CANDIDATE, t, "分數進入候選帶", ref)
+            return self.state, None
+
         any_trig = any(r.is_triggered for r in results.values())
-        if any_trig:
+        if any_trig or band >= self.cfg.bed_watch_score:
             if self.state != StateType.WATCH:
                 self._set(StateType.WATCH, t, "出現異常", ref)
             return self.state, None
         # 安靜
-        if self.state == StateType.WATCH:
+        if self.state in (StateType.WATCH, StateType.CANDIDATE):
             if t - self._enter_t >= self.cfg.merge_window_ms * 1_000_000:
                 self._set(StateType.IDLE, t, "回歸平靜", ref)
         elif self.state != StateType.IDLE:
@@ -146,6 +161,7 @@ class EventStateMachine:
         thr = self.cfg.bull_trigger_score if direction > 0 else self.cfg.bear_trigger_score
         conf = min(raw / max(thr * 2, 1e-9), 1.0)
         reasons = list(fusion.trigger_reasons) or [tag]
+        final = fusion.final_bull_score if direction > 0 else fusion.final_bear_score
         return Event(
             event_id=eid, code=self.code, event_time_ns=snap.t_ns, seq=snap.seq,
             event_type=etype.value, direction=direction, score=round(raw, 1),
@@ -153,4 +169,8 @@ class EventStateMachine:
             reasons=reasons, matched_patterns=list(fusion.matched_patterns),
             detector_scores=fusion.detector_scores, consolidated_trigger_id=eid,
             parameter_version=self.cfg.parameter_version,
-            algorithm_version=self.cfg.algorithm_version)
+            algorithm_version=self.cfg.algorithm_version,
+            vwap=round(snap.vwap, 4),
+            structure_score=fusion.structure_score, trade_score=fusion.trade_score,
+            orderbook_score=fusion.orderbook_score, veto_score=fusion.veto_score,
+            final_score=final, veto_reasons=list(fusion.veto_reasons))

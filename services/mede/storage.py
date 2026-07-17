@@ -99,7 +99,10 @@ class SqliteStorage(Storage):
                 confidence REAL, trigger_price REAL, reasons TEXT,
                 matched_patterns TEXT, detector_scores TEXT,
                 consolidated_trigger_id TEXT, parameter_version TEXT,
-                algorithm_version TEXT)""")
+                algorithm_version TEXT,
+                vwap REAL, structure_score REAL, trade_score REAL,
+                orderbook_score REAL, veto_score REAL, final_score REAL,
+                veto_reasons TEXT)""")
         c.execute("""
             CREATE TABLE IF NOT EXISTS mede_state_transition (
                 code TEXT, from_state TEXT, to_state TEXT, t_ns INTEGER,
@@ -141,10 +144,12 @@ class SqliteStorage(Storage):
     _EVENT_COLS = ("event_id", "code", "event_time_ns", "seq", "event_type",
                    "direction", "score", "confidence", "trigger_price", "reasons",
                    "matched_patterns", "detector_scores", "consolidated_trigger_id",
-                   "parameter_version", "algorithm_version")
+                   "parameter_version", "algorithm_version",
+                   "vwap", "structure_score", "trade_score", "orderbook_score",
+                   "veto_score", "final_score", "veto_reasons")
 
     def write_events(self, events: list) -> None:
-        """events: list[Event]。以 JSON 存 reasons/patterns/detector_scores。"""
+        """events: list[Event]。以 JSON 存 reasons/patterns/detector_scores/veto_reasons。"""
         if not events or self._conn is None:
             return
         rows = []
@@ -155,7 +160,10 @@ class SqliteStorage(Storage):
                          json.dumps(e.matched_patterns, ensure_ascii=False),
                          json.dumps(e.detector_scores, ensure_ascii=False),
                          e.consolidated_trigger_id, e.parameter_version,
-                         e.algorithm_version))
+                         e.algorithm_version,
+                         e.vwap, e.structure_score, e.trade_score, e.orderbook_score,
+                         e.veto_score, e.final_score,
+                         json.dumps(e.veto_reasons, ensure_ascii=False)))
         self._conn.executemany(
             f"INSERT OR REPLACE INTO mede_event ({','.join(self._EVENT_COLS)}) "
             f"VALUES ({','.join('?' * len(self._EVENT_COLS))})", rows)
@@ -180,7 +188,7 @@ class SqliteStorage(Storage):
         out = []
         for r in cur.fetchall():
             d = dict(zip(self._EVENT_COLS, r))
-            for k in ("reasons", "matched_patterns", "detector_scores"):
+            for k in ("reasons", "matched_patterns", "detector_scores", "veto_reasons"):
                 d[k] = json.loads(d[k]) if d[k] else None
             out.append(d)
         return out
