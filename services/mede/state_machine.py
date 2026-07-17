@@ -86,10 +86,14 @@ class EventStateMachine:
             return self.state, None
         if self.state == StateType.DATA_INVALID:
             self._set(StateType.IDLE, t, "資料恢復", ref)
-        # 冷卻
+        # 冷卻：正常等滿冷卻期；但「反向」強候選可突破冷卻（防同波重複，非擋真實反轉）
         if self.state == StateType.COOLDOWN:
+            flip = fusion.candidate and self._last_dir != 0 \
+                and fusion.direction == -self._last_dir
             if t - self._enter_t >= self.cfg.cooldown_ms * 1_000_000:
                 self._set(StateType.IDLE, t, "冷卻結束", ref)
+            elif flip:
+                self._set(StateType.IDLE, t, "反向發動突破冷卻", ref)
             else:
                 return self.state, None
 

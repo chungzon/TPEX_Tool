@@ -40,9 +40,9 @@ class MedeEngine:
         self.fe.on_tick(tick)
         snap = self.fe.snapshot()
         results = {d.name: d.update(snap) for d in self.detectors}
-        fusion = self.fusion.evaluate(
-            snap, results, data_ok=data_ok,
-            cooldown=(self.sm.state == StateType.COOLDOWN))
+        # 冷卻由狀態機把關（含反向突破冷卻），不在 fusion 重複否決，
+        # 否則冷卻期 fusion.candidate 永遠 False → 反向發動無法被狀態機偵測。
+        fusion = self.fusion.evaluate(snap, results, data_ok=data_ok)
         self.last_fusion = fusion
         state, ev = self.sm.update(fusion, results, snap, data_ok=data_ok)
         self.state = state

@@ -116,15 +116,14 @@ class FusionEngine:
 
         spread_ok = (not snap.bidask_available
                      or snap.spread_ticks <= cfg.spread_max_ticks)
-        necessary = data_ok and spread_ok and not cooldown
+        # 冷卻不在此把關（由 state_machine 負責，含反向突破冷卻）；cooldown 參數保留相容
+        necessary = data_ok and spread_ok
 
         veto_bull, veto_bear = [], []
         if not data_ok:
             veto_bull.append("資料品質不合格"); veto_bear.append("資料品質不合格")
         if not spread_ok:
             veto_bull.append("點差異常擴大"); veto_bear.append("點差異常擴大")
-        if cooldown:
-            veto_bull.append("冷卻期"); veto_bear.append("冷卻期")
         if absr and absr.is_triggered and absr.score >= cfg.veto_absorption_score:
             (veto_bull if absr.direction < 0 else veto_bear).append(
                 "賣方吸收" if absr.direction < 0 else "買方吸收")

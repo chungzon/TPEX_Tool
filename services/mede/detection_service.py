@@ -104,3 +104,8 @@ class DetectionService:
     def read_events(self, code: str, trade_date: str) -> list[dict]:
         """讀回已落地的偵測事件（供 UI/回測檢視）。"""
         return self._storage.read_events(code, trade_date)
+
+    def backtest(self, code: str, trade_date: str, params=None):
+        """對已錄製資料跑 BED 事件驅動回測，回傳 BedBacktestResult。"""
+        from services.mede.backtest import BedBacktester
+        return BedBacktester(self.config, params).run(self._storage, code, trade_date)

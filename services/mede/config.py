@@ -74,6 +74,11 @@ class MedeConfig:
     bed_candidate_score: float = 65.0
     bed_trigger_score: float = 75.0
     bed_strong_score: float = 85.0
+
+    # --- BED Outcome / 回測（Phase 6）---
+    outcome_target_ticks: float = 4.0    # 事件結果：有利方向達此(tick)判 WIN
+    outcome_stop_ticks: float = 4.0      # 事件結果：不利方向達此(tick)判 LOSS
+    outcome_first_touch_ticks: float = 2.0  # first-touch 判定門檻(tick)
     spread_expansion_ratio: float = 2.0  # 流動性真空：spread ≥ 基準×此
     failed_breakout_timeout_ms: int = 3000  # 假突破：突破後多久內反向跌回才算
     exhaustion_fade_ratio: float = 0.4   # 衰竭：成交速度/OFI 低於峰值×此
