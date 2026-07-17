@@ -225,7 +225,10 @@ class MedeView(ctk.CTkFrame):
         self.vm.bind("detect_events", self._on_detect_events)
         self.vm.bind("detect_msg", self._on_detect_msg)
         self.vm.bind("detect_running", self._on_detect_running)
-        self.vm.refresh_dates()
+        # 延後到主迴圈啟動後再掃描：refresh_dates 會在背景緒觸發 observable →
+        # 回呼 self.after()；若在 mainloop 之前（建構期）執行，Tk 尚未進主迴圈
+        # → "main thread is not in main loop"。用主緒 after 排程即可避免。
+        self.after(1200, self.vm.refresh_dates)
 
     def _on_recording(self, v):
         def _u():
