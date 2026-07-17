@@ -20,7 +20,10 @@ class MedeEngine:
         self.cfg = cfg
         self.fe = FeatureEngine(
             tick_size_fn, breakout_lookback_ticks=cfg.breakout_lookback_ticks,
-            velocity_window_ms=cfg.velocity_window_ms)
+            velocity_window_ms=cfg.velocity_window_ms,
+            swing_reversal_ticks=cfg.swing_reversal_ticks,
+            swing_confirm_ticks=cfg.swing_confirm_ticks,
+            vwap_slope_window_ms=cfg.vwap_slope_window_ms)
         self.detectors = build_detectors(cfg)
         self.fusion = FusionEngine(cfg)
         self.sm = EventStateMachine(code, cfg)

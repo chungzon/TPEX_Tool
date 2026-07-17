@@ -185,6 +185,13 @@ class FeatureSnapshot:
     price_velocity: float
     price_accel: float
     price_range_ticks: float
+    # BED 空方結構（Phase 3）：開盤價、VWAP 斜率、因果式 swing 擺動點
+    open_price: float
+    vwap_slope: float                # VWAP 每秒變化（price/sec，>0 上彎 <0 下彎）
+    swing_high: float                # 最近已確認 swing high（0=尚未形成）
+    swing_low: float                 # 最近已確認 swing low
+    prev_swing_high: float           # 前一個 swing high（供 Lower High 比較）
+    prev_swing_low: float            # 前一個 swing low（供 Lower Low 比較）
     # 委託簿動態（最近一筆 BidAsk）
     bid_consumed: float
     bid_cancelled: float
@@ -207,11 +214,81 @@ class FeatureSnapshot:
         return asdict(self)
 
 
+class _SwingTracker:
+    """因果式 ZigZag 擺動點（只用當下與過去，確認後不 repaint）。
+
+    價格自當前段極值反向回撤達 reversal_ticks（且極值後至少經過 confirm_ticks 筆）
+    即確認一個 swing，並翻轉段方向。這樣得到的 swing high/low 交替出現，且一旦確認
+    就固定 → 供 Lower High / 跌破微結構低點 使用，避免用未來大量資料決定 swing。
+    """
+
+    __slots__ = ("_tsf", "rev", "confirm", "leg", "ext", "ext_seq", "bars",
+                 "swing_high", "swing_low", "prev_high", "prev_low",
+                 "high_seq", "low_seq")
+
+    def __init__(self, tick_size_fn, reversal_ticks: float, confirm_ticks: int):
+        self._tsf = tick_size_fn
+        self.rev = max(0.5, reversal_ticks)
+        self.confirm = max(1, confirm_ticks)
+        self.leg = 0                 # +1 上升段找高 / -1 下降段找低 / 0 未定
+        self.ext = None              # 當前段極值
+        self.ext_seq = 0
+        self.bars = 0                # 自極值更新後經過筆數
+        self.swing_high = None
+        self.swing_low = None
+        self.prev_high = None
+        self.prev_low = None
+        self.high_seq = 0
+        self.low_seq = 0
+
+    def update(self, price: float, seq: int) -> None:
+        if self.ext is None:
+            self.ext = price
+            self.ext_seq = seq
+            self.leg = 1
+            self.bars = 0
+            return
+        ts = self._tsf(price) if price > 0 else 0.0
+        thr = self.rev * ts
+        if self.leg >= 0:            # 找高點
+            if price >= self.ext:
+                self.ext = price
+                self.ext_seq = seq
+                self.bars = 0
+            else:
+                self.bars += 1
+                if self.bars >= self.confirm and thr > 0 and (self.ext - price) >= thr:
+                    self.prev_high = self.swing_high
+                    self.swing_high = self.ext
+                    self.high_seq = self.ext_seq
+                    self.leg = -1
+                    self.ext = price
+                    self.ext_seq = seq
+                    self.bars = 0
+        else:                        # 找低點
+            if price <= self.ext:
+                self.ext = price
+                self.ext_seq = seq
+                self.bars = 0
+            else:
+                self.bars += 1
+                if self.bars >= self.confirm and thr > 0 and (price - self.ext) >= thr:
+                    self.prev_low = self.swing_low
+                    self.swing_low = self.ext
+                    self.low_seq = self.ext_seq
+                    self.leg = 1
+                    self.ext = price
+                    self.ext_seq = seq
+                    self.bars = 0
+
+
 class FeatureEngine:
     """吃 tick / bidask（與錄製/即時同格式的 dict），增量維護特徵。"""
 
     def __init__(self, tick_size_fn, time_windows=None, event_windows=None,
-                 breakout_lookback_ticks: int = 100, velocity_window_ms: int = 1000):
+                 breakout_lookback_ticks: int = 100, velocity_window_ms: int = 1000,
+                 swing_reversal_ticks: float = 3.0, swing_confirm_ticks: int = 3,
+                 vwap_slope_window_ms: int = 3000):
         self._tick_size = tick_size_fn
         self._tw_spec = time_windows or DEFAULT_TIME_WINDOWS
         self._ew_spec = event_windows or DEFAULT_EVENT_WINDOWS
@@ -219,6 +296,13 @@ class FeatureEngine:
         self._ewins = {lab: _CountWin(n) for lab, n in self._ew_spec}
         self._lookback = max(2, breakout_lookback_ticks)
         self._vel_span = velocity_window_ms * 1_000_000
+        # BED 空方結構
+        self._open_price = 0.0
+        self._swing = _SwingTracker(tick_size_fn, swing_reversal_ticks,
+                                    swing_confirm_ticks)
+        self._vwap_span = vwap_slope_window_ms * 1_000_000
+        self._vwap_hist: deque = deque()      # (t_ns, vwap) 供斜率
+        self._vwap_slope = 0.0
         # 即時狀態
         self.code = ""
         self.last_price = 0.0
@@ -268,6 +352,8 @@ class FeatureEngine:
         if price <= 0 or vol <= 0:
             return
         self.last_price = price
+        if self._open_price <= 0:
+            self._open_price = price
         side = int(TradeSide.from_tick_type(tick.get("tick_type", 0)))
         t_ns = parse_exchange_ns(tick.get("time", "")) or (self._last_t_ns + 1)
         self._last_t_ns = t_ns
@@ -303,6 +389,16 @@ class FeatureEngine:
             v = (price - p0) / dt if dt > 0 else 0.0
             self._accel = v - self._velocity
             self._velocity = v
+        # BED：swing 擺動點（因果）+ VWAP 斜率
+        self._swing.update(price, self._last_seq)
+        cur_vwap = self._pv_sum / self._v_sum if self._v_sum > 0 else price
+        self._vwap_hist.append((t_ns, cur_vwap))
+        while self._vwap_hist and t_ns - self._vwap_hist[0][0] > self._vwap_span:
+            self._vwap_hist.popleft()
+        if len(self._vwap_hist) >= 2:
+            vt0, vv0 = self._vwap_hist[0]
+            vdt = (t_ns - vt0) / 1e9
+            self._vwap_slope = (cur_vwap - vv0) / vdt if vdt > 0 else 0.0
         # 成交歸屬最佳檔（供 QueueCollapse / Replenishment）
         if self._has_ba:
             if abs(price - self._bid_p[0]) < 1e-9:
@@ -454,6 +550,12 @@ class FeatureEngine:
             price_velocity=round(self._velocity, 4),
             price_accel=round(self._accel, 4),
             price_range_ticks=round(prange, 2),
+            open_price=self._open_price,
+            vwap_slope=round(self._vwap_slope, 5),
+            swing_high=self._swing.swing_high or 0.0,
+            swing_low=self._swing.swing_low or 0.0,
+            prev_swing_high=self._swing.prev_high or 0.0,
+            prev_swing_low=self._swing.prev_low or 0.0,
             bid_consumed=self._bid_consumed, bid_cancelled=self._bid_cancelled,
             bid_replenished=self._bid_replenished,
             ask_consumed=self._ask_consumed, ask_cancelled=self._ask_cancelled,
