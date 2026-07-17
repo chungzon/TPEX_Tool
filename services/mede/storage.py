@@ -181,6 +181,8 @@ class SqliteStorage(Storage):
         self._conn.commit()
 
     def read_events(self, code: str, trade_date: str) -> list[dict]:
+        if not os.path.exists(self._db_path(trade_date)):
+            return []
         self.open(trade_date)
         cur = self._conn.execute(
             f"SELECT {','.join(self._EVENT_COLS)} FROM mede_event "
@@ -203,6 +205,8 @@ class SqliteStorage(Storage):
         return [r[0] for r in cur.fetchall()]
 
     def read_ticks(self, code: str, trade_date: str) -> list[dict]:
+        if not os.path.exists(self._db_path(trade_date)):
+            return []                      # 不為缺檔日建立空檔（避免產生 0-tick 垃圾檔）
         self.open(trade_date)
         cur = self._conn.execute(
             f"SELECT {','.join(TICK_COLS)} FROM raw_tick WHERE code=? ORDER BY seq",
@@ -210,6 +214,8 @@ class SqliteStorage(Storage):
         return [dict(zip(TICK_COLS, r)) for r in cur.fetchall()]
 
     def read_bidasks(self, code: str, trade_date: str) -> list[dict]:
+        if not os.path.exists(self._db_path(trade_date)):
+            return []
         self.open(trade_date)
         cur = self._conn.execute(
             f"SELECT {','.join(BIDASK_COLS)} FROM raw_bidask WHERE code=? ORDER BY seq",

@@ -17,6 +17,8 @@ from services.mede.config import MedeConfig
 from services.mede.engine import MedeEngine
 from services.mede.enums import StateType
 from services.mede.tick_size import tw_tick_size
+from services.mede.detection_service import DetectionService
+from services.mede.backtest import BedBacktestParams
 
 _MEDE_CFG_KEY = "mede"
 
@@ -45,6 +47,16 @@ class BedViewModel(BaseViewModel):
     chart_data = ObservableProperty(None)      # dict：序列 + 事件標記
     status_msg = ObservableProperty("")
 
+    # --- 回測（Phase 8）---
+    bt_dates = ObservableProperty(None)        # list[str]
+    bt_codes = ObservableProperty(None)        # list[str]
+    bt_summary = ObservableProperty(None)      # dict：績效卡
+    bt_trades = ObservableProperty(None)       # list[dict]：交易明細
+    bt_chart = ObservableProperty(None)        # dict：淨值曲線 + 分數-勝率
+    bt_patterns = ObservableProperty(None)     # list[dict]：Pattern 比較
+    bt_msg = ObservableProperty("")
+    bt_running = ObservableProperty(False)
+
     REFRESH_INTERVAL = 0.4
 
     def __init__(self, config: ConfigService, shioaji_svc):
@@ -52,6 +64,7 @@ class BedViewModel(BaseViewModel):
         self._config = config
         self._sj = shioaji_svc
         self._cfg = MedeConfig.from_dict(config.get(_MEDE_CFG_KEY))
+        self._detect = DetectionService(self._cfg)
         self._code = ""
         self._eng: MedeEngine | None = None
         self._lock = threading.Lock()
@@ -200,6 +213,95 @@ class BedViewModel(BaseViewModel):
                 "events": [(s - base, pr, d) for (s, pr, tp, d) in events],
                 "bear_score": fusion.final_bear_score,
             }
+
+    # ---------------- 回測（Phase 8）----------------
+    def refresh_bt_dates(self):
+        def _work():
+            dates = self._detect.list_dates()
+            self.bt_dates = dates
+            if dates:
+                self.load_bt_codes(dates[0])
+            else:
+                self.bt_codes = []
+                self.bt_msg = "尚無錄製資料（回測需先於盤中錄製）"
+        threading.Thread(target=_work, daemon=True).start()
+
+    def load_bt_codes(self, trade_date: str):
+        def _work():
+            try:
+                self.bt_codes = self._detect.list_recorded(trade_date)
+            except Exception as exc:
+                self.bt_codes = []
+                self.bt_msg = f"讀取代碼失敗：{exc}"
+        threading.Thread(target=_work, daemon=True).start()
+
+    def run_backtest(self, trade_date: str, code: str, params: dict):
+        if not trade_date or not code or "—" in (trade_date, code):
+            self.bt_msg = "請先選擇交易日與代碼"
+            return
+
+        def _work():
+            self.bt_running = True
+            self.bt_msg = f"回測中：{code} @ {trade_date} …"
+            try:
+                bp = BedBacktestParams(
+                    direction=-1,
+                    min_final_score=float(params.get("min_final_score", 75)),
+                    take_profit_ticks=float(params.get("take_profit_ticks", 6)),
+                    stop_loss_ticks=float(params.get("stop_loss_ticks", 4)),
+                    max_holding_ms=int(params.get("max_holding_ms", 60000)),
+                    slippage_ticks=float(params.get("slippage_ticks", 1)))
+                res = self._detect.backtest(code, trade_date, bp)
+            except Exception as exc:
+                self.bt_msg = f"回測失敗：{exc}"
+                self.bt_running = False
+                return
+            self._publish_bt(res)
+            self.bt_msg = (f"✓ {code} {trade_date}｜事件 {res.event_count}、"
+                           f"成交 {res.total_trades}（{res.data_mode}）")
+            self.bt_running = False
+
+        threading.Thread(target=_work, daemon=True).start()
+
+    def _publish_bt(self, res):
+        pf = res.profit_factor
+        self.bt_summary = {
+            "event_count": res.event_count, "tradable": res.tradable,
+            "total_trades": res.total_trades, "win_rate": res.win_rate,
+            "expectancy": res.expectancy_pct, "profit_factor": pf,
+            "total_return": res.total_return_pct, "mdd": res.max_drawdown_pct,
+            "avg_win": res.avg_win_pct, "avg_loss": res.avg_loss_pct,
+            "avg_mfe": res.avg_mfe_pct, "avg_mae": res.avg_mae_pct,
+            "avg_holding_ms": res.avg_holding_ms, "max_consec_losses": res.max_consec_losses,
+            "data_mode": res.data_mode,
+        }
+        self.bt_trades = [t.as_dict() for t in res.trades]
+        # 分數-勝率分桶
+        buckets = {}
+        for t in res.trades:
+            b = int(t.final_score // 5 * 5)
+            buckets.setdefault(b, []).append(1 if t.net_pnl_pct > 0 else 0)
+        score_wr = sorted(
+            [{"bucket": b, "win_rate": sum(v) / len(v) * 100, "n": len(v)}
+             for b, v in buckets.items()], key=lambda x: x["bucket"])
+        self.bt_chart = {
+            "equity": list(res.equity_curve),
+            "score_wr": score_wr,
+        }
+        # Pattern 比較
+        pat = {}
+        for t in res.trades:
+            key = t.pattern or "—"
+            pat.setdefault(key, []).append(t)
+        rows = []
+        for key, ts in pat.items():
+            rets = [x.net_pnl_pct for x in ts]
+            wins = [r for r in rets if r > 0]
+            rows.append({"pattern": key, "n": len(ts),
+                         "win_rate": len(wins) / len(ts) * 100,
+                         "avg_ret": sum(rets) / len(rets),
+                         "expectancy": sum(rets) / len(rets)})
+        self.bt_patterns = sorted(rows, key=lambda x: -x["n"])
 
     def shutdown(self):
         self._stop.set()

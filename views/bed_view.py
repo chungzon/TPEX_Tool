@@ -29,7 +29,7 @@ class BedView(ctk.CTkFrame):
         super().__init__(parent, fg_color="transparent")
         self.vm = viewmodel
         self._tiles: dict[str, ctk.CTkLabel] = {}
-        self._canvas = None
+        self._px_canvas = None
         self._ax_price = None
         self._ax_score = None
         self._build_ui()
@@ -48,8 +48,19 @@ class BedView(ctk.CTkFrame):
         ctk.CTkLabel(hdr, text="拉高失敗→跌破VWAP→Lower High→跌破微結構低點→空方發動（研究訊號，不下單）",
                      font=ctk.CTkFont(size=11), text_color="#8a94a0").pack(side="left")
 
+        # 模式切換：即時觀察 / 歷史回測（共用同一 core）
+        self.mode_switch = ctk.CTkSegmentedButton(
+            container, values=["即時觀察", "歷史回測"], command=self._set_mode)
+        self.mode_switch.set("即時觀察")
+        self.mode_switch.pack(anchor="w", padx=24, pady=(2, 6))
+
+        self._live = ctk.CTkFrame(container, fg_color="transparent")
+        self._bt = ctk.CTkFrame(container, fg_color="transparent")
+        self._live.pack(fill="both", expand=True)
+        self._build_backtest(self._bt)
+
         # 控制列
-        ctrl = ctk.CTkFrame(container, corner_radius=12)
+        ctrl = ctk.CTkFrame(self._live, corner_radius=12)
         ctrl.pack(fill="x", padx=24, pady=6)
         row = ctk.CTkFrame(ctrl, fg_color="transparent")
         row.pack(fill="x", padx=16, pady=12)
@@ -70,7 +81,7 @@ class BedView(ctk.CTkFrame):
         self.msg_label.pack(anchor="w", padx=16, pady=(0, 10))
 
         # 狀態卡
-        st = ctk.CTkFrame(container, corner_radius=12)
+        st = ctk.CTkFrame(self._live, corner_radius=12)
         st.pack(fill="x", padx=24, pady=6)
         grid = ctk.CTkFrame(st, fg_color="transparent")
         grid.pack(fill="x", padx=12, pady=12)
@@ -89,12 +100,12 @@ class BedView(ctk.CTkFrame):
             self._tiles[k] = v
 
         # 主圖
-        chart_card = ctk.CTkFrame(container, corner_radius=12)
+        chart_card = ctk.CTkFrame(self._live, corner_radius=12)
         chart_card.pack(fill="both", expand=True, padx=24, pady=6)
         self._build_chart(chart_card)
 
         # 五檔 + Detector
-        mid = ctk.CTkFrame(container, fg_color="transparent")
+        mid = ctk.CTkFrame(self._live, fg_color="transparent")
         mid.pack(fill="both", expand=True, padx=24, pady=6)
         left = ctk.CTkFrame(mid, corner_radius=12)
         left.pack(side="left", fill="both", expand=True, padx=(0, 6))
@@ -108,11 +119,159 @@ class BedView(ctk.CTkFrame):
         self._build_detector_tree(right)
 
         # 事件表
-        ev = ctk.CTkFrame(container, corner_radius=12)
+        ev = ctk.CTkFrame(self._live, corner_radius=12)
         ev.pack(fill="both", expand=True, padx=24, pady=(6, 16))
         ctk.CTkLabel(ev, text="空方事件紀錄", font=ctk.CTkFont(size=13, weight="bold")).pack(
             anchor="w", padx=12, pady=(10, 2))
         self._build_event_tree(ev)
+
+    def _set_mode(self, mode: str):
+        if mode == "歷史回測":
+            self._live.pack_forget()
+            self._bt.pack(fill="both", expand=True)
+            self.vm.refresh_bt_dates()
+        else:
+            self._bt.pack_forget()
+            self._live.pack(fill="both", expand=True)
+
+    # ---------------- 回測面板（Phase 8）----------------
+    def _build_backtest(self, parent):
+        self._bt_tiles: dict[str, ctk.CTkLabel] = {}
+        self._bt_entries: dict[str, ctk.CTkEntry] = {}
+        # 條件表單
+        form = ctk.CTkFrame(parent, corner_radius=12)
+        form.pack(fill="x", padx=24, pady=6)
+        r1 = ctk.CTkFrame(form, fg_color="transparent")
+        r1.pack(fill="x", padx=16, pady=(12, 4))
+        ctk.CTkLabel(r1, text="交易日：", font=ctk.CTkFont(size=13)).pack(side="left")
+        self.bt_date_menu = ctk.CTkOptionMenu(r1, width=130, values=["—"],
+                                              command=self._on_pick_bt_date)
+        self.bt_date_menu.pack(side="left", padx=(4, 10))
+        ctk.CTkLabel(r1, text="代碼：", font=ctk.CTkFont(size=13)).pack(side="left")
+        self.bt_code_menu = ctk.CTkOptionMenu(r1, width=100, values=["—"])
+        self.bt_code_menu.pack(side="left", padx=(4, 10))
+        self.bt_run_btn = ctk.CTkButton(
+            r1, text="執行回測", width=100, height=32, fg_color="#b3453b",
+            hover_color="#8f372f", font=ctk.CTkFont(size=13, weight="bold"),
+            command=self._on_run_bt)
+        self.bt_run_btn.pack(side="left", padx=(6, 0))
+        self.bt_refresh_btn = ctk.CTkButton(
+            r1, text="⟳", width=36, height=32, fg_color="#455a64",
+            hover_color="#37474f", command=lambda: self.vm.refresh_bt_dates())
+        self.bt_refresh_btn.pack(side="left", padx=(8, 0))
+        # 參數
+        r2 = ctk.CTkFrame(form, fg_color="transparent")
+        r2.pack(fill="x", padx=16, pady=(0, 12))
+        for key, lab, dflt in [("min_final_score", "空方分門檻", "75"),
+                               ("take_profit_ticks", "停利(跳)", "6"),
+                               ("stop_loss_ticks", "停損(跳)", "4"),
+                               ("max_holding_ms", "最大持有(ms)", "60000"),
+                               ("slippage_ticks", "滑價(跳)", "1")]:
+            ctk.CTkLabel(r2, text=lab + "：", font=ctk.CTkFont(size=12)).pack(side="left")
+            e = ctk.CTkEntry(r2, width=64)
+            e.insert(0, dflt)
+            e.pack(side="left", padx=(2, 12))
+            self._bt_entries[key] = e
+        self.bt_msg_label = ctk.CTkLabel(form, text="選交易日與代碼後執行回測",
+                                         font=ctk.CTkFont(size=12), text_color="#9aa4ad")
+        self.bt_msg_label.pack(anchor="w", padx=16, pady=(0, 10))
+
+        # 績效卡
+        perf = ctk.CTkFrame(parent, corner_radius=12)
+        perf.pack(fill="x", padx=24, pady=6)
+        pg = ctk.CTkFrame(perf, fg_color="transparent")
+        pg.pack(fill="x", padx=12, pady=12)
+        specs = [("trades", "成交數"), ("win_rate", "勝率%"), ("expectancy", "期望值%"),
+                 ("profit_factor", "獲利因子"), ("total_return", "總報酬%"), ("mdd", "最大回撤%"),
+                 ("avg_mfe", "平均MFE%"), ("avg_mae", "平均MAE%"), ("max_consec_losses", "最長連敗"),
+                 ("data_mode", "資料模式")]
+        for i, (k, lab) in enumerate(specs):
+            cell = ctk.CTkFrame(pg, corner_radius=8)
+            cell.grid(row=i // 5, column=i % 5, padx=5, pady=5, sticky="nsew")
+            pg.grid_columnconfigure(i % 5, weight=1)
+            ctk.CTkLabel(cell, text=lab, font=ctk.CTkFont(size=11), text_color="#888").pack(pady=(6, 0))
+            v = ctk.CTkLabel(cell, text="—", font=ctk.CTkFont(size=15, weight="bold"))
+            v.pack(pady=(0, 6))
+            self._bt_tiles[k] = v
+
+        # 淨值曲線 + 分數-勝率
+        chart_card = ctk.CTkFrame(parent, corner_radius=12)
+        chart_card.pack(fill="both", expand=True, padx=24, pady=6)
+        self._build_bt_chart(chart_card)
+
+        # Pattern 比較
+        pc = ctk.CTkFrame(parent, corner_radius=12)
+        pc.pack(fill="x", padx=24, pady=6)
+        ctk.CTkLabel(pc, text="Pattern 比較", font=ctk.CTkFont(size=13, weight="bold")).pack(
+            anchor="w", padx=12, pady=(10, 2))
+        self._build_pattern_tree(pc)
+
+        # 交易明細
+        td = ctk.CTkFrame(parent, corner_radius=12)
+        td.pack(fill="both", expand=True, padx=24, pady=(6, 16))
+        ctk.CTkLabel(td, text="交易明細", font=ctk.CTkFont(size=13, weight="bold")).pack(
+            anchor="w", padx=12, pady=(10, 2))
+        self._build_trade_tree(td)
+
+    def _build_bt_chart(self, parent):
+        if not _MPL:
+            ctk.CTkLabel(parent, text="（未安裝 matplotlib）", text_color="#ef5350").pack(pady=20)
+            self._bt_canvas = None
+            return
+        fig = Figure(figsize=(11, 3.6), dpi=100, facecolor=_BG)
+        self._ax_eq = fig.add_subplot(1, 2, 1, facecolor=_BG)
+        self._ax_wr = fig.add_subplot(1, 2, 2, facecolor=_BG)
+        for ax in (self._ax_eq, self._ax_wr):
+            ax.tick_params(colors="#9aa4ad", labelsize=8)
+            for sp in ax.spines.values():
+                sp.set_color(_GRID)
+            ax.grid(True, color=_GRID, linewidth=0.5, alpha=0.5)
+        self._bt_fig = fig
+        self._bt_canvas = FigureCanvasTkAgg(fig, parent)
+        self._bt_canvas.get_tk_widget().pack(fill="both", expand=True, padx=8, pady=8)
+
+    def _build_pattern_tree(self, parent):
+        self._tree_style()
+        frame = ctk.CTkFrame(parent, fg_color="transparent")
+        frame.pack(fill="x", padx=8, pady=(0, 10))
+        cols = ("pattern", "n", "win_rate", "avg_ret")
+        tree = ttk.Treeview(frame, columns=cols, show="headings", height=4, style="Bed.Treeview")
+        for c, txt, w, anc in [("pattern", "型態", 260, "w"), ("n", "筆數", 60, "e"),
+                               ("win_rate", "勝率%", 70, "e"), ("avg_ret", "平均報酬%", 90, "e")]:
+            tree.heading(c, text=txt); tree.column(c, width=w, anchor=anc, stretch=(c == "pattern"))
+        tree.pack(fill="x", expand=True)
+        self._pat_tree = tree
+
+    def _build_trade_tree(self, parent):
+        frame = ctk.CTkFrame(parent, fg_color="transparent")
+        frame.pack(fill="both", expand=True, padx=8, pady=(0, 10))
+        cols = ("pattern", "dir", "trigger", "entry", "exit", "net", "mfe", "mae", "outcome", "reason")
+        tree = ttk.Treeview(frame, columns=cols, show="headings", height=8, style="Bed.Treeview")
+        for c, txt, w, anc in [("pattern", "型態", 150, "w"), ("dir", "方向", 44, "center"),
+                               ("trigger", "觸發", 60, "e"), ("entry", "進場", 60, "e"),
+                               ("exit", "出場", 60, "e"), ("net", "淨%", 60, "e"),
+                               ("mfe", "MFE%", 60, "e"), ("mae", "MAE%", 60, "e"),
+                               ("outcome", "結果", 64, "center"), ("reason", "出場原因", 120, "w")]:
+            tree.heading(c, text=txt); tree.column(c, width=w, anchor=anc, stretch=(c == "reason"))
+        tree.tag_configure("win", foreground="#26a69a")
+        tree.tag_configure("loss", foreground="#ef5350")
+        tree.pack(side="left", fill="both", expand=True)
+        sb = ttk.Scrollbar(frame, orient="vertical", command=tree.yview)
+        tree.configure(yscrollcommand=sb.set); sb.pack(side="right", fill="y")
+        self._trade_tree = tree
+
+    def _on_pick_bt_date(self, date):
+        if date and date != "—":
+            self.vm.load_bt_codes(date)
+
+    def _on_run_bt(self):
+        params = {}
+        for k, e in self._bt_entries.items():
+            try:
+                params[k] = float(e.get())
+            except ValueError:
+                params[k] = 0
+        self.vm.run_backtest(self.bt_date_menu.get(), self.bt_code_menu.get(), params)
 
     def _tree_style(self):
         style = ttk.Style()
@@ -140,8 +299,8 @@ class BedView(ctk.CTkFrame):
                 sp.set_color(_GRID)
             ax.grid(True, color=_GRID, linewidth=0.5, alpha=0.5)
         self._fig = fig
-        self._canvas = FigureCanvasTkAgg(fig, parent)
-        self._canvas.get_tk_widget().pack(fill="both", expand=True, padx=8, pady=8)
+        self._px_canvas = FigureCanvasTkAgg(fig, parent)
+        self._px_canvas.get_tk_widget().pack(fill="both", expand=True, padx=8, pady=8)
 
     def _build_book_tree(self, parent):
         self._tree_style()
@@ -206,6 +365,14 @@ class BedView(ctk.CTkFrame):
         self.vm.bind("detector_rows", self._on_detectors)
         self.vm.bind("event_rows", self._on_events)
         self.vm.bind("chart_data", self._on_chart)
+        self.vm.bind("bt_dates", self._on_bt_dates)
+        self.vm.bind("bt_codes", self._on_bt_codes)
+        self.vm.bind("bt_summary", self._on_bt_summary)
+        self.vm.bind("bt_chart", self._on_bt_chart)
+        self.vm.bind("bt_patterns", self._on_bt_patterns)
+        self.vm.bind("bt_trades", self._on_bt_trades)
+        self.vm.bind("bt_msg", self._on_bt_msg)
+        self.vm.bind("bt_running", self._on_bt_running)
 
     def _on_tracking(self, v):
         def _u():
@@ -318,5 +485,91 @@ class BedView(ctk.CTkFrame):
             axs.axhline(75, color="#ffb74d", linewidth=0.6, linestyle="--", alpha=0.6)  # 觸發帶
             axs.set_ylim(0, 100)
             axs.set_ylabel("空方分", color="#9aa4ad", fontsize=8)
-            self._canvas.draw_idle()
+            self._px_canvas.draw_idle()
+        self.after(0, _u)
+
+    # ---------------- 回測 callbacks ----------------
+    def _on_bt_dates(self, dates):
+        def _u():
+            vals = list(dates) if dates else ["—"]
+            self.bt_date_menu.configure(values=vals); self.bt_date_menu.set(vals[0])
+        self.after(0, _u)
+
+    def _on_bt_codes(self, codes):
+        def _u():
+            vals = list(codes) if codes else ["—"]
+            self.bt_code_menu.configure(values=vals); self.bt_code_menu.set(vals[0])
+        self.after(0, _u)
+
+    def _on_bt_msg(self, v):
+        clr = "#4ECDC4" if v.startswith("✓") else ("#FF6B6B" if ("失敗" in v or "請先" in v) else "#9aa4ad")
+        self.after(0, lambda: self.bt_msg_label.configure(text=v, text_color=clr))
+
+    def _on_bt_running(self, running):
+        self.after(0, lambda: self.bt_run_btn.configure(
+            state="disabled" if running else "normal",
+            text="回測中…" if running else "執行回測"))
+
+    def _on_bt_summary(self, d):
+        if not d:
+            return
+        def fmt(k, v):
+            if k in ("win_rate", "expectancy", "total_return", "mdd", "avg_mfe", "avg_mae"):
+                return f"{v:+.2f}" if k in ("expectancy", "total_return", "avg_mfe", "avg_mae") else f"{v:.1f}"
+            if k == "profit_factor":
+                return "∞" if v == float("inf") else f"{v:.2f}"
+            if k == "data_mode":
+                return v
+            return f"{v}"
+        def _u():
+            for k, lab in self._bt_tiles.items():
+                if k in d:
+                    lab.configure(text=fmt(k, d[k]))
+        self.after(0, _u)
+
+    def _on_bt_patterns(self, rows):
+        if rows is None:
+            return
+        def _u():
+            self._pat_tree.delete(*self._pat_tree.get_children())
+            for r in rows:
+                self._pat_tree.insert("", "end", values=(
+                    r["pattern"], r["n"], f"{r['win_rate']:.0f}", f"{r['avg_ret']:+.3f}"))
+        self.after(0, _u)
+
+    def _on_bt_trades(self, rows):
+        if rows is None:
+            return
+        def _u():
+            self._trade_tree.delete(*self._trade_tree.get_children())
+            for t in rows:
+                tag = "win" if t["net_pnl_pct"] > 0 else "loss"
+                self._trade_tree.insert("", "end", values=(
+                    t["pattern"], "▼空" if t["direction"] < 0 else "▲多",
+                    f"{t['trigger_price']:g}", f"{t['entry_price']:g}", f"{t['exit_price']:g}",
+                    f"{t['net_pnl_pct']:+.3f}", f"{t['mfe_pct']:+.2f}", f"{t['mae_pct']:+.2f}",
+                    t["outcome"], t["exit_reason"]), tags=(tag,))
+        self.after(0, _u)
+
+    def _on_bt_chart(self, d):
+        if not d or not _MPL or getattr(self, "_bt_canvas", None) is None:
+            return
+        def _u():
+            eq, wr = self._ax_eq, self._ax_wr
+            eq.clear(); wr.clear()
+            for ax in (eq, wr):
+                ax.set_facecolor(_BG); ax.tick_params(colors="#9aa4ad", labelsize=8)
+                ax.grid(True, color=_GRID, linewidth=0.5, alpha=0.5)
+            equity = d.get("equity") or []
+            if equity:
+                eq.plot(range(len(equity)), [(v - 1) * 100 for v in equity],
+                        color="#ef5350", linewidth=1.2)
+            eq.set_title("淨值曲線 (%)", color="#c0c0c0", fontsize=9)
+            sw = d.get("score_wr") or []
+            if sw:
+                xs = [f"{s['bucket']}" for s in sw]
+                wr.bar(xs, [s["win_rate"] for s in sw], color="#5c6bc0")
+            wr.set_title("空方分數 vs 勝率%", color="#c0c0c0", fontsize=9)
+            wr.set_ylim(0, 100)
+            self._bt_canvas.draw_idle()
         self.after(0, _u)
