@@ -1026,6 +1026,25 @@ class DbService:
             })
         return out
 
+    def get_latest_total_shares(self) -> dict[str, int]:
+        """每檔最新一期集保總股數（各級 shares 加總 ≈ 發行/流通股數）。
+
+        Returns ``{stock_code: total_shares}``。供周轉率（成交量 ÷ 流通股數）
+        計算之分母使用。集保約涵蓋全部已無實體化股票，作發行股數近似。
+        """
+        cur = self._cursor()
+        cur.execute("""
+            SELECT d.stock_code, SUM(d.shares)
+            FROM StockHolderDistribution d
+            JOIN (
+                SELECT stock_code, MAX(report_date) AS mrd
+                FROM StockHolderDistribution
+                GROUP BY stock_code
+            ) m ON d.stock_code = m.stock_code AND d.report_date = m.mrd
+            GROUP BY d.stock_code
+        """)
+        return {r[0]: int(r[1] or 0) for r in cur.fetchall()}
+
     # -- Margin daily trade (融資融券) --------------------------------------
 
     def save_margin_daily_batch(self, rows: list[dict]) -> int:

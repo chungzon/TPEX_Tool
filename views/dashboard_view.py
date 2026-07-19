@@ -64,20 +64,24 @@ class DashboardView(ctk.CTkFrame):
             1, 2, colspan=2, title="三大法人資金流（全市場・億元）")
         self._build_insti_body(insti_body)
 
-        # Row 2-3（規劃中面板佔位磚，逐格擴充）
+        # Row 2-3 左：高周轉率 Top20（跨 2 欄、2 列的大格）
+        self.turnover_card, turnover_body = self._tile(
+            2, 0, colspan=2, rowspan=2, title="高周轉率 Top20（量 > 1000 張）")
+        self._build_turnover_body(turnover_body)
+
+        # Row 2-3 右：規劃中面板佔位磚（col 2-3）
         planned = [
-            ("市場廣度", "漲跌家數・站上均線比例・創新高低"),
-            ("主力分點淨買", "排隔日沖後全市場主力淨買力道榜"),
-            ("投信連續買超", "投信連買天數榜（作帳/認養訊號）"),
-            ("大戶吸籌", "集保大戶%上升・散戶%下降最快"),
-            ("融資券警訊", "融資急增・券資比偏高（軋空潛力）"),
-            ("隔日沖風險", "今日成交由隔日沖分點主導個股"),
-            ("集中度黃金交叉", "短期集中度即將上穿長期（籌碼轉強）"),
-            ("資料完整度", "各資料源最後日・分點缺漏・排程狀態"),
+            (2, 2, "投信連續買超", "投信連買天數榜（作帳/認養訊號）"),
+            (2, 3, "大戶吸籌", "集保大戶%上升・散戶%下降最快"),
+            (3, 2, "融資券警訊", "融資急增・券資比偏高（軋空潛力）"),
+            (3, 3, "隔日沖風險", "今日成交由隔日沖分點主導個股"),
+            # Row 4：其餘規劃面板
+            (4, 0, "市場廣度", "漲跌家數・站上均線比例・創新高低"),
+            (4, 1, "主力分點淨買", "排隔日沖後全市場主力淨買力道榜"),
+            (4, 2, "集中度黃金交叉", "短期集中度即將上穿長期（籌碼轉強）"),
+            (4, 3, "資料完整度", "各資料源最後日・分點缺漏・排程狀態"),
         ]
-        for i, (title, desc) in enumerate(planned):
-            r = 2 + i // _COLS
-            c = i % _COLS
+        for r, c, title, desc in planned:
             self._placeholder_tile(r, c, title, desc)
 
     def _tile(self, row, col, colspan=1, rowspan=1, title="",
@@ -157,6 +161,41 @@ class DashboardView(ctk.CTkFrame):
                                                text_color="gray")
         self.insti_status_label.pack(anchor="w", padx=12, pady=(0, 2))
 
+    # ---- 高周轉率面板內容 ----
+    # 欄位：(key, 標題, 邏輯寬度px, 對齊, 欄權重)
+    _TURN_COLS = [
+        ("rank", "#", 26, "center", 0),
+        ("mkt", "", 34, "center", 0),
+        ("code", "代碼", 50, "center", 0),
+        ("name", "名稱", 88, "w", 1),
+        ("close", "收盤", 62, "e", 0),
+        ("vol", "量(張)", 66, "e", 0),
+        ("turn", "周轉率%", 66, "e", 0),
+    ]
+    # 市場別徽章配色（避開紅漲/綠跌語意）
+    _MKT_STYLE = {"上市": ("市", "#3d6fb4"), "上櫃": ("櫃", "#b07a2e")}
+
+    def _build_turnover_body(self, body):
+        self.turnover_table = ctk.CTkFrame(body, fg_color="transparent")
+        self.turnover_table.pack(fill="both", expand=True, padx=10, pady=(2, 2))
+        for i, (_k, _t, w, _a, weight) in enumerate(self._TURN_COLS):
+            self.turnover_table.grid_columnconfigure(
+                i, weight=weight, minsize=w)
+        # 表頭
+        for i, (_k, title, _w, anc, _wt) in enumerate(self._TURN_COLS):
+            ctk.CTkLabel(self.turnover_table, text=title,
+                         font=ctk.CTkFont(size=12, weight="bold"),
+                         text_color="#8a8a8e",
+                         anchor=("center" if anc == "center"
+                                 else "e" if anc == "e" else "w")).grid(
+                row=0, column=i, sticky="ew", padx=3, pady=(0, 4))
+        self._turnover_row_widgets: list = []
+
+        self.turnover_status_label = ctk.CTkLabel(body, text="尚未載入",
+                                                  font=ctk.CTkFont(size=11),
+                                                  text_color="gray")
+        self.turnover_status_label.pack(anchor="w", padx=12, pady=(0, 2))
+
     # ================================================================ Bindings
     def _bind_vm(self):
         self.vm.bind("index_quote", self._on_quote)
@@ -166,6 +205,8 @@ class DashboardView(ctk.CTkFrame):
         self.vm.bind("insti_today", self._on_insti_today)
         self.vm.bind("insti_trend", self._on_insti_trend)
         self.vm.bind("insti_status", self._on_insti_status)
+        self.vm.bind("turnover_rows", self._on_turnover_rows)
+        self.vm.bind("turnover_status", self._on_turnover_status)
 
     def _on_status(self, v):
         self.after(0, lambda: self.status_label.configure(text=v or ""))
@@ -182,6 +223,58 @@ class DashboardView(ctk.CTkFrame):
 
     def _on_insti_status(self, v):
         self.after(0, lambda: self.insti_status_label.configure(text=v or ""))
+
+    def _on_turnover_status(self, v):
+        self.after(0, lambda: self.turnover_status_label.configure(text=v or ""))
+
+    def _on_turnover_rows(self, rows):
+        self.after(0, lambda: self._render_turnover(rows))
+
+    def _render_turnover(self, rows):
+        for w in getattr(self, "_turnover_row_widgets", []):
+            w.destroy()
+        self._turnover_row_widgets = []
+        if not rows:
+            return
+        for idx, r in enumerate(rows, 1):
+            stripe = "#1d1e21" if idx % 2 == 0 else "transparent"
+            rowf = ctk.CTkFrame(self.turnover_table, fg_color=stripe,
+                                corner_radius=4)
+            rowf.grid(row=idx, column=0, columnspan=len(self._TURN_COLS),
+                      sticky="ew", pady=1)
+            for i, (_k, _t, w, _a, weight) in enumerate(self._TURN_COLS):
+                rowf.grid_columnconfigure(i, weight=weight, minsize=w)
+
+            turn = r["turnover_pct"]
+            turn_clr = cs.RED if turn >= 20 else cs.TXT
+            cells = [
+                ("rank", str(idx), "#7a7a7e", "center", False),
+                ("code", r["stock_code"], "#d4d4d4", "center", False),
+                ("name", r["stock_name"], "#e6e6e6", "w", False),
+                ("close", f"{r['close']:,.2f}", "#c7c7cc", "e", False),
+                ("vol", f"{r['volume_lots']:,}", "#c7c7cc", "e", False),
+                ("turn", f"{turn:.2f}", turn_clr, "e", True),
+            ]
+            # 市場別小徽章（欄 1）
+            mkt = r.get("market", "")
+            label, color = self._MKT_STYLE.get(mkt, ("", "#555555"))
+            if label:
+                ctk.CTkLabel(rowf, text=label, width=20, height=18,
+                             corner_radius=4, fg_color=color,
+                             text_color="#ffffff",
+                             font=ctk.CTkFont(size=10, weight="bold")).grid(
+                    row=0, column=1, padx=3, pady=2)
+            # 其餘資料欄（rank 在 0，market 在 1，其餘 2..6）
+            col_map = {"rank": 0, "code": 2, "name": 3, "close": 4,
+                       "vol": 5, "turn": 6}
+            for key, text, clr, anc, bold in cells:
+                ctk.CTkLabel(
+                    rowf, text=text, text_color=clr,
+                    font=ctk.CTkFont(size=12, weight="bold" if bold else "normal"),
+                    anchor=("center" if anc == "center"
+                            else "e" if anc == "e" else "w")).grid(
+                    row=0, column=col_map[key], sticky="ew", padx=3, pady=2)
+            self._turnover_row_widgets.append(rowf)
 
     def _on_insti_today(self, q):
         self.after(0, lambda: self._render_insti_kpi(q))

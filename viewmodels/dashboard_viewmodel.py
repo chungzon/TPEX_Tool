@@ -43,8 +43,13 @@ class DashboardViewModel(BaseViewModel):
     insti_today = ObservableProperty(None)       # dict | None
     insti_trend = ObservableProperty(None)       # list[dict] | None
     insti_status = ObservableProperty("尚未載入")
+    # 高周轉率排行
+    turnover_rows = ObservableProperty(None)     # list[dict] | None
+    turnover_status = ObservableProperty("尚未載入")
 
     _INSTI_TREND_DAYS = 10
+    _TURNOVER_MIN_LOTS = 1000
+    _TURNOVER_TOP_N = 20
 
     def __init__(self):
         super().__init__()
@@ -52,6 +57,7 @@ class DashboardViewModel(BaseViewModel):
         self._thread: threading.Thread | None = None
         self._series: list[tuple[str, float]] = []
         self._insti_thread: threading.Thread | None = None
+        self._turnover_thread: threading.Thread | None = None
 
     # ------------------------------------------------------------------
 
@@ -63,12 +69,14 @@ class DashboardViewModel(BaseViewModel):
         self._thread = threading.Thread(target=self._loop, daemon=True)
         self._thread.start()
         self._start_insti()
+        self._start_turnover()
 
     def refresh(self) -> None:
         """手動刷新一次（不影響輪詢執行緒）。"""
         threading.Thread(target=self._fetch_once, args=(True,),
                          daemon=True).start()
         self._start_insti()
+        self._start_turnover()
 
     # ------------------------------------------------------------------
     # 三大法人資金流
@@ -97,6 +105,46 @@ class DashboardViewModel(BaseViewModel):
         self.insti_trend = trend
         self.insti_today = trend[-1]
         self.insti_status = f"三大法人（全市場總計）　資料日 {trend[-1]['date']}"
+
+    # ------------------------------------------------------------------
+    # 高周轉率排行
+    # ------------------------------------------------------------------
+
+    def _start_turnover(self) -> None:
+        if self._turnover_thread and self._turnover_thread.is_alive():
+            return
+        self._turnover_thread = threading.Thread(target=self._load_turnover,
+                                                 daemon=True)
+        self._turnover_thread.start()
+
+    def _load_turnover(self) -> None:
+        from services.db_service import DbService
+        from services.turnover_service import latest_top_turnover
+
+        self.turnover_status = "計算高周轉率排行..."
+        db = DbService()
+        try:
+            db.connect()
+            date, rows = latest_top_turnover(
+                db, min_lots=self._TURNOVER_MIN_LOTS,
+                top_n=self._TURNOVER_TOP_N)
+        except Exception as e:  # noqa: BLE001
+            log.warning("load turnover failed: %s", e)
+            self.turnover_status = "高周轉率載入失敗（稍後重試）"
+            return
+        finally:
+            try:
+                db.close()
+            except Exception:
+                pass
+        if not rows:
+            self.turnover_status = "查無高周轉率資料"
+            return
+        self.turnover_rows = rows
+        self.turnover_status = (
+            f"資料日 {date}　量 > {self._TURNOVER_MIN_LOTS:,} 張、"
+            f"依周轉率排序 Top {self._TURNOVER_TOP_N}"
+        )
 
     # ------------------------------------------------------------------
 
