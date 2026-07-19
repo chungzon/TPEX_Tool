@@ -14,6 +14,7 @@ from viewmodels.bed_viewmodel import BedViewModel
 from viewmodels.signal_viewmodel import SignalViewModel
 from viewmodels.chip_swing_viewmodel import ChipSwingViewModel
 from viewmodels.dashboard_viewmodel import DashboardViewModel
+from viewmodels.turnover_monitor_viewmodel import TurnoverMonitorViewModel
 from views.broker_download_view import BrokerDownloadView
 from views.batch_download_view import BatchDownloadView
 from views.broker_analysis_view import BrokerAnalysisView
@@ -28,6 +29,7 @@ from views.bed_view import BedView
 from views.signal_view import SignalView
 from views.chip_swing_view import ChipSwingView
 from views.dashboard_view import DashboardView
+from views.turnover_monitor_view import TurnoverMonitorView
 from services.config_service import ConfigService
 from services.scheduler_service import SchedulerService
 
@@ -87,6 +89,14 @@ class MainWindow(ctk.CTk):
         self.dashboard_vm = DashboardViewModel()
         dashboard_view = DashboardView(tab_dash, self.dashboard_vm)
         dashboard_view.pack(fill="both", expand=True)
+
+        # Tab 0b: 高周轉率監控（沿用周轉率排行 + 主力型態/技術面）
+        tab_turn_mon = self.tabview.add("高周轉率監控")
+
+        self.turnover_monitor_vm = TurnoverMonitorViewModel()
+        turnover_monitor_view = TurnoverMonitorView(
+            tab_turn_mon, self.turnover_monitor_vm)
+        turnover_monitor_view.pack(fill="both", expand=True)
 
         # Tab 1: 上櫃分點資料下載
         tab1 = self.tabview.add("上櫃分點資料下載")
@@ -205,6 +215,7 @@ class MainWindow(ctk.CTk):
 
     def _on_close(self):
         self.dashboard_vm.shutdown()
+        self.turnover_monitor_vm.shutdown()
         self.broker_vm.shutdown()
         self.batch_vm.shutdown()
         self.analysis_vm.shutdown()
