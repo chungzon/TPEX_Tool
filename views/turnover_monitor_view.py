@@ -23,17 +23,19 @@ _MKT_STYLE = {"上市": ("市", "#3d6fb4"), "上櫃": ("櫃", "#b07a2e")}
 
 # (key, 標題, 寬px, 對齊, 權重)
 _COLS = [
-    ("rank", "#", 28, "center", 0),
+    ("rank", "#", 26, "center", 0),
     ("mkt", "", 30, "center", 0),
-    ("code", "代碼", 50, "center", 0),
-    ("name", "名稱", 84, "w", 1),
-    ("close", "收盤", 78, "e", 0),
-    ("vol", "量(張)", 66, "e", 0),
-    ("turn", "周轉率%", 62, "e", 0),
-    ("amp", "5日振幅", 58, "e", 0),
-    ("mf", "主力型態", 72, "center", 0),
-    ("slope", "MA斜率", 64, "e", 0),
-    ("bb", "布林位階", 60, "e", 0),
+    ("code", "代碼", 48, "center", 0),
+    ("name", "名稱", 60, "w", 1),
+    ("close", "收盤", 76, "e", 0),
+    ("vol", "量(張)", 62, "e", 0),
+    ("turn", "周轉率%", 58, "e", 0),
+    ("amp", "5日振幅", 54, "e", 0),
+    ("mf", "主力型態", 70, "center", 0),
+    ("slope", "MA斜率", 60, "e", 0),
+    ("bb", "布林位階", 54, "e", 0),
+    ("peeravg", "同類股漲跌", 78, "e", 0),
+    ("peerratio", "同類股漲跌比例", 92, "e", 0),
 ]
 
 
@@ -182,3 +184,19 @@ class TurnoverMonitorView(ctk.CTkFrame):
         else:
             bclr = (cs.RED if bb >= 8 else cs.GREEN if bb <= -8 else cs.TXT)
             lbl("bb", f"{bb:+.0f}", bclr, "e", bold=abs(bb) >= 8)
+        # 同類股平均漲跌幅%
+        av = r.get("peer_avg_chg")
+        if av is None:
+            lbl("peeravg", "—", "#6a6a6a", "e")
+        else:
+            aclr = cs.RED if av > 0 else cs.GREEN if av < 0 else cs.FLAT
+            lbl("peeravg", f"{av:+.2f}%", aclr, "e")
+        # 同類股漲跌比例：上漲家數/總家數（紅=漲方多、綠=跌方多）
+        up = r.get("peer_up")
+        down = r.get("peer_down")
+        total = r.get("peer_total")
+        if up is None or total is None:
+            lbl("peerratio", "—", "#6a6a6a", "e")
+        else:
+            rclr = cs.RED if up > down else cs.GREEN if up < down else cs.FLAT
+            lbl("peerratio", f"{up}/{total}", rclr, "e")

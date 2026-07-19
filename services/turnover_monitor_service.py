@@ -109,12 +109,55 @@ def enrich_rows(db, rows: list[dict], rank_date: str,
     return rows
 
 
+def _peer_stats(industry_map: dict[str, str],
+                change_map: dict[str, dict]) -> dict[str, tuple]:
+    """依 (市場, 產業別) 分組，算每組上漲/下跌家數與平均漲跌幅%。
+
+    回 {group_key: (up, down, total, 平均漲跌幅%)}。group_key = f"{market}:{ind}"。
+    兩市場產業代碼體系不同，故以市場別區隔，避免混組。
+    """
+    groups: dict[str, list[float]] = defaultdict(list)
+    for code, info in change_map.items():
+        ind = industry_map.get(code)
+        if not ind:
+            continue
+        key = f"{info['market']}:{ind}"
+        groups[key].append(info["change_pct"])
+    out: dict[str, tuple] = {}
+    for key, chgs in groups.items():
+        if not chgs:
+            continue
+        up = sum(1 for c in chgs if c > 0)
+        down = sum(1 for c in chgs if c < 0)
+        out[key] = (up, down, len(chgs), sum(chgs) / len(chgs))
+    return out
+
+
 def latest_monitor(db, min_lots: int = 1000, top_n: int = 30,
                    anchor: str | None = None) -> tuple[str, list[dict]]:
-    """周轉率排行 + 監控欄位。回 (資料日 yyyymmdd, rows)。db 需已 connect。"""
-    from services.turnover_service import latest_top_turnover
-    date, rows = latest_top_turnover(db, min_lots=min_lots, top_n=top_n,
-                                     anchor=anchor)
+    """周轉率排行 + 監控欄位（含同類股漲跌）。回 (資料日 yyyymmdd, rows)。
+    db 需已 connect。"""
+    from services.turnover_service import latest_top_turnover, market_change_map
+    from services.industry_service import get_industry_map
+
+    date, rows, days = latest_top_turnover(db, min_lots=min_lots, top_n=top_n,
+                                           anchor=anchor, return_days=True)
     if not rows:
         return date, rows
-    return date, enrich_rows(db, rows, date)
+    enrich_rows(db, rows, date)
+
+    # 同類股漲跌（同市場 + 同產業別）
+    industry_map = get_industry_map()
+    change_map = market_change_map(days)
+    stats = _peer_stats(industry_map, change_map)
+    for r in rows:
+        ind = industry_map.get(r["stock_code"])
+        key = f"{r.get('market', '')}:{ind}" if ind else None
+        s = stats.get(key) if key else None
+        if s:
+            r["peer_up"], r["peer_down"], r["peer_total"] = s[0], s[1], s[2]
+            r["peer_avg_chg"] = round(s[3], 2)
+        else:
+            r["peer_up"] = r["peer_down"] = r["peer_total"] = None
+            r["peer_avg_chg"] = None
+    return date, rows

@@ -134,19 +134,40 @@ def _amplitude_and_change(code: str,
     return amp5, change
 
 
+def market_change_map(days: list[tuple[str, dict]]) -> dict[str, dict]:
+    """由行情視窗算全市場個股當日漲跌幅。回 {code: {market, change_pct}}。
+
+    change_pct = (最新收 − 前一交易日收) / 前一交易日收 × 100。前一日缺則略過。
+    """
+    if len(days) < 2:
+        return {}
+    _d_prev, prev = days[-2]
+    _d_cur, cur = days[-1]
+    out: dict[str, dict] = {}
+    for code, r in cur.items():
+        close = _num(r.get("close_price"))
+        pr = prev.get(code)
+        pc = _num(pr.get("close_price")) if pr else 0.0
+        if close > 0 and pc > 0:
+            out[code] = {"market": r.get("market", ""),
+                         "change_pct": (close - pc) / pc * 100.0}
+    return out
+
+
 def latest_top_turnover(db, min_lots: int = 1000, top_n: int = 20,
                         anchor: str | None = None, window: int = 6,
-                        max_lookback: int = 12) -> tuple[str, list[dict]]:
+                        max_lookback: int = 12, return_days: bool = False):
     """取最近交易日的高周轉率排行（含當日漲跌 + 近5日平均振幅）。
 
-    回 (資料日 yyyymmdd, rows)。一次抓最近 `window` 個交易日行情視窗，排行
-    以最新日計算，漲跌/振幅由視窗歷史算出（同一權威來源，無單位/跨日問題）。
-    db 需已 connect（呼叫端負責連線/關閉）。
+    回 (資料日 yyyymmdd, rows)；return_days=True 時回 (date, rows, days)，days
+    為行情視窗供呼叫端算同類股等統計，避免重複抓取。
+    一次抓最近 `window` 個交易日行情視窗，排行以最新日計算，漲跌/振幅由視窗
+    歷史算出（同一權威來源，無單位/跨日問題）。db 需已 connect。
     """
     shares_map = db.get_latest_total_shares()
     days = _collect_window(anchor, window, max_lookback)
     if not days:
-        return "", []
+        return ("", [], []) if return_days else ("", [])
     date, latest = days[-1]
     ranked = rank_turnover(list(latest.values()), shares_map, min_lots, top_n)
     for row in ranked:
@@ -156,4 +177,4 @@ def latest_top_turnover(db, min_lots: int = 1000, top_n: int = 20,
         row["change_pct"] = (round(change / (row["close"] - change) * 100, 2)
                              if change is not None and (row["close"] - change)
                              else None)
-    return date, ranked
+    return (date, ranked, days) if return_days else (date, ranked)

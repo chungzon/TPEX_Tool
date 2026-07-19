@@ -64,7 +64,8 @@ class TurnoverMonitorViewModel(BaseViewModel):
         self.monitor_status = (
             f"資料日 {date}　量 > {self.MIN_LOTS:,} 張、依周轉率 Top {self.TOP_N}"
             f"　主力型態＝近15日分點淨買（隔日沖 vs 波段）；"
-            f"MA斜率＝月線斜率%；布林位階 −10~+10（突破可超出）"
+            f"MA斜率＝月線斜率%；布林位階 −10~+10（突破可超出）；"
+            f"同類股（同市場同產業）＝平均漲跌幅% + 上漲家數/總家數"
         )
 
     def shutdown(self) -> None:
