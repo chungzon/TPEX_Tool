@@ -12,6 +12,7 @@ from viewmodels.microstructure_viewmodel import MicrostructureViewModel
 from viewmodels.mede_viewmodel import MedeViewModel
 from viewmodels.bed_viewmodel import BedViewModel
 from viewmodels.signal_viewmodel import SignalViewModel
+from viewmodels.chip_swing_viewmodel import ChipSwingViewModel
 from views.broker_download_view import BrokerDownloadView
 from views.batch_download_view import BatchDownloadView
 from views.broker_analysis_view import BrokerAnalysisView
@@ -24,6 +25,7 @@ from views.microstructure_view import MicrostructureView
 from views.mede_view import MedeView
 from views.bed_view import BedView
 from views.signal_view import SignalView
+from views.chip_swing_view import ChipSwingView
 from services.config_service import ConfigService
 from services.scheduler_service import SchedulerService
 
@@ -126,6 +128,13 @@ class MainWindow(ctk.CTk):
         strategy_eval_view = StrategyEvalView(tab7, self.strategy_eval_vm)
         strategy_eval_view.pack(fill="both", expand=True)
 
+        # Tab 7b: 籌碼波段（CHIP — 日頻籌碼選股與多週期回測）
+        tab_chip = self.tabview.add("籌碼波段")
+
+        self.chip_vm = ChipSwingViewModel()
+        chip_view = ChipSwingView(tab_chip, self.chip_vm)
+        chip_view.pack(fill="both", expand=True)
+
         # Tab 8: 下單
         tab8 = self.tabview.add("下單")
 
@@ -191,6 +200,7 @@ class MainWindow(ctk.CTk):
         self.analysis_vm.shutdown()
         self.backfill_vm.shutdown()
         self.strategy_eval_vm.shutdown()
+        self.chip_vm.shutdown()
         self.strategy_vm.shutdown()
         self.signal_vm.shutdown()
         self.micro_vm.shutdown()

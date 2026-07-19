@@ -866,7 +866,8 @@ class DbService:
         """Daily prices for a stock within a date range."""
         cur = self._cursor()
         cur.execute("""
-            SELECT trade_date, close_price, open_price, high_price, low_price
+            SELECT trade_date, close_price, open_price, high_price, low_price,
+                   total_volume
             FROM StockDailySummary
             WHERE stock_code=%s AND trade_date >= %s AND trade_date <= %s
             ORDER BY trade_date
@@ -876,6 +877,7 @@ class DbService:
                 "trade_date": str(r[0]),
                 "close_price": r[1], "open_price": r[2],
                 "high_price": r[3], "low_price": r[4],
+                "total_volume": r[5],
             }
             for r in cur.fetchall()
         ]
@@ -888,7 +890,7 @@ class DbService:
         cur.execute("""
             SELECT b.trade_date, b.broker_code, b.broker_name,
                    b.buy_volume, b.sell_volume, b.net_volume,
-                   s.close_price, s.total_volume
+                   s.close_price, s.total_volume, b.avg_buy_price
             FROM BrokerDailyStats b
             JOIN StockDailySummary s
               ON b.stock_code = s.stock_code AND b.trade_date = s.trade_date
@@ -901,6 +903,7 @@ class DbService:
                 "broker_name": r[2], "buy_volume": r[3],
                 "sell_volume": r[4], "net_volume": r[5],
                 "close_price": r[6], "total_volume": r[7],
+                "avg_buy_price": r[8],
             }
             for r in cur.fetchall()
         ]
