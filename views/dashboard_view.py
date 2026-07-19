@@ -164,13 +164,14 @@ class DashboardView(ctk.CTkFrame):
     # ---- 高周轉率面板內容 ----
     # 欄位：(key, 標題, 邏輯寬度px, 對齊, 欄權重)
     _TURN_COLS = [
-        ("rank", "#", 26, "center", 0),
-        ("mkt", "", 34, "center", 0),
-        ("code", "代碼", 50, "center", 0),
-        ("name", "名稱", 88, "w", 1),
-        ("close", "收盤", 62, "e", 0),
-        ("vol", "量(張)", 66, "e", 0),
-        ("turn", "周轉率%", 66, "e", 0),
+        ("rank", "#", 24, "center", 0),
+        ("mkt", "", 30, "center", 0),
+        ("code", "代碼", 46, "center", 0),
+        ("name", "名稱", 72, "w", 1),
+        ("close", "收盤", 74, "e", 0),
+        ("vol", "量(張)", 60, "e", 0),
+        ("turn", "周轉率%", 58, "e", 0),
+        ("amp", "5日振幅", 58, "e", 0),
     ]
     # 市場別徽章配色（避開紅漲/綠跌語意）
     _MKT_STYLE = {"上市": ("市", "#3d6fb4"), "上櫃": ("櫃", "#b07a2e")}
@@ -247,14 +248,29 @@ class DashboardView(ctk.CTkFrame):
 
             turn = r["turnover_pct"]
             turn_clr = cs.RED if turn >= 20 else cs.TXT
+            # 收盤：依當日漲跌上符號 + 顏色（台股紅漲綠跌）
+            chg = r.get("change")
+            if chg is None or chg == 0:
+                close_clr, arrow = cs.FLAT, ""
+            elif chg > 0:
+                close_clr, arrow = cs.RED, "▲"
+            else:
+                close_clr, arrow = cs.GREEN, "▼"
+            close_txt = f"{arrow}{r['close']:,.2f}"
+            amp = r.get("amp5")
+            amp_txt = f"{amp:.2f}" if amp is not None else "—"
             cells = [
                 ("rank", str(idx), "#7a7a7e", "center", False),
-                ("code", r["stock_code"], "#d4d4d4", "center", False),
                 ("name", r["stock_name"], "#e6e6e6", "w", False),
-                ("close", f"{r['close']:,.2f}", "#c7c7cc", "e", False),
+                ("close", close_txt, close_clr, "e", True),
                 ("vol", f"{r['volume_lots']:,}", "#c7c7cc", "e", False),
                 ("turn", f"{turn:.2f}", turn_clr, "e", True),
+                ("amp", amp_txt, "#b0a17a", "e", False),
             ]
+            # 代碼（欄 2，與名稱同色系但淡）
+            ctk.CTkLabel(rowf, text=r["stock_code"], text_color="#d4d4d4",
+                         font=ctk.CTkFont(size=12), anchor="center").grid(
+                row=0, column=2, sticky="ew", padx=3, pady=2)
             # 市場別小徽章（欄 1）
             mkt = r.get("market", "")
             label, color = self._MKT_STYLE.get(mkt, ("", "#555555"))
@@ -264,9 +280,8 @@ class DashboardView(ctk.CTkFrame):
                              text_color="#ffffff",
                              font=ctk.CTkFont(size=10, weight="bold")).grid(
                     row=0, column=1, padx=3, pady=2)
-            # 其餘資料欄（rank 在 0，market 在 1，其餘 2..6）
-            col_map = {"rank": 0, "code": 2, "name": 3, "close": 4,
-                       "vol": 5, "turn": 6}
+            col_map = {"rank": 0, "name": 3, "close": 4, "vol": 5,
+                       "turn": 6, "amp": 7}
             for key, text, clr, anc, bold in cells:
                 ctk.CTkLabel(
                     rowf, text=text, text_color=clr,

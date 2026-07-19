@@ -143,7 +143,8 @@ class DashboardViewModel(BaseViewModel):
         self.turnover_rows = rows
         self.turnover_status = (
             f"資料日 {date}　量 > {self._TURNOVER_MIN_LOTS:,} 張、"
-            f"依周轉率排序 Top {self._TURNOVER_TOP_N}"
+            f"依周轉率排序 Top {self._TURNOVER_TOP_N}　"
+            f"（收盤色為當日漲跌；振幅=近5日平均）"
         )
 
     # ------------------------------------------------------------------

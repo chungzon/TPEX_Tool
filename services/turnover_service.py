@@ -71,30 +71,89 @@ def _fetch_otc(date: str) -> list[dict]:
         return []
 
 
-def latest_top_turnover(db, min_lots: int = 1000, top_n: int = 20,
-                        anchor: str | None = None,
-                        max_lookback: int = 7) -> tuple[str, list[dict]]:
-    """取最近交易日的高周轉率排行。回 (資料日 yyyymmdd, rows)。
+def _collect_window(anchor: str | None, window: int,
+                    max_lookback: int) -> list[tuple[str, dict]]:
+    """往回收集最近 `window` 個交易日的每日行情。
 
-    以 TWSE 每日行情是否有資料判定「真正的交易日」（TWSE 非交易日正確回空；
-    TPEX 端點在非交易日可能回舊資料，故不可單用），再用同一交易日抓 TPEX，
-    避免跨日混用。anchor 預設今天，往回找最多 max_lookback 天。
-    db 需已 connect（呼叫端負責連線/關閉）。
+    以 TWSE 是否有資料判定真正交易日（TPEX 非交易日會回舊資料，不可單用）。
+    回傳升冪 list of (date, {code: row})；row 內含 market 標記。
     """
     try:
         cur = datetime.strptime(anchor, "%Y%m%d") if anchor else datetime.now()
     except (ValueError, TypeError):
         cur = datetime.now()
-    shares_map = db.get_latest_total_shares()
+    days: list[tuple[str, dict]] = []
     for _ in range(max_lookback + 1):
-        date = cur.strftime("%Y%m%d")
-        twse = _fetch_twse(date)
-        if twse:                        # 有 TWSE 資料 = 確定為交易日
-            for r in twse:
-                r["market"] = "上市"
-            otc = _fetch_otc(date)
-            for r in otc:
-                r["market"] = "上櫃"
-            return date, rank_turnover(twse + otc, shares_map, min_lots, top_n)
+        if len(days) >= window:
+            break
+        date_key = cur.strftime("%Y%m%d")
+        date_dash = cur.strftime("%Y-%m-%d")   # 兩個 API 皆吃 yyyy-mm-dd
         cur -= timedelta(days=1)
-    return "", []
+        twse = _fetch_twse(date_dash)
+        if not twse:                    # 非交易日
+            continue
+        for r in twse:
+            r["market"] = "上市"
+        otc = _fetch_otc(date_dash)
+        for r in otc:
+            r["market"] = "上櫃"
+        by_code = {r["stock_code"]: r for r in (twse + otc)}
+        days.append((date_key, by_code))
+    days.sort(key=lambda x: x[0])
+    return days
+
+
+def _amplitude_and_change(code: str,
+                          days: list[tuple[str, dict]]) -> tuple[float | None,
+                                                                 float | None]:
+    """回 (近5日平均振幅%, 當日漲跌額)。
+
+    振幅[d] = (最高 − 最低) / 昨收 × 100；取最近至多 5 日平均。
+    漲跌 = 最新日收盤 − 前一日收盤。資料不足回 None。
+    """
+    closes: list[tuple[str, float]] = []
+    amps: list[float] = []
+    prev_close: float | None = None
+    for _date, by_code in days:          # 升冪
+        r = by_code.get(code)
+        if not r:
+            prev_close = None
+            continue
+        close = _num(r.get("close_price"))
+        high = _num(r.get("high_price"))
+        low = _num(r.get("low_price"))
+        if close > 0:
+            closes.append((_date, close))
+        if prev_close and prev_close > 0 and high > 0 and low > 0:
+            amps.append((high - low) / prev_close * 100.0)
+        prev_close = close if close > 0 else prev_close
+    amp5 = round(sum(amps[-5:]) / len(amps[-5:]), 2) if amps else None
+    change = None
+    if len(closes) >= 2:
+        change = round(closes[-1][1] - closes[-2][1], 2)
+    return amp5, change
+
+
+def latest_top_turnover(db, min_lots: int = 1000, top_n: int = 20,
+                        anchor: str | None = None, window: int = 6,
+                        max_lookback: int = 12) -> tuple[str, list[dict]]:
+    """取最近交易日的高周轉率排行（含當日漲跌 + 近5日平均振幅）。
+
+    回 (資料日 yyyymmdd, rows)。一次抓最近 `window` 個交易日行情視窗，排行
+    以最新日計算，漲跌/振幅由視窗歷史算出（同一權威來源，無單位/跨日問題）。
+    db 需已 connect（呼叫端負責連線/關閉）。
+    """
+    shares_map = db.get_latest_total_shares()
+    days = _collect_window(anchor, window, max_lookback)
+    if not days:
+        return "", []
+    date, latest = days[-1]
+    ranked = rank_turnover(list(latest.values()), shares_map, min_lots, top_n)
+    for row in ranked:
+        amp5, change = _amplitude_and_change(row["stock_code"], days)
+        row["amp5"] = amp5
+        row["change"] = change
+        row["change_pct"] = (round(change / (row["close"] - change) * 100, 2)
+                             if change is not None and (row["close"] - change)
+                             else None)
+    return date, ranked
