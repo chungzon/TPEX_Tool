@@ -13,6 +13,7 @@ from viewmodels.mede_viewmodel import MedeViewModel
 from viewmodels.bed_viewmodel import BedViewModel
 from viewmodels.signal_viewmodel import SignalViewModel
 from viewmodels.chip_swing_viewmodel import ChipSwingViewModel
+from viewmodels.dashboard_viewmodel import DashboardViewModel
 from views.broker_download_view import BrokerDownloadView
 from views.batch_download_view import BatchDownloadView
 from views.broker_analysis_view import BrokerAnalysisView
@@ -26,6 +27,7 @@ from views.mede_view import MedeView
 from views.bed_view import BedView
 from views.signal_view import SignalView
 from views.chip_swing_view import ChipSwingView
+from views.dashboard_view import DashboardView
 from services.config_service import ConfigService
 from services.scheduler_service import SchedulerService
 
@@ -78,6 +80,13 @@ class MainWindow(ctk.CTk):
         # --- Tab view ---
         self.tabview = ctk.CTkTabview(self, corner_radius=12)
         self.tabview.pack(fill="both", expand=True, padx=16, pady=(8, 16))
+
+        # Tab 0: Dashboard（指揮桌，第一格：加權指數即時分時）
+        tab_dash = self.tabview.add("Dashboard")
+
+        self.dashboard_vm = DashboardViewModel()
+        dashboard_view = DashboardView(tab_dash, self.dashboard_vm)
+        dashboard_view.pack(fill="both", expand=True)
 
         # Tab 1: 上櫃分點資料下載
         tab1 = self.tabview.add("上櫃分點資料下載")
@@ -195,6 +204,7 @@ class MainWindow(ctk.CTk):
         ctk.set_appearance_mode(mode)
 
     def _on_close(self):
+        self.dashboard_vm.shutdown()
         self.broker_vm.shutdown()
         self.batch_vm.shutdown()
         self.analysis_vm.shutdown()
