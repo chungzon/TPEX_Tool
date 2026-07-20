@@ -34,9 +34,15 @@ _COLS = [
     ("mf", "主力型態", 70, "center", 0),
     ("slope", "MA斜率", 60, "e", 0),
     ("bb", "布林位階", 54, "e", 0),
+    ("warrant", "權證多空", 78, "center", 0),
     ("peeravg", "同類股漲跌", 78, "e", 0),
     ("peerratio", "同類股漲跌比例", 92, "e", 0),
 ]
+
+# 權證多空徽章配色（多=紅、空=綠、中性=灰）
+_WARRANT_STYLE = {"多": ("#ef5350", "#2a0f0f"),
+                  "空": ("#26a69a", "#0f2420"),
+                  "中性": ("#8a8a8e", "#1a1a1c")}
 
 
 class TurnoverMonitorView(ctk.CTkFrame):
@@ -184,6 +190,18 @@ class TurnoverMonitorView(ctk.CTkFrame):
         else:
             bclr = (cs.RED if bb >= 8 else cs.GREEN if bb <= -8 else cs.TXT)
             lbl("bb", f"{bb:+.0f}", bclr, "e", bold=abs(bb) >= 8)
+        # 權證多空（徽章 + 多方佔比%）
+        wb = r.get("warrant_bias")
+        ws = _WARRANT_STYLE.get(wb)
+        if ws:
+            share = r.get("warrant_long_share")
+            txt = f"{wb} {share:.0f}%" if share is not None else wb
+            ctk.CTkLabel(rowf, text=txt, height=20, corner_radius=6,
+                         fg_color=ws[0], text_color=ws[1],
+                         font=ctk.CTkFont(size=11, weight="bold")).grid(
+                row=0, column=col["warrant"], sticky="ew", padx=6, pady=2)
+        else:
+            lbl("warrant", "—", "#6a6a6a", "center")
         # 同類股平均漲跌幅%
         av = r.get("peer_avg_chg")
         if av is None:

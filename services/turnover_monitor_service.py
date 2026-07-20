@@ -150,6 +150,10 @@ def latest_monitor(db, min_lots: int = 1000, top_n: int = 30,
     industry_map = get_industry_map()
     change_map = market_change_map(days)
     stats = _peer_stats(industry_map, change_map)
+    # 權證多空：上市依標的名稱、上櫃依標的代碼對應
+    from services.warrant_service import bias_by_name, bias_by_code_tpex
+    warrant_twse = bias_by_name(date)
+    warrant_tpex = bias_by_code_tpex()
     for r in rows:
         ind = industry_map.get(r["stock_code"])
         key = f"{r.get('market', '')}:{ind}" if ind else None
@@ -160,4 +164,8 @@ def latest_monitor(db, min_lots: int = 1000, top_n: int = 30,
         else:
             r["peer_up"] = r["peer_down"] = r["peer_total"] = None
             r["peer_avg_chg"] = None
+        w = (warrant_tpex.get(r["stock_code"]) if r.get("market") == "上櫃"
+             else warrant_twse.get(r["stock_name"]))
+        r["warrant_bias"] = w["bias"] if w else None
+        r["warrant_long_share"] = w["long_share"] if w else None
     return date, rows
