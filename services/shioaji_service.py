@@ -335,6 +335,41 @@ class ShioajiService:
             log.exception("get_historical_ticks failed for %s %s", stock_code, date)
             return []
 
+    # ---- Intraday minute bars (for live 走勢圖) ----
+
+    def get_intraday_kbars(self, stock_code: str, date: str) -> list[dict]:
+        """某檔某日 1 分 K（含量）。date 格式 'YYYY-MM-DD'。
+
+        盤中呼叫回到目前為止已成形的分 K，供即時走勢圖用（可重覆輪詢延伸）。
+        回 [{time(HH:MM), open, high, low, close, volume}]，依時間升冪。
+        kbars.ts 為 epoch 奈秒；轉本地時間取 HH:MM。
+        """
+        if not self._logged_in or not self._api:
+            return []
+        contract = self.get_stock_contract(stock_code)
+        if not contract:
+            return []
+        try:
+            from datetime import datetime as _dt
+            kb = self._api.kbars(contract, start=date, end=date, timeout=30000)
+            ts = list(kb.ts)
+            out: list[dict] = []
+            for i in range(len(ts)):
+                hhmm = _dt.fromtimestamp(ts[i] / 1e9).strftime("%H:%M")
+                out.append({
+                    "time": hhmm,
+                    "open": float(kb.Open[i]),
+                    "high": float(kb.High[i]),
+                    "low": float(kb.Low[i]),
+                    "close": float(kb.Close[i]),
+                    "volume": float(kb.Volume[i]),
+                })
+            out.sort(key=lambda x: x["time"])
+            return out
+        except Exception:
+            log.exception("get_intraday_kbars failed for %s %s", stock_code, date)
+            return []
+
     # ---- Order ----
 
     def place_order(

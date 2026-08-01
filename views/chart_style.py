@@ -123,6 +123,58 @@ def line(ax, xs, ys, color: str, width: float = 1.6, **kw):
                    antialiased=True, **kw)
 
 
+def candles(ax, xs, o, h, l, c, width: float = 0.6,
+            up: str = RED, down: str = GREEN, zorder: int = 5):
+    """箱型圖（K 線）：實體 = 開收，影線 = 高低。台股慣例紅漲綠跌。
+
+    對每根做防呆：open/high/low 缺值(<=0)以收盤補；並保證 high>=body>=low。
+    doji（開＝收）給極小實體高度以可見。回每根顏色 list。
+    """
+    xs = list(xs)
+    n = len(xs)
+    O, H, L, C = [], [], [], []
+    for i in range(n):
+        ci = c[i]
+        oi = o[i] if o[i] and o[i] > 0 else ci
+        hi = h[i] if h[i] and h[i] > 0 else max(oi, ci)
+        li = l[i] if l[i] and l[i] > 0 else min(oi, ci)
+        O.append(oi)
+        H.append(max(hi, oi, ci))
+        L.append(min(li, oi, ci))
+        C.append(ci)
+    colors = [up if C[i] >= O[i] else down for i in range(n)]
+    ax.vlines(xs, L, H, colors=colors, linewidth=0.9 * _SCALE, zorder=zorder)
+    span = (max(H) - min(L)) if n else 1.0
+    span = span or 1.0
+    bottoms = [min(O[i], C[i]) for i in range(n)]
+    heights = [abs(C[i] - O[i]) or span * 0.003 for i in range(n)]
+    ax.bar(xs, heights, bottom=bottoms, width=width, color=colors,
+           zorder=zorder, linewidth=0)
+    return colors
+
+
+def volume_overlay(ax, xs, vols, up_flags, bottom_frac: float = 0.24):
+    """在價格軸上疊「底部量棒」——單一圖同時含價與量（不另開圖）。
+
+    做法：twinx 出量軸，將其 y 上限放大到 max(vol)/bottom_frac，使量棒只佔底部
+    bottom_frac 高度；量軸刻度隱藏。價格線需畫在 ax（zorder 較高）上方。
+    up_flags[i]=True 以紅、False 以綠（台股慣例）。回量軸 ax2。
+    """
+    ax2 = ax.twinx()
+    # 價格軸置於量軸之上且透明背景，量棒才不會蓋住價格線
+    ax.set_zorder(ax2.get_zorder() + 1)
+    ax.patch.set_visible(False)
+    colors = [RED if u else GREEN for u in up_flags]
+    ax2.bar(xs, vols, width=0.8, color=colors, alpha=0.45, zorder=1,
+            linewidth=0)
+    vmax = max(vols) if vols else 1
+    ax2.set_ylim(0, vmax / max(bottom_frac, 0.05))
+    ax2.set_yticks([])
+    for sp in ax2.spines.values():
+        sp.set_visible(False)
+    return ax2
+
+
 def embed(parent, fig, w_in: float, h_in: float):
     """超取樣渲染 fig → 縮回邏輯尺寸 → 貼到 parent 的 Label（已 pack）。"""
     canvas = FigureCanvasAgg(fig)

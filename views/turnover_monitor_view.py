@@ -10,6 +10,7 @@ import customtkinter as ctk
 
 from viewmodels.turnover_monitor_viewmodel import TurnoverMonitorViewModel
 from views import chart_style as cs
+from views.monitor_detail_window import MonitorDetailWindow
 from services import broker_tags as bt
 from services.turnover_monitor_service import MF_SWING, MF_FLIP, MF_MIXED
 
@@ -32,7 +33,10 @@ _COLS = [
     ("turn", "周轉率%", 58, "e", 0),
     ("amp", "5日振幅", 54, "e", 0),
     ("mf", "主力型態", 70, "center", 0),
+    ("foreign", "外資淨(張)", 74, "e", 0),
+    ("dealer", "自營/避險淨(張)", 100, "e", 0),
     ("slope", "MA斜率", 60, "e", 0),
+    ("deduct", "扣抵值", 66, "e", 0),
     ("bb", "布林位階", 54, "e", 0),
     ("warrant", "權證多空", 78, "center", 0),
     ("peeravg", "同類股漲跌", 78, "e", 0),
@@ -52,6 +56,8 @@ class TurnoverMonitorView(ctk.CTkFrame):
         super().__init__(parent, fg_color="transparent")
         self.vm = viewmodel
         self._row_widgets: list = []
+        self._rows: list = []            # 最近一次資料，供切換監控模式重繪
+        self._detail_windows: list = []  # 保留彈窗參考避免被 GC
         self._build_ui()
         self._bind_vm()
         self.after(300, self.vm.load)
@@ -66,6 +72,13 @@ class TurnoverMonitorView(ctk.CTkFrame):
             top, text="刷新", width=72, height=30, corner_radius=8,
             font=ctk.CTkFont(size=13, weight="bold"), command=self.vm.refresh)
         self.refresh_btn.pack(side="right")
+        self.monitor_btn = ctk.CTkButton(
+            top, text="監控", width=72, height=30, corner_radius=8,
+            font=ctk.CTkFont(size=13, weight="bold"),
+            command=self.vm.toggle_monitor)
+        self.monitor_btn.pack(side="right", padx=(0, 8))
+        self._btn_fg = self.monitor_btn.cget("fg_color")
+        self._btn_hover = self.monitor_btn.cget("hover_color")
 
         self.status_label = ctk.CTkLabel(
             self, text="尚未載入", font=ctk.CTkFont(size=12), text_color="gray",
@@ -97,6 +110,18 @@ class TurnoverMonitorView(ctk.CTkFrame):
         self.vm.bind("monitor_rows", self._on_rows)
         self.vm.bind("monitor_status", self._on_status)
         self.vm.bind("is_loading", self._on_loading)
+        self.vm.bind("monitor_mode", self._on_monitor_mode)
+
+    def _on_monitor_mode(self, on):
+        def _u():
+            if on:
+                self.monitor_btn.configure(text="監控中", fg_color="#c0392b",
+                                           hover_color="#a93226")
+            else:
+                self.monitor_btn.configure(text="監控", fg_color=self._btn_fg,
+                                           hover_color=self._btn_hover)
+            self._render(self._rows)   # 重繪以套用/移除可點擊
+        self.after(0, _u)
 
     def _on_status(self, v):
         self.after(0, lambda: self.status_label.configure(text=v or ""))
@@ -117,6 +142,7 @@ class TurnoverMonitorView(ctk.CTkFrame):
         for w in self._row_widgets:
             w.destroy()
         self._row_widgets = []
+        self._rows = rows or []
         if not rows:
             return
         for idx, r in enumerate(rows, 1):
@@ -127,7 +153,35 @@ class TurnoverMonitorView(ctk.CTkFrame):
             for i, (_k, _t, w, _a, weight) in enumerate(_COLS):
                 rowf.grid_columnconfigure(i, weight=weight, minsize=w)
             self._fill_row(rowf, idx, r)
+            # 任何狀態皆可點列開監控彈窗（監控模式僅作視覺標示）
+            self._bind_row_click(rowf, r)
             self._row_widgets.append(rowf)
+
+    def _bind_row_click(self, rowf, r):
+        """監控模式下：整列（含子元件）可點擊 → 開監控彈窗，游標改手形。"""
+        def _open(_e=None):
+            self._open_detail(r)
+        rowf.configure(cursor="hand2")
+        rowf.bind("<Button-1>", _open)
+        for child in rowf.winfo_children():
+            try:
+                child.configure(cursor="hand2")
+            except Exception:
+                pass
+            child.bind("<Button-1>", _open)
+
+    def _open_detail(self, r):
+        try:
+            win = MonitorDetailWindow(
+                self.winfo_toplevel(),
+                stock_code=r["stock_code"], stock_name=r.get("stock_name", ""),
+                market=r.get("market", ""), date=self.vm.data_date,
+                ctx=self.vm.ctx, shioaji_svc=self.vm._sj)
+            self._detail_windows = [w for w in self._detail_windows
+                                    if w.winfo_exists()]
+            self._detail_windows.append(win)
+        except Exception as e:  # noqa: BLE001
+            self.status_label.configure(text=f"開啟監控視窗失敗：{e}")
 
     def _fill_row(self, rowf, idx, r):
         col = {c[0]: i for i, c in enumerate(_COLS)}
@@ -176,6 +230,22 @@ class TurnoverMonitorView(ctk.CTkFrame):
                 row=0, column=col["mf"], sticky="ew", padx=6, pady=2)
         else:
             lbl("mf", "—", "#6a6a6a", "center")
+        # 外資：買賣超淨額（張，正買超紅／負賣超綠）
+        fn = r.get("foreign_lots")
+        if fn is None:
+            lbl("foreign", "—", "#6a6a6a", "e")
+        else:
+            fclr = cs.RED if fn > 0 else cs.GREEN if fn < 0 else cs.FLAT
+            lbl("foreign", f"{fn:+,}", fclr, "e")
+        # 自營/避險：自營商自行 / 避險 買賣超淨額（張，正買超負賣超）
+        sn = r.get("dealer_self_lots")
+        hn = r.get("dealer_hedge_lots")
+        if sn is None and hn is None:
+            lbl("dealer", "—", "#6a6a6a", "e")
+        else:
+            hv = hn or 0
+            dclr = cs.RED if hv > 0 else cs.GREEN if hv < 0 else cs.FLAT
+            lbl("dealer", f"{sn or 0:+,}/{hn or 0:+,}", dclr, "e")
         # MA 斜率
         sl = r.get("ma_slope")
         if sl is None:
@@ -183,6 +253,15 @@ class TurnoverMonitorView(ctk.CTkFrame):
         else:
             sclr = cs.RED if sl > 0 else cs.GREEN if sl < 0 else cs.FLAT
             lbl("slope", f"{sl:+.2f}", sclr, "e")
+        # 均線扣抵值（20日）：現價 vs 扣抵值 → 助漲(紅▲)/助跌(綠▼)
+        ded = r.get("ma_deduct")
+        if ded is None:
+            lbl("deduct", "—", "#6a6a6a", "e")
+        else:
+            dd = r.get("deduct_dir")
+            dclr = cs.RED if dd == 1 else cs.GREEN if dd == -1 else cs.FLAT
+            darrow = "▲" if dd == 1 else "▼" if dd == -1 else ""
+            lbl("deduct", f"{darrow}{ded:,.2f}", dclr, "e")
         # 布林位階
         bb = r.get("bb_pos")
         if bb is None:

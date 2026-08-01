@@ -32,6 +32,7 @@ from views.dashboard_view import DashboardView
 from views.turnover_monitor_view import TurnoverMonitorView
 from services.config_service import ConfigService
 from services.scheduler_service import SchedulerService
+from services.shioaji_service import ShioajiService
 
 
 class MainWindow(ctk.CTk):
@@ -78,6 +79,8 @@ class MainWindow(ctk.CTk):
         # --- Shared services (used by multiple tabs) ---
         self._config_svc = ConfigService()
         self._scheduler_svc = SchedulerService(self._config_svc)
+        # 全 App 共用一條 Shioaji 連線（下單/大單追蹤/MEDE/BED/監控/設定共用登入）
+        self._shioaji_svc = ShioajiService()
 
         # --- Tab view ---
         self.tabview = ctk.CTkTabview(self, corner_radius=12)
@@ -93,7 +96,8 @@ class MainWindow(ctk.CTk):
         # Tab 0b: 高周轉率監控（沿用周轉率排行 + 主力型態/技術面）
         tab_turn_mon = self.tabview.add("高周轉率監控")
 
-        self.turnover_monitor_vm = TurnoverMonitorViewModel()
+        self.turnover_monitor_vm = TurnoverMonitorViewModel(
+            shioaji_svc=self._shioaji_svc)
         turnover_monitor_view = TurnoverMonitorView(
             tab_turn_mon, self.turnover_monitor_vm)
         turnover_monitor_view.pack(fill="both", expand=True)
@@ -157,7 +161,8 @@ class MainWindow(ctk.CTk):
         # Tab 8: 下單
         tab8 = self.tabview.add("下單")
 
-        self.trading_vm = TradingViewModel(self._config_svc)
+        self.trading_vm = TradingViewModel(self._config_svc,
+                                           shioaji_svc=self._shioaji_svc)
         trading_view = TradingView(tab8, self.trading_vm)
         trading_view.pack(fill="both", expand=True)
 

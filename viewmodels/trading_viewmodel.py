@@ -34,10 +34,11 @@ class TradingViewModel(BaseViewModel):
     # Order event log
     event_log = ObservableProperty("")
 
-    def __init__(self, config: ConfigService):
+    def __init__(self, config: ConfigService, shioaji_svc=None):
         super().__init__()
         self._config = config
-        self._sj = ShioajiService()
+        # 可注入共用 Shioaji 連線（與大單追蹤/MEDE/監控共用同一登入）
+        self._sj = shioaji_svc or ShioajiService()
 
     def login(self, api_key: str = "", secret_key: str = "",
               person_id: str = "", ca_passwd: str = "",

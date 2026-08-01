@@ -15,16 +15,16 @@ _API_URL = (
     "3itrade_hedge_result.php?l=zh-tw&o=json&se=EW&t=D&d={roc_date}"
 )
 
-# Column layout (0-indexed):
+# Column layout (0-indexed) — 依 API fields 實測校正（勿再依舊註解）:
 #  0: 代號  1: 名稱
-#  2-4:  外資 (buy/sell/net)
-#  5-7:  投信 (buy/sell/net)
-#  8-10: 外資+投信合計
-# 11-13: 自營商自行買賣 (buy/sell/net)
-# 14-16: 自營商避險 (buy/sell/net)
-# 17-19: 自營商合計
-# 20-22: 三大法人合計
-# 23:    三大法人買賣超合計
+#  2-4:   外資及陸資(不含外資自營商) buy/sell/net
+#  5-7:   外資自營商 buy/sell/net
+#  8-10:  外資及陸資合計 buy/sell/net        ← 一般所稱「外資」用此合計
+# 11-13:  投信 buy/sell/net
+# 14-16:  自營商(自行買賣) buy/sell/net
+# 17-19:  自營商(避險) buy/sell/net
+# 20-22:  自營商合計 buy/sell/net
+# 23:     三大法人買賣超股數合計
 
 
 def _parse_int(v: str) -> int:
@@ -114,15 +114,15 @@ def fetch_insti_daily(trade_date: str) -> list[InstiDaily]:
             foreign_buy=_parse_int(row[2]),
             foreign_sell=_parse_int(row[3]),
             foreign_net=_parse_int(row[4]),
-            trust_buy=_parse_int(row[5]),
-            trust_sell=_parse_int(row[6]),
-            trust_net=_parse_int(row[7]),
-            dealer_self_buy=_parse_int(row[11]),
-            dealer_self_sell=_parse_int(row[12]),
-            dealer_self_net=_parse_int(row[13]),
-            dealer_hedge_buy=_parse_int(row[14]),
-            dealer_hedge_sell=_parse_int(row[15]),
-            dealer_hedge_net=_parse_int(row[16]),
+            trust_buy=_parse_int(row[11]),
+            trust_sell=_parse_int(row[12]),
+            trust_net=_parse_int(row[13]),
+            dealer_self_buy=_parse_int(row[14]),
+            dealer_self_sell=_parse_int(row[15]),
+            dealer_self_net=_parse_int(row[16]),
+            dealer_hedge_buy=_parse_int(row[17]),
+            dealer_hedge_sell=_parse_int(row[18]),
+            dealer_hedge_net=_parse_int(row[19]),
             three_insti_net=_parse_int(row[23]),
         ))
 

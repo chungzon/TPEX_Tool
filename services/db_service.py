@@ -1198,6 +1198,25 @@ class DbService:
             for r in cur.fetchall()
         ]
 
+    def get_insti_dealer_by_date(self, trade_date: str) -> dict:
+        """單日全市場法人買賣超淨額（供高周轉率監控「外資 / 自營 / 避險」欄）。
+
+        回 {stock_code: {"foreign_net": 股, "self_net": 股, "hedge_net": 股}}，
+        淨額＝買-賣，可正(買超)可負(賣超)。單位為股（呼叫端自行 /1000 轉張）。
+        trade_date 需為 yyyy-mm-dd。查無回空 dict。
+        """
+        cur = self._cursor()
+        cur.execute("""
+            SELECT stock_code, foreign_net, dealer_self_net, dealer_hedge_net
+            FROM InstiDailyTrade
+            WHERE trade_date = %s
+        """, (trade_date,))
+        return {
+            r[0]: {"foreign_net": r[1] or 0, "self_net": r[2] or 0,
+                   "hedge_net": r[3] or 0}
+            for r in cur.fetchall()
+        }
+
     def get_insti_history(self, stock_code: str,
                           start_date: str, end_date: str) -> list[dict]:
         """Get institutional daily data for a stock in a date range."""

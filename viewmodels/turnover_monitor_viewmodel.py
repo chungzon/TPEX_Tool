@@ -20,13 +20,21 @@ class TurnoverMonitorViewModel(BaseViewModel):
     monitor_rows = ObservableProperty(None)     # list[dict] | None
     monitor_status = ObservableProperty("尚未載入")
     is_loading = ObservableProperty(False)
+    monitor_mode = ObservableProperty(False)    # 監控模式（點列開彈窗）
 
     MIN_LOTS = 1000
     TOP_N = 30
 
-    def __init__(self):
+    def __init__(self, shioaji_svc=None):
         super().__init__()
         self._thread: threading.Thread | None = None
+        self._sj = shioaji_svc
+        # 供監控彈窗使用（載入時快取，避免重抓行情視窗）
+        self.data_date: str = ""
+        self.ctx: dict = {}
+
+    def toggle_monitor(self) -> None:
+        self.monitor_mode = not self.monitor_mode
 
     def load(self) -> None:
         if self._thread and self._thread.is_alive():
@@ -45,8 +53,10 @@ class TurnoverMonitorViewModel(BaseViewModel):
         db = DbService()
         try:
             db.connect()
-            date, rows = latest_monitor(db, min_lots=self.MIN_LOTS,
-                                        top_n=self.TOP_N)
+            date, rows, ctx = latest_monitor(db, min_lots=self.MIN_LOTS,
+                                             top_n=self.TOP_N, return_ctx=True)
+            self.data_date = date
+            self.ctx = ctx
         except Exception as e:  # noqa: BLE001
             log.exception("monitor load failed")
             self.monitor_status = f"載入失敗：{e}"
