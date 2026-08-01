@@ -94,6 +94,7 @@ def enrich_rows(db, rows: list[dict], rank_date: str,
         r["bb_pos"] = None
         r["ma_deduct"] = None       # 均線扣抵值（明日將被扣抵的收盤價）
         r["deduct_dir"] = None      # 1 助漲 / -1 助跌 / 0 持平（現價 vs 扣抵值）
+        r["bias20"] = None          # 20 日乖離率%（(收盤-MA20)/MA20×100）
         try:
             prices = db.get_stock_prices(code, price_start, end)
             # _price_metrics 遇任一 close 為 null 會整個回 None，先濾掉空值列
@@ -113,6 +114,9 @@ def enrich_rows(db, rows: list[dict], rank_date: str,
                 r["ma_deduct"] = round(deduct, 2)
                 r["deduct_dir"] = (1 if last > deduct
                                    else -1 if last < deduct else 0)
+                ma20 = sum(closes[-_MA_PERIOD:]) / _MA_PERIOD
+                if ma20:
+                    r["bias20"] = round((last - ma20) / ma20 * 100, 2)
         except Exception as e:  # noqa: BLE001
             log.warning("price metrics failed %s: %s", code, e)
         # 主力型態

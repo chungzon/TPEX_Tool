@@ -37,6 +37,7 @@ _COLS = [
     ("dealer", "自營/避險淨(張)", 100, "e", 0),
     ("slope", "MA斜率", 60, "e", 0),
     ("deduct", "扣抵值", 66, "e", 0),
+    ("bias", "乖離率%", 60, "e", 0),
     ("bb", "布林位階", 54, "e", 0),
     ("warrant", "權證多空", 78, "center", 0),
     ("peeravg", "同類股漲跌", 78, "e", 0),
@@ -262,6 +263,13 @@ class TurnoverMonitorView(ctk.CTkFrame):
             dclr = cs.RED if dd == 1 else cs.GREEN if dd == -1 else cs.FLAT
             darrow = "▲" if dd == 1 else "▼" if dd == -1 else ""
             lbl("deduct", f"{darrow}{ded:,.2f}", dclr, "e")
+        # 20 日乖離率%（正=均線之上紅、負=均線之下綠）
+        bs = r.get("bias20")
+        if bs is None:
+            lbl("bias", "—", "#6a6a6a", "e")
+        else:
+            bsclr = cs.RED if bs > 0 else cs.GREEN if bs < 0 else cs.FLAT
+            lbl("bias", f"{bs:+.2f}", bsclr, "e")
         # 布林位階
         bb = r.get("bb_pos")
         if bb is None:
