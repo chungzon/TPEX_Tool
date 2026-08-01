@@ -32,7 +32,7 @@ _COLS = [
     ("vol", "量(張)", 62, "e", 0),
     ("turn", "周轉率%", 58, "e", 0),
     ("amp", "5日振幅", 54, "e", 0),
-    ("mf", "主力型態", 70, "center", 0),
+    ("mf", "主力型態", 92, "center", 0),
     ("foreign", "外資淨(張)", 74, "e", 0),
     ("dealer", "自營/避險淨(張)", 100, "e", 0),
     ("slope", "MA斜率", 60, "e", 0),
@@ -221,11 +221,13 @@ class TurnoverMonitorView(ctk.CTkFrame):
             bold=True)
         amp = r.get("amp5")
         lbl("amp", f"{amp:.2f}" if amp is not None else "—", "#b0a17a", "e")
-        # 主力型態徽章
+        # 主力型態徽章（含隔日沖買超佔比%）
         mf = r.get("main_force")
         style = _MF_STYLE.get(mf)
         if style:
-            ctk.CTkLabel(rowf, text=mf, height=20, corner_radius=6,
+            fr = r.get("flip_ratio")
+            txt = f"{mf} {fr * 100:.0f}%" if fr is not None else mf
+            ctk.CTkLabel(rowf, text=txt, height=20, corner_radius=6,
                          fg_color=style[0], text_color=style[1],
                          font=ctk.CTkFont(size=11, weight="bold")).grid(
                 row=0, column=col["mf"], sticky="ew", padx=6, pady=2)

@@ -860,6 +860,48 @@ class DbService:
             })
         return out
 
+    def get_brokers_daily_multi(
+        self, broker_codes: list[str], start_date: str, end_date: str,
+        stock_codes: list[str] | None = None,
+    ) -> list[dict]:
+        """多個分點在區間內、（可限縮股票範圍的）每日買賣明細（一次 IN 查詢）。
+
+        供隔日沖偵測：需要每個分點在各股的日級時序（買超日 → 隔日賣超）。
+        stock_codes 非空時只查這些股票（大幅減少大型分點的資料量）。
+        回 [{broker_code, broker_name, stock_code, trade_date, buy_volume,
+        sell_volume, net_volume}]，依 (broker_code, stock_code, trade_date) 升序。
+        broker_codes 空則回 []。
+        """
+        if not broker_codes:
+            return []
+        cur = self._cursor()
+        start_date = _normalize_date(start_date)
+        end_date = _normalize_date(end_date)
+        ph = ",".join(["%s"] * len(broker_codes))
+        stock_clause = ""
+        params: list = [*broker_codes, start_date, end_date]
+        if stock_codes:
+            sph = ",".join(["%s"] * len(stock_codes))
+            stock_clause = f" AND stock_code IN ({sph})"
+            params.extend(stock_codes)
+        cur.execute(f"""
+            SELECT broker_code, broker_name, stock_code, trade_date,
+                   buy_volume, sell_volume, net_volume
+            FROM BrokerDailyStats
+            WHERE broker_code IN ({ph})
+              AND trade_date >= %s AND trade_date <= %s{stock_clause}
+            ORDER BY broker_code, stock_code, trade_date
+        """, tuple(params))
+        return [
+            {
+                "broker_code": r[0], "broker_name": r[1],
+                "stock_code": r[2], "trade_date": str(r[3]),
+                "buy_volume": r[4] or 0, "sell_volume": r[5] or 0,
+                "net_volume": r[6] or 0,
+            }
+            for r in cur.fetchall()
+        ]
+
     def get_stock_prices(
         self, stock_code: str, start_date: str, end_date: str,
     ) -> list[dict]:

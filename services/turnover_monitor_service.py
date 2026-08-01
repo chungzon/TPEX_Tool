@@ -26,6 +26,146 @@ MF_MIXED = "混合"
 
 _MA_PERIOD = 20        # 均線扣抵基準（月線）
 
+# 隔日沖主力型態偵測參數
+_FLIP_TOPN = 10            # 當日買超前 N 分點納入判斷
+_FLIP_HIST_DAYS = 90      # 歷史回溯日曆天（≈60 交易日）
+_FLIP_SCORE_TH = 0.5     # 買超量在隔1~2交易日被賣超回補比例 ≥ 此值 → 隔日沖型
+_FLIP_MIN_EVENTS = 3     # 買超事件數不足 → 樣本不足，改用 broker_tags 清單
+_FLIP_RATIO_HI = 0.6     # 前10隔日沖買超佔比 ≥ → 隔日沖
+_FLIP_RATIO_LO = 0.4     # ≤ → 波段；中間 → 混合
+
+
+def _flip_score(daily: list[dict]) -> tuple[float, int]:
+    """單一分點的隔日沖分數：買超量在隔 1~2 交易日被賣超回補的比例。
+
+    daily：該分點跨股日級明細。依股票分組，各股按日序用佇列比對——當日賣超
+    回補其前 1~2 交易日內尚未回補的買超。回 (score, buy_events)：
+    score = 回補量 / 總買超量（越高越像隔日沖），buy_events = 買超事件數。
+    """
+    from collections import defaultdict
+    by_stock: dict[str, list[dict]] = defaultdict(list)
+    for d in daily:
+        by_stock[d["stock_code"]].append(d)
+    total_buy = 0
+    covered = 0
+    events = 0
+    for _code, srows in by_stock.items():
+        srows.sort(key=lambda x: x["trade_date"])
+        pending: list[list] = []      # [[day_idx, remaining_buy], ...]
+        for i, row in enumerate(srows):
+            net = row["net_volume"] or 0
+            # 先用當日賣超回補前 1~2 日內的買超
+            sell_avail = -net if net < 0 else 0
+            pending = [p for p in pending if i - p[0] <= 2]   # 清過期
+            k = 0
+            while sell_avail > 0 and k < len(pending):
+                bi, rem = pending[k]
+                take = min(rem, sell_avail)
+                covered += take
+                sell_avail -= take
+                pending[k][1] = rem - take
+                if pending[k][1] <= 0:
+                    pending.pop(k)
+                else:
+                    k += 1
+            # 當日買超入列（等待後續日回補）
+            if net > 0:
+                total_buy += net
+                events += 1
+                pending.append([i, net])
+    score = (covered / total_buy) if total_buy > 0 else 0.0
+    return score, events
+
+
+def _broker_flip_score(daily: list[dict], tag_fallback: float) -> float:
+    """分點隔日沖傾向分數 0~1：歷史樣本足 → 用隔日反向時序分數；
+    不足 → 用 broker_tags 清單（隔日沖=1.0，否則 0.0）。"""
+    score, events = _flip_score(daily)
+    if events >= _FLIP_MIN_EVENTS:
+        return score
+    return tag_fallback
+
+
+def classify_flip_for_rows(db, rows: list[dict], rank_date: str) -> None:
+    """就地為每列算主力型態（波段/隔日沖/混合）+ 加權隔日沖買超佔比。
+
+    1. 各股取當日買超前 _FLIP_TOPN 分點；
+    2. 批次查這些分點近 _FLIP_HIST_DAYS（≈60交易日、不含當日）在「這批高周轉股」
+       的歷史，以隔日反向時序算每分點隔日沖傾向分數（樣本不足才用 broker_tags）；
+    3. 每股：flip_ratio = Σ(分點買超 × 分點分數) / Σ分點買超 → 型態標籤。
+    db 需已 connect。設 r['main_force']、r['mf_ratio']、r['flip_ratio']。
+    """
+    from collections import defaultdict
+    from datetime import datetime, timedelta
+    for r in rows:
+        r.setdefault("main_force", None)
+        r.setdefault("mf_ratio", None)
+        r.setdefault("flip_ratio", None)
+    try:
+        end_dt = datetime.strptime(rank_date, "%Y%m%d")
+    except (ValueError, TypeError):
+        end_dt = datetime.now()
+    day = _to_dash(rank_date)
+    hist_start = (end_dt - timedelta(days=_FLIP_HIST_DAYS)).strftime("%Y-%m-%d")
+    hist_end = (end_dt - timedelta(days=1)).strftime("%Y-%m-%d")
+    stock_codes = sorted({r["stock_code"] for r in rows})
+
+    # 第一遍：各股當日買超前 N 分點
+    candidates: set[str] = set()
+    per_stock_top: dict[str, list[dict]] = {}
+    for r in rows:
+        code = r["stock_code"]
+        try:
+            today = db.get_all_brokers_daily(code, day, day)
+        except Exception as e:  # noqa: BLE001
+            log.warning("flip top brokers failed %s: %s", code, e)
+            today = []
+        top = sorted((b for b in today if (b.get("net_volume") or 0) > 0),
+                     key=lambda b: b["net_volume"], reverse=True)[:_FLIP_TOPN]
+        per_stock_top[code] = top
+        candidates.update(b["broker_code"] for b in top)
+
+    # 批次查候選分點近 60 交易日歷史（限縮這批高周轉股、不含當日）
+    by_broker: dict[str, list[dict]] = defaultdict(list)
+    try:
+        hist = db.get_brokers_daily_multi(sorted(candidates), hist_start,
+                                          hist_end, stock_codes=stock_codes)
+        for h in hist:
+            by_broker[h["broker_code"]].append(h)
+    except Exception as e:  # noqa: BLE001
+        log.warning("flip history query failed: %s", e)
+
+    # 每分點隔日沖傾向分數（快取）
+    score_of: dict[str, float] = {}
+    for bcode, drows in by_broker.items():
+        name = drows[0]["broker_name"]
+        tag_fb = 1.0 if bt.TAG_NEXT in bt.get_broker_tags(name) else 0.0
+        score_of[bcode] = _broker_flip_score(drows, tag_fb)
+
+    # 第二遍：每股加權隔日沖佔比 → 型態
+    for r in rows:
+        top = per_stock_top.get(r["stock_code"], [])
+        total = sum(b["net_volume"] for b in top)
+        if total <= 0:
+            continue
+        weighted = 0.0
+        for b in top:
+            bcode = b["broker_code"]
+            sc = score_of.get(bcode)
+            if sc is None:      # 無歷史 → 用清單
+                sc = 1.0 if bt.TAG_NEXT in bt.get_broker_tags(
+                    b["broker_name"]) else 0.0
+            weighted += b["net_volume"] * sc
+        ratio = weighted / total
+        r["flip_ratio"] = round(ratio, 3)
+        r["mf_ratio"] = round(ratio, 3)
+        if ratio >= _FLIP_RATIO_HI:
+            r["main_force"] = MF_FLIP
+        elif ratio <= _FLIP_RATIO_LO:
+            r["main_force"] = MF_SWING
+        else:
+            r["main_force"] = MF_MIXED
+
 
 def _to_dash(yyyymmdd: str) -> str:
     return f"{yyyymmdd[:4]}-{yyyymmdd[4:6]}-{yyyymmdd[6:8]}"
@@ -119,16 +259,10 @@ def enrich_rows(db, rows: list[dict], rank_date: str,
                     r["bias20"] = round((last - ma20) / ma20 * 100, 2)
         except Exception as e:  # noqa: BLE001
             log.warning("price metrics failed %s: %s", code, e)
-        # 主力型態
+        # 主力型態改由 classify_flip_for_rows 統一處理（隔日反向時序）
         r["main_force"] = None
         r["mf_ratio"] = None
-        try:
-            brokers = db.get_all_brokers_daily(code, broker_start, end)
-            mf, ratio = classify_main_force(brokers)
-            r["main_force"] = mf
-            r["mf_ratio"] = ratio
-        except Exception as e:  # noqa: BLE001
-            log.warning("main force failed %s: %s", code, e)
+        r["flip_ratio"] = None
     return rows
 
 
@@ -277,6 +411,7 @@ def latest_monitor(db, min_lots: int = 1000, top_n: int = 30,
     if not rows:
         return (date, rows, ctx) if return_ctx else (date, rows)
     enrich_rows(db, rows, date)
+    classify_flip_for_rows(db, rows, date)
 
     # 同類股漲跌（同市場 + 同產業別）
     change_map = market_change_map(days)
