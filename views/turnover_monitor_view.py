@@ -35,8 +35,10 @@ _COLS = [
     ("mf", "主力型態", 92, "center", 0),
     ("foreign", "外資淨(張)", 74, "e", 0),
     ("dealer", "自營/避險淨(張)", 100, "e", 0),
+    ("mnet", "主力買賣超", 78, "e", 0),
+    ("conc", "集中度%", 62, "e", 0),
+    ("mcost", "主力均價", 66, "e", 0),
     ("slope", "MA斜率", 60, "e", 0),
-    ("deduct", "扣抵值", 66, "e", 0),
     ("bias", "乖離率%", 60, "e", 0),
     ("bb", "布林位階", 54, "e", 0),
     ("warrant", "權證多空", 78, "center", 0),
@@ -256,15 +258,32 @@ class TurnoverMonitorView(ctk.CTkFrame):
         else:
             sclr = cs.RED if sl > 0 else cs.GREEN if sl < 0 else cs.FLAT
             lbl("slope", f"{sl:+.2f}", sclr, "e")
-        # 均線扣抵值（20日）：現價 vs 扣抵值 → 助漲(紅▲)/助跌(綠▼)
-        ded = r.get("ma_deduct")
-        if ded is None:
-            lbl("deduct", "—", "#6a6a6a", "e")
+        # 主力買賣超（前15家淨，張）：正買超紅、負賣超綠
+        mn = r.get("main_net_lots")
+        if mn is None:
+            lbl("mnet", "—", "#6a6a6a", "e")
         else:
-            dd = r.get("deduct_dir")
-            dclr = cs.RED if dd == 1 else cs.GREEN if dd == -1 else cs.FLAT
-            darrow = "▲" if dd == 1 else "▼" if dd == -1 else ""
-            lbl("deduct", f"{darrow}{ded:,.2f}", dclr, "e")
+            mclr = cs.RED if mn > 0 else cs.GREEN if mn < 0 else cs.FLAT
+            lbl("mnet", f"{mn:+,}", mclr, "e", bold=abs(mn) >= 1000)
+        # 主力集中度%：正=籌碼集中買方紅、負=集中賣方綠
+        cc = r.get("concentration")
+        if cc is None:
+            lbl("conc", "—", "#6a6a6a", "e")
+        else:
+            cclr2 = cs.RED if cc > 0 else cs.GREEN if cc < 0 else cs.FLAT
+            lbl("conc", f"{cc:+.2f}", cclr2, "e", bold=abs(cc) >= 10)
+        # 主力均價：集中度負(賣超為主)→賣均價(綠)；否則→買均價(紅)
+        cc2 = r.get("concentration")
+        if cc2 is not None and cc2 < 0:
+            mc = r.get("main_sell_cost")
+            mcclr = cs.GREEN
+        else:
+            mc = r.get("main_buy_cost")
+            mcclr = cs.RED
+        if mc is None:
+            lbl("mcost", "—", "#6a6a6a", "e")
+        else:
+            lbl("mcost", f"{mc:,.2f}", mcclr, "e")
         # 20 日乖離率%（正=均線之上紅、負=均線之下綠）
         bs = r.get("bias20")
         if bs is None:

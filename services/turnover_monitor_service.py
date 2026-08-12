@@ -34,6 +34,82 @@ _FLIP_MIN_EVENTS = 3     # 買超事件數不足 → 樣本不足，改用 broke
 _FLIP_RATIO_HI = 0.6     # 前10隔日沖買超佔比 ≥ → 隔日沖
 _FLIP_RATIO_LO = 0.4     # ≤ → 波段；中間 → 混合
 
+_CONC_TOPN = 15          # 主力集中度取買/賣超各前 N 家
+
+
+def concentration_for_rows(db, rows: list[dict], rank_date: str) -> None:
+    """就地為每列算當日主力買賣超(張) + 集中度% + 主力買超均價。
+
+    主力買賣超 = 買超前15家淨買 + 賣超前15家淨賣（負），單位張。
+    集中度% = 主力買賣超張數 / 當日成交量(張) × 100（沿用分點分析頁公式）。
+    主力買超均價 = 買超前15家的（買進均價 × 買進量）加權平均。
+    net_volume 單位為股，總量以區間量估。db 需已 connect。
+    """
+    day = _to_dash(rank_date)
+    for r in rows:
+        r.setdefault("main_net_lots", None)
+        r.setdefault("concentration", None)
+        r.setdefault("main_buy_cost", None)
+        r.setdefault("main_sell_cost", None)
+        code = r["stock_code"]
+        # 優先用 classify_flip_for_rows 已查的當日分點，避免重複查詢
+        brokers = r.pop("_today_brokers", None)
+        if brokers is None:
+            try:
+                brokers = db.get_all_brokers_daily(code, day, day)
+            except Exception as e:  # noqa: BLE001
+                log.warning("concentration brokers failed %s: %s", code, e)
+                continue
+        if not brokers:
+            continue
+        # 分點彙總（同名合併）：淨額 + 買/賣量 + 買/賣金額（供加權均價），單位股
+        net_by: dict[str, int] = {}
+        buyvol_by: dict[str, int] = {}
+        buycost_by: dict[str, float] = {}
+        sellvol_by: dict[str, int] = {}
+        sellcost_by: dict[str, float] = {}
+        total_vol = 0
+        for b in brokers:
+            name = b["broker_name"]
+            nv = b.get("net_volume")
+            if nv is None:
+                nv = (b.get("buy_volume") or 0) - (b.get("sell_volume") or 0)
+            net_by[name] = net_by.get(name, 0) + nv
+            bv = b.get("buy_volume") or 0
+            abp = b.get("avg_buy_price")
+            if bv > 0 and abp not in (None, ""):
+                buyvol_by[name] = buyvol_by.get(name, 0) + bv
+                buycost_by[name] = buycost_by.get(name, 0.0) + float(abp) * bv
+            sv = b.get("sell_volume") or 0
+            asp = b.get("avg_sell_price")
+            if sv > 0 and asp not in (None, ""):
+                sellvol_by[name] = sellvol_by.get(name, 0) + sv
+                sellcost_by[name] = sellcost_by.get(name, 0.0) + float(asp) * sv
+            total_vol = _numf(b.get("total_volume")) or total_vol
+        buyers = sorted((v for v in net_by.values() if v > 0), reverse=True)
+        sellers = sorted(v for v in net_by.values() if v < 0)
+        main_net = sum(buyers[:_CONC_TOPN]) + sum(sellers[:_CONC_TOPN])  # 股
+        r["main_net_lots"] = round(main_net / 1000)
+        # total_vol 為股；集中度 = 主力淨(股) / 成交量(股) × 100
+        if total_vol > 0:
+            r["concentration"] = round(main_net / total_vol * 100, 2)
+        # 主力買超均價：買超前15家（淨買>0）以買進量加權買進均價
+        top_buy_names = sorted(
+            (n for n, v in net_by.items() if v > 0),
+            key=lambda n: net_by[n], reverse=True)[:_CONC_TOPN]
+        bcost = sum(buycost_by.get(n, 0.0) for n in top_buy_names)
+        bqty = sum(buyvol_by.get(n, 0) for n in top_buy_names)
+        if bqty > 0:
+            r["main_buy_cost"] = round(bcost / bqty, 2)
+        # 主力賣超均價：賣超前15家（淨賣<0）以賣出量加權賣出均價
+        top_sell_names = sorted(
+            (n for n, v in net_by.items() if v < 0),
+            key=lambda n: net_by[n])[:_CONC_TOPN]
+        scost = sum(sellcost_by.get(n, 0.0) for n in top_sell_names)
+        sqty = sum(sellvol_by.get(n, 0) for n in top_sell_names)
+        if sqty > 0:
+            r["main_sell_cost"] = round(scost / sqty, 2)
+
 
 def _flip_score(daily: list[dict]) -> tuple[float, int]:
     """單一分點的隔日沖分數：買超量在隔 1~2 交易日被賣超回補的比例。
@@ -120,6 +196,7 @@ def classify_flip_for_rows(db, rows: list[dict], rank_date: str) -> None:
         except Exception as e:  # noqa: BLE001
             log.warning("flip top brokers failed %s: %s", code, e)
             today = []
+        r["_today_brokers"] = today      # 快取供 concentration_for_rows 重用
         top = sorted((b for b in today if (b.get("net_volume") or 0) > 0),
                      key=lambda b: b["net_volume"], reverse=True)[:_FLIP_TOPN]
         per_stock_top[code] = top
@@ -232,8 +309,6 @@ def enrich_rows(db, rows: list[dict], rank_date: str,
         # 技術面
         r["ma_slope"] = None
         r["bb_pos"] = None
-        r["ma_deduct"] = None       # 均線扣抵值（明日將被扣抵的收盤價）
-        r["deduct_dir"] = None      # 1 助漲 / -1 助跌 / 0 持平（現價 vs 扣抵值）
         r["bias20"] = None          # 20 日乖離率%（(收盤-MA20)/MA20×100）
         try:
             prices = db.get_stock_prices(code, price_start, end)
@@ -246,14 +321,9 @@ def enrich_rows(db, rows: list[dict], rank_date: str,
             if m:
                 r["ma_slope"] = round(m["slope"], 2)
                 r["bb_pos"] = m["rank_pos"]
-            # 均線扣抵：現價 vs 20 日視窗最舊（明日將被扣抵）那筆收盤，孰高孰低
             closes = [_numf(p.get("close_price")) for p in prices]
             if len(closes) >= _MA_PERIOD:
-                deduct = closes[-_MA_PERIOD]
                 last = closes[-1]
-                r["ma_deduct"] = round(deduct, 2)
-                r["deduct_dir"] = (1 if last > deduct
-                                   else -1 if last < deduct else 0)
                 ma20 = sum(closes[-_MA_PERIOD:]) / _MA_PERIOD
                 if ma20:
                     r["bias20"] = round((last - ma20) / ma20 * 100, 2)
@@ -412,6 +482,7 @@ def latest_monitor(db, min_lots: int = 1000, top_n: int = 30,
         return (date, rows, ctx) if return_ctx else (date, rows)
     enrich_rows(db, rows, date)
     classify_flip_for_rows(db, rows, date)
+    concentration_for_rows(db, rows, date)
 
     # 同類股漲跌（同市場 + 同產業別）
     change_map = market_change_map(days)

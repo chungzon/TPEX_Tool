@@ -932,7 +932,8 @@ class DbService:
         cur.execute("""
             SELECT b.trade_date, b.broker_code, b.broker_name,
                    b.buy_volume, b.sell_volume, b.net_volume,
-                   s.close_price, s.total_volume, b.avg_buy_price
+                   s.close_price, s.total_volume, b.avg_buy_price,
+                   b.avg_sell_price
             FROM BrokerDailyStats b
             JOIN StockDailySummary s
               ON b.stock_code = s.stock_code AND b.trade_date = s.trade_date
@@ -945,7 +946,7 @@ class DbService:
                 "broker_name": r[2], "buy_volume": r[3],
                 "sell_volume": r[4], "net_volume": r[5],
                 "close_price": r[6], "total_volume": r[7],
-                "avg_buy_price": r[8],
+                "avg_buy_price": r[8], "avg_sell_price": r[9],
             }
             for r in cur.fetchall()
         ]
