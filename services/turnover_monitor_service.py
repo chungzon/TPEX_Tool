@@ -37,6 +37,57 @@ _FLIP_RATIO_LO = 0.4     # ≤ → 波段；中間 → 混合
 _CONC_TOPN = 15          # 主力集中度取買/賣超各前 N 家
 
 
+def score_next_day_bias(r: dict) -> None:
+    """依現有技術/籌碼欄位算隔日多空傾向。就地設 r['nd_score']、r['nd_bias']。
+
+    每項訊號 +1(偏多)/−1(偏空)，加總：≥+3 強多、+1~2 弱多、−1~2 弱空、
+    ≤−3 強空、0 中性。四類訊號：主力籌碼 / 外資自營 / 趨勢量價 / 隔日沖型態。
+    欄位缺值該項略過（不計分）。
+    """
+    score = 0
+    # 1) 主力籌碼：主力買賣超 + 集中度（同號加成）
+    mn = r.get("main_net_lots")
+    cc = r.get("concentration")
+    if mn is not None:
+        score += 1 if mn > 0 else -1 if mn < 0 else 0
+    if cc is not None:
+        score += 1 if cc > 0 else -1 if cc < 0 else 0
+    # 2) 外資 / 自營
+    fl = r.get("foreign_lots")
+    ds = r.get("dealer_self_lots")
+    if fl is not None:
+        score += 1 if fl > 0 else -1 if fl < 0 else 0
+    if ds is not None:
+        score += 1 if ds > 0 else -1 if ds < 0 else 0
+    # 3) 趨勢 / 量價：MA斜率、當日漲跌×量增減
+    sl = r.get("ma_slope")
+    if sl is not None:
+        score += 1 if sl > 0 else -1 if sl < 0 else 0
+    chg = r.get("change")
+    vc = r.get("vol_chg_pct")
+    if chg is not None and vc is not None:
+        # 放量上漲=偏多、放量下跌=偏空；縮量不加分
+        if vc > 0:
+            score += 1 if chg > 0 else -1 if chg < 0 else 0
+    # 4) 主力型態：波段偏多、隔日沖(隔日賣壓)偏空
+    mf = r.get("main_force")
+    if mf == MF_SWING:
+        score += 1
+    elif mf == MF_FLIP:
+        score -= 1
+    r["nd_score"] = score
+    if score >= 3:
+        r["nd_bias"] = "強多"
+    elif score >= 1:
+        r["nd_bias"] = "弱多"
+    elif score <= -3:
+        r["nd_bias"] = "強空"
+    elif score <= -1:
+        r["nd_bias"] = "弱空"
+    else:
+        r["nd_bias"] = "中性"
+
+
 def concentration_for_rows(db, rows: list[dict], rank_date: str) -> None:
     """就地為每列算當日主力買賣超(張) + 集中度% + 主力買超均價。
 
@@ -310,6 +361,7 @@ def enrich_rows(db, rows: list[dict], rank_date: str,
         r["ma_slope"] = None
         r["bb_pos"] = None
         r["bias20"] = None          # 20 日乖離率%（(收盤-MA20)/MA20×100）
+        r["vol_chg_pct"] = None     # 量增減%（當日量較前一交易日）
         try:
             prices = db.get_stock_prices(code, price_start, end)
             # _price_metrics 遇任一 close 為 null 會整個回 None，先濾掉空值列
@@ -327,6 +379,11 @@ def enrich_rows(db, rows: list[dict], rank_date: str,
                 ma20 = sum(closes[-_MA_PERIOD:]) / _MA_PERIOD
                 if ma20:
                     r["bias20"] = round((last - ma20) / ma20 * 100, 2)
+            # 量增減%：最新交易日量 vs 前一交易日量
+            vols = [_numf(p.get("total_volume")) for p in prices]
+            if len(vols) >= 2 and vols[-2] > 0:
+                r["vol_chg_pct"] = round(
+                    (vols[-1] - vols[-2]) / vols[-2] * 100, 1)
         except Exception as e:  # noqa: BLE001
             log.warning("price metrics failed %s: %s", code, e)
         # 主力型態改由 classify_flip_for_rows 統一處理（隔日反向時序）
@@ -520,4 +577,6 @@ def latest_monitor(db, min_lots: int = 1000, top_n: int = 30,
             r["foreign_lots"] = None
             r["dealer_self_lots"] = None
             r["dealer_hedge_lots"] = None
+    for r in rows:
+        score_next_day_bias(r)
     return (date, rows, ctx) if return_ctx else (date, rows)

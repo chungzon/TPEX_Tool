@@ -24,6 +24,7 @@ _MKT_STYLE = {"上市": ("市", "#3d6fb4"), "上櫃": ("櫃", "#b07a2e")}
 
 # (key, 標題, 寬px, 對齊, 權重)
 _COLS = [
+    ("nd", "隔", 24, "center", 0),
     ("rank", "#", 26, "center", 0),
     ("mkt", "", 30, "center", 0),
     ("code", "代碼", 48, "center", 0),
@@ -39,12 +40,20 @@ _COLS = [
     ("conc", "集中度%", 62, "e", 0),
     ("mcost", "主力均價", 66, "e", 0),
     ("slope", "MA斜率", 60, "e", 0),
-    ("bias", "乖離率%", 60, "e", 0),
     ("bb", "布林位階", 54, "e", 0),
     ("warrant", "權證多空", 78, "center", 0),
-    ("peeravg", "同類股漲跌", 78, "e", 0),
-    ("peerratio", "同類股漲跌比例", 92, "e", 0),
+    ("volchg", "量增減%", 64, "e", 0),
+    ("peer", "同類股漲跌(家數)", 118, "e", 0),
 ]
+
+# 隔日多空建議 icon（箭頭 + 強度色）：強多深紅、弱多淺紅、弱空淺綠、強空深綠
+_ND_STYLE = {
+    "強多": ("▲", "#ff2d2d"),
+    "弱多": ("▲", "#e08a8a"),
+    "中性": ("―", "#8a8a8e"),
+    "弱空": ("▼", "#7fcbb8"),
+    "強空": ("▼", "#12b48a"),
+}
 
 # 權證多空徽章配色（多=紅、空=綠、中性=灰）
 _WARRANT_STYLE = {"多": ("#ef5350", "#2a0f0f"),
@@ -160,6 +169,32 @@ class TurnoverMonitorView(ctk.CTkFrame):
             self._bind_row_click(rowf, r)
             self._row_widgets.append(rowf)
 
+    def _attach_tip(self, widget, text: str):
+        """輕量 hover tooltip：滑鼠移入顯示小浮窗，移出關閉。"""
+        state = {"tw": None}
+
+        def _show(_e=None):
+            if state["tw"] is not None:
+                return
+            tw = ctk.CTkToplevel(self)
+            tw.wm_overrideredirect(True)
+            tw.attributes("-topmost", True)
+            x = widget.winfo_rootx() + 24
+            y = widget.winfo_rooty() + 18
+            tw.wm_geometry(f"+{x}+{y}")
+            ctk.CTkLabel(tw, text=text, fg_color="#2a2b2f",
+                         corner_radius=6, text_color="#e6e6e6",
+                         font=ctk.CTkFont(size=11)).pack(padx=1, pady=1)
+            state["tw"] = tw
+
+        def _hide(_e=None):
+            if state["tw"] is not None:
+                state["tw"].destroy()
+                state["tw"] = None
+
+        widget.bind("<Enter>", _show)
+        widget.bind("<Leave>", _hide)
+
     def _bind_row_click(self, rowf, r):
         """監控模式下：整列（含子元件）可點擊 → 開監控彈窗，游標改手形。"""
         def _open(_e=None):
@@ -197,6 +232,19 @@ class TurnoverMonitorView(ctk.CTkFrame):
                         else "e" if anc == "e" else "w")).grid(
                 row=0, column=col[key], sticky="ew", padx=3, pady=2)
 
+        # 隔日多空建議 icon（箭頭 + 強度色，滑鼠 tooltip 顯示分數）
+        nd = r.get("nd_bias")
+        nds = _ND_STYLE.get(nd)
+        if nds:
+            ndlbl = ctk.CTkLabel(
+                rowf, text=nds[0], text_color=nds[1],
+                font=ctk.CTkFont(size=13, weight="bold"))
+            ndlbl.grid(row=0, column=col["nd"], sticky="ew", padx=1, pady=2)
+            sc = r.get("nd_score")
+            self._attach_tip(ndlbl, f"隔日{nd}（分數 {sc:+d}）"
+                             if sc is not None else f"隔日{nd}")
+        else:
+            lbl("nd", "", "#6a6a6a", "center")
         lbl("rank", str(idx), "#7a7a7e", "center")
         # 市場徽章
         mkt = r.get("market", "")
@@ -284,13 +332,6 @@ class TurnoverMonitorView(ctk.CTkFrame):
             lbl("mcost", "—", "#6a6a6a", "e")
         else:
             lbl("mcost", f"{mc:,.2f}", mcclr, "e")
-        # 20 日乖離率%（正=均線之上紅、負=均線之下綠）
-        bs = r.get("bias20")
-        if bs is None:
-            lbl("bias", "—", "#6a6a6a", "e")
-        else:
-            bsclr = cs.RED if bs > 0 else cs.GREEN if bs < 0 else cs.FLAT
-            lbl("bias", f"{bs:+.2f}", bsclr, "e")
         # 布林位階
         bb = r.get("bb_pos")
         if bb is None:
@@ -310,19 +351,23 @@ class TurnoverMonitorView(ctk.CTkFrame):
                 row=0, column=col["warrant"], sticky="ew", padx=6, pady=2)
         else:
             lbl("warrant", "—", "#6a6a6a", "center")
-        # 同類股平均漲跌幅%
+        # 量增減%：當日成交量較前一交易日（正=量增紅、負=量縮綠）
+        vc = r.get("vol_chg_pct")
+        if vc is None:
+            lbl("volchg", "—", "#6a6a6a", "e")
+        else:
+            vclr = cs.RED if vc > 0 else cs.GREEN if vc < 0 else cs.FLAT
+            lbl("volchg", f"{vc:+.0f}%", vclr, "e", bold=abs(vc) >= 50)
+        # 同類股漲跌（合併）：平均漲跌幅% + (上漲家數/總家數)
         av = r.get("peer_avg_chg")
-        if av is None:
-            lbl("peeravg", "—", "#6a6a6a", "e")
-        else:
-            aclr = cs.RED if av > 0 else cs.GREEN if av < 0 else cs.FLAT
-            lbl("peeravg", f"{av:+.2f}%", aclr, "e")
-        # 同類股漲跌比例：上漲家數/總家數（紅=漲方多、綠=跌方多）
         up = r.get("peer_up")
-        down = r.get("peer_down")
         total = r.get("peer_total")
-        if up is None or total is None:
-            lbl("peerratio", "—", "#6a6a6a", "e")
+        if av is None and (up is None or total is None):
+            lbl("peer", "—", "#6a6a6a", "e")
         else:
-            rclr = cs.RED if up > down else cs.GREEN if up < down else cs.FLAT
-            lbl("peerratio", f"{up}/{total}", rclr, "e")
+            aclr = (cs.RED if (av or 0) > 0 else cs.GREEN if (av or 0) < 0
+                    else cs.FLAT)
+            avs = f"{av:+.2f}%" if av is not None else "—"
+            cnt = f"({up}/{total})" if up is not None and total is not None \
+                else ""
+            lbl("peer", f"{avs} {cnt}".strip(), aclr, "e")
