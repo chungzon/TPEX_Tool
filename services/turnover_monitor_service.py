@@ -522,6 +522,94 @@ def warrant_for(date: str, code: str, name: str, market: str) -> dict | None:
     return bias_by_name(date).get(name)
 
 
+def top_profit_brokers(db, code: str, rank_date: str, lookback_days: int = 120,
+                       top_n: int = 5) -> dict:
+    """單股近 lookback_days 交易日「最賺錢前 N 分點」+ 近一日買賣超。
+
+    已實現損益 ≈ (賣均價 − 買均價) × 配對量 min(買量, 賣量)。以此排序取前 N。
+    另用資料日當天各分點淨額補「近一日買賣超(張)」。
+    回 {sessions: 實際交易日數, brokers: [{name, buy_avg, sell_avg, buy_lots,
+    sell_lots, pnl, last_net_lots}]}。db 需已 connect。
+    """
+    try:
+        end_dt = datetime.strptime(rank_date, "%Y%m%d")
+    except (ValueError, TypeError):
+        end_dt = datetime.now()
+    end = end_dt.strftime("%Y-%m-%d")
+    # 交易日≈日曆天×0.69，抓寬一點確保湊滿 120 交易日
+    start = (end_dt - timedelta(days=int(lookback_days * 1.9) + 10)).strftime(
+        "%Y-%m-%d")
+
+    # 實際交易日數（該股在區間內有幾天分點資料）
+    sessions = 0
+    try:
+        cur = db._cursor()
+        cur.execute("""
+            SELECT COUNT(DISTINCT trade_date) FROM BrokerDailyStats
+            WHERE stock_code=%s AND trade_date>=%s AND trade_date<=%s
+        """, (code, start, end))
+        sessions = cur.fetchone()[0] or 0
+    except Exception as e:  # noqa: BLE001
+        log.warning("session count failed %s: %s", code, e)
+
+    # 只取最後 lookback_days 個交易日：先抓區間所有交易日、截尾
+    day = _to_dash(rank_date)
+    try:
+        cur.execute("""
+            SELECT DISTINCT trade_date FROM BrokerDailyStats
+            WHERE stock_code=%s AND trade_date>=%s AND trade_date<=%s
+            ORDER BY trade_date
+        """, (code, start, end))
+        all_days = [str(r[0])[:10] for r in cur.fetchall()]
+    except Exception:  # noqa: BLE001
+        all_days = []
+    if all_days:
+        window_days = all_days[-lookback_days:]
+        sessions = len(window_days)
+        win_start, win_end = window_days[0], window_days[-1]
+    else:
+        win_start, win_end = start, end
+
+    try:
+        summ = db.get_brokers_summary(code, win_start, win_end)
+    except Exception as e:  # noqa: BLE001
+        log.warning("top-profit summary failed %s: %s", code, e)
+        return {"sessions": sessions, "brokers": []}
+
+    # 近一日各分點淨額（股）
+    last_net: dict[str, int] = {}
+    try:
+        today = db.get_brokers_summary(code, day, day)
+        for b in today:
+            last_net[b["broker_name"]] = b.get("net_volume") or 0
+    except Exception as e:  # noqa: BLE001
+        log.warning("last-day net failed %s: %s", code, e)
+
+    scored = []
+    for b in summ:
+        bv = b.get("buy_volume") or 0
+        sv = b.get("sell_volume") or 0
+        ab = b.get("avg_buy_price")
+        asl = b.get("avg_sell_price")
+        if not ab or not asl:
+            continue
+        matched = min(bv, sv)
+        if matched <= 0:
+            continue
+        pnl = (asl - ab) * matched      # 元
+        scored.append({
+            "name": b["broker_name"],
+            "buy_avg": round(ab, 2),
+            "sell_avg": round(asl, 2),
+            "buy_lots": int(bv / 1000),
+            "sell_lots": int(sv / 1000),
+            "pnl": round(pnl),
+            "last_net_lots": round(last_net.get(b["broker_name"], 0) / 1000),
+        })
+    scored.sort(key=lambda x: x["pnl"], reverse=True)
+    return {"sessions": sessions, "brokers": scored[:top_n]}
+
+
 def latest_monitor(db, min_lots: int = 1000, top_n: int = 30,
                    anchor: str | None = None, return_ctx: bool = False):
     """周轉率排行 + 監控欄位（含同類股漲跌）。回 (資料日 yyyymmdd, rows)。

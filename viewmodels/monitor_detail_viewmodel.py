@@ -45,6 +45,7 @@ class MonitorDetailViewModel(BaseViewModel):
     peers = ObservableProperty(None)            # list[dict] | None（即時排行）
     warrant = ObservableProperty(None)          # dict | None
     quote = ObservableProperty(None)            # dict | None（即時個股報價 KPI）
+    top_brokers = ObservableProperty(None)      # dict | None（最賺錢前5分點）
     status = ObservableProperty("載入中…")
 
     def __init__(self, stock_code: str, stock_name: str, market: str,
@@ -63,7 +64,7 @@ class MonitorDetailViewModel(BaseViewModel):
     def start(self) -> None:
         # 一次性：日線趨勢、權證多空（EOD）
         # 輪詢：即時報價 + 同類股即時排行（MIS 免登入）、即時分 K（Shioaji，需登入）
-        for fn in (self._load_daily, self._load_warrant,
+        for fn in (self._load_daily, self._load_warrant, self._load_top_brokers,
                    self._poll_realtime, self._poll_intraday):
             t = threading.Thread(target=fn, daemon=True)
             t.start()
@@ -94,6 +95,24 @@ class MonitorDetailViewModel(BaseViewModel):
             except Exception:
                 pass
         self.daily_trend = daily_trend(prices)
+
+    # ---- 近120交易日最賺錢前5分點（買賣均價 + 近一日買賣超） ----
+    def _load_top_brokers(self) -> None:
+        from services.db_service import DbService
+        from services.turnover_monitor_service import top_profit_brokers
+        db = DbService()
+        try:
+            db.connect()
+            self.top_brokers = top_profit_brokers(db, self.code, self.date,
+                                                  lookback_days=120, top_n=5)
+        except Exception as e:  # noqa: BLE001
+            log.warning("top brokers load failed %s: %s", self.code, e)
+            self.top_brokers = {"sessions": 0, "brokers": [], "error": str(e)}
+        finally:
+            try:
+                db.close()
+            except Exception:
+                pass
 
     # ---- 即時：個股報價 + 同類股即時成交量排行（MIS 免登入） ----
     def _poll_realtime(self) -> None:

@@ -108,20 +108,33 @@ class MonitorDetailWindow(ctk.CTkToplevel):
         self.warr_card, self.warr_body = self._card(
             2, 1, "權證多空（最新可得日）")
 
+        # ---- 最賺錢前5分點（跨兩欄）----
+        self.tb_title = "近120交易日最賺錢前五分點（買賣均價 · 近一日買賣超）"
+        self.tb_card, self.tb_body, self.tb_label = self._card(
+            3, 0, self.tb_title, span=2, with_subtitle=True)
+
         self.status_label = ctk.CTkLabel(
             root, text="載入中…", font=ctk.CTkFont(size=11),
             text_color="gray", anchor="w", justify="left")
-        self.status_label.grid(row=3, column=0, columnspan=2, sticky="ew",
+        self.status_label.grid(row=4, column=0, columnspan=2, sticky="ew",
                                padx=12, pady=(2, 6))
 
-    def _card(self, row, col, title):
+    def _card(self, row, col, title, span=1, with_subtitle=False):
         card = ctk.CTkFrame(self._grid, corner_radius=12, fg_color="#1b1c1f")
-        card.grid(row=row, column=col, sticky="nsew", padx=6, pady=6)
+        card.grid(row=row, column=col, columnspan=span, sticky="nsew",
+                  padx=6, pady=6)
         ctk.CTkLabel(card, text=title,
                      font=ctk.CTkFont(size=14, weight="bold")).pack(
             anchor="w", padx=16, pady=(12, 2))
+        sub = None
+        if with_subtitle:
+            sub = ctk.CTkLabel(card, text="", font=ctk.CTkFont(size=11),
+                               text_color="#8a8a8e")
+            sub.pack(anchor="w", padx=16, pady=(0, 2))
         body = ctk.CTkFrame(card, fg_color="transparent")
         body.pack(fill="both", expand=True, padx=8, pady=(0, 10))
+        if with_subtitle:
+            return card, body, sub
         return card, body
 
     # ================================================================ Bindings
@@ -135,6 +148,8 @@ class MonitorDetailWindow(ctk.CTkToplevel):
                      lambda v: self.after(0, lambda: self._render_peers(v)))
         self.vm.bind("warrant",
                      lambda v: self.after(0, lambda: self._render_warrant(v)))
+        self.vm.bind("top_brokers",
+                     lambda v: self.after(0, lambda: self._render_top_brokers(v)))
         self.vm.bind("status",
                      lambda v: self.after(0, lambda: self.status_label.configure(
                          text=v or "")))
@@ -476,6 +491,69 @@ class MonitorDetailWindow(ctk.CTkToplevel):
             font=ctk.CTkFont(size=11), text_color="#6a6a6a",
             wraplength=460, justify="left").pack(anchor="w", padx=16,
                                                  pady=(4, 4))
+
+    def _render_top_brokers(self, data):
+        self._clear(self.tb_body)
+        if not data:
+            return
+        sessions = data.get("sessions", 0)
+        brokers = data.get("brokers") or []
+        # 副標：說明實際統計交易日數（可能不足 120）
+        note = f"統計 {sessions} 個交易日" if sessions >= 120 else \
+            f"統計 {sessions} 個交易日（資料不足 120，以現有為準）"
+        self.tb_label.configure(text=note)
+        if data.get("error"):
+            ctk.CTkLabel(self.tb_body, text=f"（載入失敗：{data['error']}）",
+                         font=ctk.CTkFont(size=12), text_color="gray").pack(
+                pady=12)
+            return
+        if not brokers:
+            ctk.CTkLabel(self.tb_body, text="（無分點交易資料）",
+                         font=ctk.CTkFont(size=12), text_color="gray").pack(
+                pady=12)
+            return
+        cols = [("rank", "#", 28, "center"), ("name", "分點", 118, "w"),
+                ("buy", "買均價", 76, "e"), ("sell", "賣均價", 76, "e"),
+                ("bs", "買/賣(張)", 108, "e"),
+                ("pnl", "區間損益(千)", 96, "e"),
+                ("last", "近一日(張)", 84, "e")]
+        header = ctk.CTkFrame(self.tb_body, fg_color="transparent")
+        header.pack(fill="x", padx=8, pady=(2, 2))
+        for i, (_k, t, w, a) in enumerate(cols):
+            header.grid_columnconfigure(i, minsize=w, weight=1 if _k == "name"
+                                        else 0)
+            ctk.CTkLabel(header, text=t, font=ctk.CTkFont(size=12,
+                         weight="bold"), text_color="#8a8a8e",
+                         anchor=("w" if a == "w" else "e" if a == "e"
+                                 else "center")).grid(
+                row=0, column=i, sticky="ew", padx=4)
+        for idx, b in enumerate(brokers, 1):
+            rowf = ctk.CTkFrame(self.tb_body,
+                                fg_color="#1d1e21" if idx % 2 == 0
+                                else "transparent", corner_radius=4)
+            rowf.pack(fill="x", padx=8, pady=1)
+            for i, (_k, _t, w, _a) in enumerate(cols):
+                rowf.grid_columnconfigure(i, minsize=w, weight=1
+                                          if _k == "name" else 0)
+            ln = b["last_net_lots"]
+            lclr = cs.RED if ln > 0 else cs.GREEN if ln < 0 else "#8a8a8e"
+            pnl_k = b["pnl"] / 1000
+            pclr = cs.RED if pnl_k > 0 else cs.GREEN if pnl_k < 0 else "#c7c7cc"
+            cells = [
+                (str(idx), "#7a7a7e", "center"),
+                (b["name"], "#e6e6e6", "w"),
+                (f"{b['buy_avg']:,.2f}", "#c7c7cc", "e"),
+                (f"{b['sell_avg']:,.2f}", "#c7c7cc", "e"),
+                (f"{b['buy_lots']:,}/{b['sell_lots']:,}", "#c7c7cc", "e"),
+                (f"{pnl_k:+,.0f}", pclr, "e"),
+                (f"{ln:+,}", lclr, "e"),
+            ]
+            for i, (text, clr, a) in enumerate(cells):
+                ctk.CTkLabel(rowf, text=text, text_color=clr,
+                             font=ctk.CTkFont(size=12),
+                             anchor=("w" if a == "w" else "e" if a == "e"
+                                     else "center")).grid(
+                    row=0, column=i, sticky="ew", padx=4, pady=2)
 
     # ================================================================ Close
     def _on_close(self):
