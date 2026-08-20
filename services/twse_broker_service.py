@@ -203,7 +203,16 @@ class TwseBrokerService:
         log.info("TWSE CSV: %s", csv_url)
         resp3 = s.get(csv_url, timeout=30)
         resp3.raise_for_status()
-        csv_text = resp3.content.decode("big5", errors="replace")
+        # TWSE BSR CSV 已由 big5 改為 UTF-8（含 BOM）；優先 utf-8-sig，
+        # 失敗才退回 big5（防日後改回）。
+        raw = resp3.content
+        if raw[:3] == b"\xef\xbb\xbf" or b"\xe5" in raw[:64]:
+            csv_text = raw.decode("utf-8-sig", errors="replace")
+        else:
+            try:
+                csv_text = raw.decode("big5", errors="strict")
+            except UnicodeDecodeError:
+                csv_text = raw.decode("utf-8-sig", errors="replace")
 
         # 6. Parse CSV
         result = self._parse_csv(csv_text, stock_code)
@@ -255,18 +264,19 @@ class TwseBrokerService:
                 half = half.strip()
                 if not half:
                     continue
-                parts = half.split(",")
+                # \u6b04\u4f4d\u53ef\u80fd\u88ab\u96d9\u5f15\u865f\u5305\u4f4f\uff08TWSE CSV \u5168\u6b04\u52a0\u5f15\u865f\uff09\uff0c\u5148\u53bb\u5f15\u865f
+                parts = [p.strip().strip('"').strip() for p in half.split(",")]
                 if len(parts) < 5:
                     continue
 
-                seq = parts[0].strip()
+                seq = parts[0]
                 if not seq or not seq.replace(",", "").isdigit():
                     continue
 
-                broker = parts[1].strip().replace("\u3000", " ")
-                price = parts[2].strip()
-                buy = parts[3].strip().replace(",", "")
-                sell = parts[4].strip().replace(",", "")
+                broker = parts[1].replace("\u3000", " ")
+                price = parts[2]
+                buy = parts[3].replace(",", "")
+                sell = parts[4].replace(",", "")
 
                 # Extract broker code + name
                 bm = re.match(r"^(\d{4}[A-Za-z]?)\s*(.*)", broker)
