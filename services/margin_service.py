@@ -190,11 +190,11 @@ def fetch_twse_margin(date_str: str) -> list[dict]:
 
     api_date = _normalize_api_date(data.get("date", "")) or date_str
 
-    # 找包含「證券代號」欄位的個股表
+    # 找含「代號」欄位的個股表（TWSE 曾把標題「證券代號」改為「代號」，故放寬比對）
     stock_table = None
     for t in data.get("tables", []):
         fields = t.get("fields") or []
-        if any("證券代號" in str(f) for f in fields):
+        if any("代號" in str(f) for f in fields):
             stock_table = t
             break
     # 舊格式 fallback
