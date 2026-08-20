@@ -247,7 +247,16 @@ class SettingsView(ctk.CTkFrame):
             fg_color="#1f6aa5", hover_color="#185a8c",
             command=self._on_run_twse,
         )
-        self.run_twse_btn.pack(side="left")
+        self.run_twse_btn.pack(side="left", padx=(0, 8))
+
+        self.run_all_btn = ctk.CTkButton(
+            run_row, text="同時下載 上櫃+上市",
+            width=180, height=38, corner_radius=8,
+            font=ctk.CTkFont(size=13, weight="bold"),
+            fg_color="#2e8b57", hover_color="#256e46",
+            command=self._on_run_all,
+        )
+        self.run_all_btn.pack(side="left")
 
         ctk.CTkFrame(card, height=1, fg_color="#3a3a3a").pack(
             fill="x", padx=24, pady=(12, 12))
@@ -338,6 +347,9 @@ class SettingsView(ctk.CTkFrame):
 
     def _on_run_twse(self):
         self.vm.run_now(market="twse")
+
+    def _on_run_all(self):
+        self.vm.run_now(market="all")
 
     # ---- Bindings ----
 

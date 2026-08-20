@@ -121,7 +121,36 @@ class BatchDownloadViewModel(BaseViewModel):
 
             # Create worker tasks with market-appropriate service
             tasks = []
-            if market == "twse":
+            if market == "all":
+                # 上櫃(Playwright) + 上市(HTTP+OCR) 資源互不衝突 → 同時並行。
+                # 依 config 的上市清單把混合 codes 分流成兩市場。
+                from services.twse_broker_service import TwseBrokerService
+                from services.config_service import ConfigService
+                cfg = ConfigService()
+                twse_set = set(cfg.get("twse_stock_codes") or [])
+                twse_codes = [c for c in codes if c in twse_set]
+                otc_codes = [c for c in codes if c not in twse_set]
+                n_otc = min(self._num_workers, len(otc_codes)) or (
+                    1 if otc_codes else 0)
+                otc_chunks: list[list[str]] = [[] for _ in range(n_otc)]
+                for i, c in enumerate(otc_codes):
+                    otc_chunks[i % n_otc].append(c)
+                for w_id in range(n_otc):
+                    svc = BrokerDataService(cdp_port=_BASE_CDP_PORT + w_id)
+                    all_svcs.append(svc)
+                    tasks.append(self._worker(
+                        w_id, svc, otc_chunks[w_id], skip_existing, total,
+                        tag=f"櫃{w_id + 1}"))
+                if twse_codes:
+                    tsvc = TwseBrokerService(cdp_port=_TWSE_BASE_CDP_PORT)
+                    all_svcs.append(tsvc)
+                    tasks.append(self._worker(
+                        n_otc, tsvc, twse_codes, skip_existing, total,
+                        tag="市"))
+                self._log(
+                    f"同時下載：上櫃 {len(otc_codes)} 檔（{n_otc} workers）"
+                    f"+ 上市 {len(twse_codes)} 檔（1 worker）\n")
+            elif market == "twse":
                 # TWSE: single worker (BSR has captcha, parallel is wasteful)
                 from services.twse_broker_service import TwseBrokerService
                 all_codes = []
@@ -171,9 +200,10 @@ class BatchDownloadViewModel(BaseViewModel):
     async def _worker(
         self, w_id: int, broker_svc,
         codes: list[str], skip_existing: bool, total: int,
+        tag: str | None = None,
     ):
         """One worker: downloads its chunk of stocks sequentially."""
-        tag = f"W{w_id + 1}"
+        tag = tag or f"W{w_id + 1}"
         batch_trade_date: str | None = None
 
         for i, code in enumerate(codes):

@@ -200,14 +200,11 @@ class SchedulerService:
 
         from viewmodels.batch_download_viewmodel import BatchDownloadViewModel
 
-        # If market="all", run OTC and TWSE sequentially
+        # market="all"：上櫃(Playwright)+上市(HTTP+OCR) 資源互不衝突，同時並行下載
         if market == "all":
-            if otc_codes:
-                self._status(f"上櫃分點下載（{len(otc_codes)} 檔）...")
-                self._run_single_batch(otc_codes, "otc")
-            if twse_codes and not self._cancel_event.is_set():
-                self._status(f"上市分點下載（{len(twse_codes)} 檔）...")
-                self._run_single_batch(twse_codes, "twse")
+            self._status(
+                f"上櫃+上市同時下載（櫃 {len(otc_codes)} + 市 {len(twse_codes)} 檔）...")
+            self._run_single_batch(otc_codes + twse_codes, "all")
         else:
             self._run_single_batch(codes, market)
 
@@ -312,7 +309,8 @@ class SchedulerService:
                 summary = line
                 break
 
-        label = "上櫃" if market == "otc" else "上市"
+        label = {"otc": "上櫃", "twse": "上市", "all": "上櫃+上市"}.get(
+            market, market)
         if summary:
             self._status(f"{label}：{summary}")
         self.last_result = (self.last_result or "") + f" {label}：{summary or '完成'}"
