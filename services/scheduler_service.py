@@ -221,6 +221,7 @@ class SchedulerService:
 
         do_otc = market in ("otc", "all")
         do_twse = market in ("twse", "all")
+        aux_results: list[str] = []      # 累積輔助資料下載結果，併入 last_result
 
         db = DbService()
         try:
@@ -235,6 +236,7 @@ class SchedulerService:
                     if rows:
                         n = db.save_insti_daily_batch(rows)
                         self._status(f"上櫃三大法人：寫入 {n} 筆")
+                        aux_results.append(f"上櫃三大法人 {n}")
                         log.info("OTC insti %s: %d rows", trading_date, n)
                 except Exception as e:
                     log.warning("OTC insti download failed: %s", e)
@@ -248,6 +250,7 @@ class SchedulerService:
                         objs = [InstiDaily(**r) for r in raw]
                         n = db.save_insti_daily_batch(objs)
                         self._status(f"上市三大法人：寫入 {n} 筆")
+                        aux_results.append(f"上市三大法人 {n}")
                         log.info("TWSE insti %s: %d rows", trading_date, n)
                 except Exception as e:
                     log.warning("TWSE insti download failed: %s", e)
@@ -260,6 +263,7 @@ class SchedulerService:
                     if rows:
                         n = db.save_margin_daily_batch(rows)
                         self._status(f"上櫃融資融券：寫入 {n} 筆")
+                        aux_results.append(f"上櫃融資融券 {n}")
                         log.info("OTC margin %s: %d rows", trading_date, n)
                 except Exception as e:
                     log.warning("OTC margin download failed: %s", e)
@@ -271,6 +275,7 @@ class SchedulerService:
                     if rows:
                         n = db.save_margin_daily_batch(rows)
                         self._status(f"上市融資融券：寫入 {n} 筆")
+                        aux_results.append(f"上市融資融券 {n}")
                         log.info("TWSE margin %s: %d rows", trading_date, n)
                 except Exception as e:
                     log.warning("TWSE margin download failed: %s", e)
@@ -279,6 +284,10 @@ class SchedulerService:
                 db.close()
             except Exception:
                 pass
+        # 併入最終結果，讓輔助資料下載筆數顯示在狀態/log（不被分點結果蓋掉）
+        if aux_results:
+            self.last_result = (self.last_result or "") + \
+                " ｜ 輔助資料：" + "、".join(aux_results)
 
     def _run_single_batch(self, codes: list[str], market: str):
         """Run a batch download for one market and wait for completion."""
