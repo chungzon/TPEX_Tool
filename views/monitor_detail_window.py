@@ -516,7 +516,8 @@ class MonitorDetailWindow(ctk.CTkToplevel):
                 ("buy", "買均價", 76, "e"), ("sell", "賣均價", 76, "e"),
                 ("bs", "買/賣(張)", 108, "e"),
                 ("pnl", "區間損益(千)", 96, "e"),
-                ("last", "近一日(張)", 84, "e")]
+                ("last", "近一日(張)", 84, "e"),
+                ("consec", "連續買進", 76, "e")]
         header = ctk.CTkFrame(self.tb_body, fg_color="transparent")
         header.pack(fill="x", padx=8, pady=(2, 2))
         for i, (_k, t, w, a) in enumerate(cols):
@@ -539,6 +540,14 @@ class MonitorDetailWindow(ctk.CTkToplevel):
             lclr = cs.RED if ln > 0 else cs.GREEN if ln < 0 else "#8a8a8e"
             pnl_k = b["pnl"] / 1000
             pclr = cs.RED if pnl_k > 0 else cs.GREEN if pnl_k < 0 else "#c7c7cc"
+            # 連續買進次數：≥3 視為布局中（火焰+紅），≥1 淺紅，0 灰
+            cb = b.get("consec_buy", 0)
+            if cb >= 3:
+                cb_txt, cbclr = f"🔥{cb}", cs.RED
+            elif cb >= 1:
+                cb_txt, cbclr = f"{cb}", "#e08a8a"
+            else:
+                cb_txt, cbclr = "—", "#6a6a6a"
             cells = [
                 (str(idx), "#7a7a7e", "center"),
                 (b["name"], "#e6e6e6", "w"),
@@ -547,6 +556,7 @@ class MonitorDetailWindow(ctk.CTkToplevel):
                 (f"{b['buy_lots']:,}/{b['sell_lots']:,}", "#c7c7cc", "e"),
                 (f"{pnl_k:+,.0f}", pclr, "e"),
                 (f"{ln:+,}", lclr, "e"),
+                (cb_txt, cbclr, "e"),
             ]
             for i, (text, clr, a) in enumerate(cells):
                 ctk.CTkLabel(rowf, text=text, text_color=clr,

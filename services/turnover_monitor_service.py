@@ -598,6 +598,7 @@ def top_profit_brokers(db, code: str, rank_date: str, lookback_days: int = 120,
             continue
         pnl = (asl - ab) * matched      # 元
         scored.append({
+            "code": b.get("broker_code", ""),
             "name": b["broker_name"],
             "buy_avg": round(ab, 2),
             "sell_avg": round(asl, 2),
@@ -605,9 +606,38 @@ def top_profit_brokers(db, code: str, rank_date: str, lookback_days: int = 120,
             "sell_lots": int(sv / 1000),
             "pnl": round(pnl),
             "last_net_lots": round(last_net.get(b["broker_name"], 0) / 1000),
+            "consec_buy": 0,      # 近期連續買進次數（布局中指標）
         })
     scored.sort(key=lambda x: x["pnl"], reverse=True)
-    return {"sessions": sessions, "brokers": scored[:top_n]}
+    top = scored[:top_n]
+
+    # 前 N 分點「近期連續買進次數」：一次查這些分點在該股的日級時序，
+    # 從最近往回數連續淨買(>0)的交易日次數（遇淨賣/持平即中斷）。
+    codes = [b["code"] for b in top if b["code"]]
+    if codes:
+        try:
+            hist = db.get_brokers_daily_multi(codes, win_start, win_end,
+                                              stock_codes=[code])
+            by_bc: dict[str, list[dict]] = defaultdict(list)
+            for h in hist:
+                by_bc[h["broker_code"]].append(h)
+            for b in top:
+                rows_b = sorted(by_bc.get(b["code"], []),
+                                key=lambda x: x["trade_date"])
+                cnt = 0
+                for h in reversed(rows_b):
+                    nv = h.get("net_volume")
+                    if nv is None:
+                        nv = (h.get("buy_volume") or 0) - (h.get("sell_volume") or 0)
+                    if nv > 0:
+                        cnt += 1
+                    else:
+                        break
+                b["consec_buy"] = cnt
+        except Exception as e:  # noqa: BLE001
+            log.warning("consec-buy failed %s: %s", code, e)
+
+    return {"sessions": sessions, "brokers": top}
 
 
 def latest_monitor(db, min_lots: int = 1000, top_n: int = 30,
