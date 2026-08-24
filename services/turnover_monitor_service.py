@@ -362,6 +362,7 @@ def enrich_rows(db, rows: list[dict], rank_date: str,
         r["bb_pos"] = None
         r["bias20"] = None          # 20 日乖離率%（(收盤-MA20)/MA20×100）
         r["vol_chg_pct"] = None     # 量增減%（當日量較前一交易日）
+        r["granville"] = None       # 葛蘭碧八大法則買賣點
         try:
             prices = db.get_stock_prices(code, price_start, end)
             # _price_metrics 遇任一 close 為 null 會整個回 None，先濾掉空值列
@@ -384,6 +385,9 @@ def enrich_rows(db, rows: list[dict], rank_date: str,
             if len(vols) >= 2 and vols[-2] > 0:
                 r["vol_chg_pct"] = round(
                     (vols[-1] - vols[-2]) / vols[-2] * 100, 1)
+            # 葛蘭碧八大法則（用同一份 prices，零額外查詢）
+            if prices:
+                r["granville"] = granville_signal(daily_trend(prices))
         except Exception as e:  # noqa: BLE001
             log.warning("price metrics failed %s: %s", code, e)
         # 主力型態改由 classify_flip_for_rows 統一處理（隔日反向時序）
@@ -509,6 +513,116 @@ def daily_trend(prices: list[dict], ma_period: int = 20,
     return {"dates": dates, "open": opn, "high": high, "low": low,
             "close": close, "ma": ma, "bb_up": bb_up, "bb_dn": bb_dn,
             "vol_lots": vol_lots, "up": up}
+
+
+# 葛蘭碧八大法則參數（以月線 MA20 為基準）
+_GRAN_FLAT = 0.3          # 均線斜率絕對值 < 此(%)視為走平
+_GRAN_FAR = 12.0         # 乖離率絕對值 >= 此(%)視為遠離均線（超買/超賣）
+_GRAN_NEAR = 3.0         # 乖離率絕對值 <= 此(%)視為貼近均線
+_GRAN_CROSS_LOOKBACK = 3  # 穿越偵測回看根數
+
+
+def granville_signal(dt: dict) -> dict | None:
+    """依葛蘭碧八大法則（股價 vs 月線MA20）判斷當前買賣點。
+
+    dt 為 daily_trend() 回傳。回 {signal(買進/賣出/觀望), color(red/green/flat),
+    rule_no, rule_name, desc, bias(乖離%), ma_dir(上揚/走平/下彎), pos(上方/下方)}。
+    資料不足回 None。判斷取「當前最符合」的一條法則（買賣訊號優先於觀望）。
+    """
+    close = (dt or {}).get("close") or []
+    ma = (dt or {}).get("ma") or []
+    dates = (dt or {}).get("dates") or []
+    # 取月線有效段
+    idx = [i for i in range(len(ma)) if ma[i] is not None]
+    if len(idx) < 6:
+        return None
+    c = [close[i] for i in idx]
+    m = [ma[i] for i in idx]
+    sig_date = dates[idx[-1]] if idx and idx[-1] < len(dates) else ""
+    n = len(c)
+    last_c, last_m = c[-1], m[-1]
+    if not last_m:
+        return None
+    bias = (last_c - last_m) / last_m * 100          # 乖離率%
+    # 均線方向（近5根斜率%）
+    base = m[-6] if n >= 6 else m[0]
+    slope = (last_m - base) / base * 100 if base else 0.0
+    ma_dir = ("上揚" if slope > _GRAN_FLAT
+              else "下彎" if slope < -_GRAN_FLAT else "走平")
+    pos = "上方" if last_c >= last_m else "下方"
+    # 近 N 根穿越偵測
+    lb = min(_GRAN_CROSS_LOOKBACK, n - 1)
+    crossed_up = any(c[i - 1] <= m[i - 1] and c[i] > m[i]
+                     for i in range(n - lb, n))
+    crossed_dn = any(c[i - 1] >= m[i - 1] and c[i] < m[i]
+                     for i in range(n - lb, n))
+    # 近 N 根曾短暫跌破/突破（假訊號用）
+    dipped = any(c[i] < m[i] for i in range(n - lb, n))
+    poked = any(c[i] > m[i] for i in range(n - lb, n))
+
+    mm = round(last_m, 2)        # 月線值（葛蘭碧核心參考價）
+    px = round(last_c, 2)        # 現價
+
+    def out(sig, color, no, name, desc, entry=None, stop=None, target=None,
+            price_label=""):
+        return {"signal": sig, "color": color, "rule_no": no,
+                "rule_name": name, "desc": desc, "bias": round(bias, 2),
+                "ma_dir": ma_dir, "pos": pos, "close": px, "ma": mm,
+                "entry": entry, "stop": stop, "target": target,
+                "price_label": price_label, "signal_date": sig_date}
+
+    # ---- 買進訊號（法則 1~4）：進場≈現價，停損守月線，目標為前高/正乖離 ----
+    if crossed_up and ma_dir != "下彎":
+        return out("買進", "red", 1, "突破買進",
+                   "股價向上突破月線，且月線走平或上揚，趨勢翻多。",
+                   entry=px, stop=mm, target=round(last_m * 1.10, 2),
+                   price_label="突破後進場，跌回月線停損")
+    if pos == "上方" and dipped and ma_dir == "上揚":
+        return out("買進", "red", 2, "假跌破買進",
+                   "月線上揚中，股價一度跌破月線隨即收回，屬洗盤假跌破。",
+                   entry=px, stop=round(last_m * 0.97, 2),
+                   target=round(last_m * 1.10, 2),
+                   price_label="收回月線上方進場，跌破月線3%停損")
+    if pos == "上方" and ma_dir == "上揚" and 0 <= bias <= _GRAN_NEAR:
+        return out("買進", "red", 3, "回檔買進",
+                   "多頭沿月線上升，股價回檔貼近月線未破即轉強，可續抱/加碼。",
+                   entry=mm, stop=round(last_m * 0.97, 2),
+                   target=round(last_m * 1.12, 2),
+                   price_label="回檔至月線附近承接，跌破月線3%停損")
+    if pos == "下方" and bias <= -_GRAN_FAR:
+        return out("買進", "red", 4, "超跌反彈買進",
+                   f"股價深跌遠離月線（負乖離 {bias:.1f}%），乖離過大易反彈。",
+                   entry=px, stop=round(last_c * 0.95, 2), target=mm,
+                   price_label="搶反彈進場，跌破近期低5%停損，反彈目標月線")
+    # ---- 賣出訊號（法則 5~8）：出場≈現價，反彈至月線/停損參考 ----
+    if crossed_dn and ma_dir != "上揚":
+        return out("賣出", "green", 5, "跌破賣出",
+                   "股價向下跌破月線，且月線走平或下彎，趨勢翻空。",
+                   entry=px, stop=mm, target=round(last_m * 0.90, 2),
+                   price_label="跌破月線出場，站回月線則停損（回補）")
+    if pos == "下方" and poked and ma_dir == "下彎":
+        return out("賣出", "green", 6, "假突破賣出",
+                   "月線下彎中，股價一度突破月線隨即跌回，屬反彈假突破。",
+                   entry=px, stop=round(last_m * 1.03, 2),
+                   target=round(last_m * 0.90, 2),
+                   price_label="跌回月線下方出場，站上月線3%停損")
+    if pos == "下方" and ma_dir == "下彎" and -_GRAN_NEAR <= bias <= 0:
+        return out("賣出", "green", 7, "反彈賣出",
+                   "空頭沿月線下降，股價反彈貼近月線未過即轉弱，宜減碼。",
+                   entry=mm, stop=round(last_m * 1.03, 2),
+                   target=round(last_m * 0.88, 2),
+                   price_label="反彈至月線附近減碼，突破月線3%停損")
+    if pos == "上方" and bias >= _GRAN_FAR:
+        return out("賣出", "green", 8, "超買回檔賣出",
+                   f"股價急漲遠離月線（正乖離 +{bias:.1f}%），乖離過大易回檔。",
+                   entry=px, stop=round(last_c * 1.05, 2), target=mm,
+                   price_label="漲多獲利了結，續創高5%停損，回檔目標月線")
+    # ---- 無明確訊號 ----
+    trend = ("多方（站上月線）" if pos == "上方" else "空方（月線之下）")
+    return out("觀望", "flat", 0, "無明確訊號",
+               f"股價位於月線{pos}、月線{ma_dir}，乖離 {bias:+.1f}%，"
+               f"暫無葛蘭碧買賣點，偏{trend}。",
+               price_label=f"月線參考 {mm}")
 
 
 def warrant_for(date: str, code: str, name: str, market: str) -> dict | None:

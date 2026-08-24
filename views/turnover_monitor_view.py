@@ -41,7 +41,7 @@ _COLS = [
     ("mcost", "主力均價", 66, "e", 0),
     ("slope", "MA斜率", 60, "e", 0),
     ("bb", "布林位階", 54, "e", 0),
-    ("warrant", "權證多空", 78, "center", 0),
+    ("gran", "葛蘭碧", 96, "center", 0),
     ("volchg", "量增減%", 64, "e", 0),
     ("peer", "同類股漲跌(家數)", 118, "e", 0),
 ]
@@ -59,6 +59,11 @@ _ND_STYLE = {
 _WARRANT_STYLE = {"多": ("#ef5350", "#2a0f0f"),
                   "空": ("#26a69a", "#0f2420"),
                   "中性": ("#8a8a8e", "#1a1a1c")}
+
+# 葛蘭碧徽章配色（買進=紅、賣出=綠、觀望=灰）：(底色, 文字色)
+_GRAN_BADGE = {"red": ("#ef5350", "#2a0f0f"),
+               "green": ("#26a69a", "#0f2420"),
+               "flat": ("#3a3b40", "#c7c7cc")}
 
 
 class TurnoverMonitorView(ctk.CTkFrame):
@@ -309,18 +314,18 @@ class TurnoverMonitorView(ctk.CTkFrame):
         else:
             bclr = (cs.RED if bb >= 8 else cs.GREEN if bb <= -8 else cs.TXT)
             lbl("bb", f"{bb:+.0f}", bclr, "e", bold=abs(bb) >= 8)
-        # 權證多空（徽章 + 多方佔比%）
-        wb = r.get("warrant_bias")
-        ws = _WARRANT_STYLE.get(wb)
-        if ws:
-            share = r.get("warrant_long_share")
-            txt = f"{wb} {share:.0f}%" if share is not None else wb
+        # 葛蘭碧八大法則（徽章：買進紅/賣出綠/觀望灰 + 法則名）
+        g = r.get("granville")
+        if g and g.get("signal"):
+            gs = _GRAN_BADGE.get(g["color"], ("#8a8a8e", "#1a1a1c"))
+            no = g.get("rule_no") or 0
+            txt = f"{g['signal']}·{g.get('rule_name', '')}" if no else g["signal"]
             ctk.CTkLabel(rowf, text=txt, height=20, corner_radius=6,
-                         fg_color=ws[0], text_color=ws[1],
-                         font=ctk.CTkFont(size=11, weight="bold")).grid(
-                row=0, column=col["warrant"], sticky="ew", padx=6, pady=2)
+                         fg_color=gs[0], text_color=gs[1],
+                         font=ctk.CTkFont(size=10, weight="bold")).grid(
+                row=0, column=col["gran"], sticky="ew", padx=4, pady=2)
         else:
-            lbl("warrant", "—", "#6a6a6a", "center")
+            lbl("gran", "—", "#6a6a6a", "center")
         # 量增減%：當日成交量較前一交易日（正=量增紅、負=量縮綠）
         vc = r.get("vol_chg_pct")
         if vc is None:

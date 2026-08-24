@@ -46,6 +46,7 @@ class MonitorDetailViewModel(BaseViewModel):
     warrant = ObservableProperty(None)          # dict | None
     quote = ObservableProperty(None)            # dict | None（即時個股報價 KPI）
     top_brokers = ObservableProperty(None)      # dict | None（最賺錢前5分點）
+    granville = ObservableProperty(None)        # dict | None（葛蘭碧八大法則）
     status = ObservableProperty("載入中…")
 
     def __init__(self, stock_code: str, stock_name: str, market: str,
@@ -73,7 +74,7 @@ class MonitorDetailViewModel(BaseViewModel):
     # ---- 日線趨勢（月線 + 布林 + 量） ----
     def _load_daily(self) -> None:
         from services.db_service import DbService
-        from services.turnover_monitor_service import daily_trend
+        from services.turnover_monitor_service import daily_trend, granville_signal
         from datetime import timedelta
         try:
             end_dt = datetime.strptime(self.date, "%Y%m%d")
@@ -94,7 +95,12 @@ class MonitorDetailViewModel(BaseViewModel):
                 db.close()
             except Exception:
                 pass
-        self.daily_trend = daily_trend(prices)
+        dt = daily_trend(prices)
+        self.daily_trend = dt
+        try:
+            self.granville = granville_signal(dt)
+        except Exception as e:  # noqa: BLE001
+            log.warning("granville failed %s: %s", self.code, e)
 
     # ---- 近120交易日最賺錢前5分點（買賣均價 + 近一日買賣超） ----
     def _load_top_brokers(self) -> None:
