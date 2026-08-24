@@ -35,6 +35,8 @@ class TickMonitorViewModel(BaseViewModel):
         self._order: list[str] = []          # 維持輸入順序
         self._lock = threading.Lock()
         self._big_lots = _BIG_LOTS
+        self._pending_exhaust: dict[str, int] = {}   # 鎖存竭盡供下次 emit 閃燈
+        self._pending_exhaust: dict[str, int] = {}   # 鎖存竭盡供下次 emit 閃燈
 
     # ------------------------------------------------------------------
     def start(self, codes_text: str, big_lots: int = _BIG_LOTS) -> None:
@@ -109,6 +111,9 @@ class TickMonitorViewModel(BaseViewModel):
                 if st is None:
                     return
                 update(st, tick, big_lots=self._big_lots)
+                # 竭盡只在觸發那一筆為非零；節流刷新恐錯過，故鎖存到下次 emit
+                if st.exhaust:
+                    self._pending_exhaust[code] = st.exhaust
         except Exception:  # noqa: BLE001
             log.exception("tick update failed %s", code)
 
@@ -132,6 +137,8 @@ class TickMonitorViewModel(BaseViewModel):
                     "total_vol": st.total_vol,
                     "big_orders": st.big_orders, "last_big": st.last_big,
                     "last_side": st.last_side,
+                    # 竭盡：取鎖存值（本次刷新閃一下後清除）
+                    "exhaust": self._pending_exhaust.pop(st.code, 0),
                 })
         self.rows = out
 

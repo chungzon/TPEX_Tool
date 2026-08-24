@@ -130,7 +130,14 @@ class TickMonitorView(ctk.CTkFrame):
         if not rows:
             return
         for idx, r in enumerate(rows, 1):
-            stripe = "#1d1e21" if idx % 2 == 0 else "transparent"
+            # 竭盡當次刷新整列變色（買盤竭盡深紅/賣盤竭盡深綠），下次刷新自動恢復
+            ex = r.get("exhaust", 0)
+            if ex > 0:
+                stripe = "#4a1414"
+            elif ex < 0:
+                stripe = "#0f3a2a"
+            else:
+                stripe = "#1d1e21" if idx % 2 == 0 else "transparent"
             rowf = ctk.CTkFrame(self.table, fg_color=stripe, corner_radius=4)
             rowf.grid(row=idx, column=0, columnspan=len(_COLS), sticky="ew",
                       pady=1)
@@ -162,10 +169,15 @@ class TickMonitorView(ctk.CTkFrame):
         side = r.get("last_side", 0)
         s_txt, s_clr = _SIDE_STYLE.get(side, ("—", "#8a8a8e"))
         lbl("side", s_txt, s_clr, "center", bold=True)
-        # 連次（連買N / 連賣N）
+        # 連次（連買N / 連賣N）；竭盡當次改顯示竭盡字樣
+        ex = r.get("exhaust", 0)
         sd = r.get("streak_dir", 0)
         sc = r.get("streak_count", 0)
-        if sd == 0 or sc == 0:
+        if ex > 0:
+            lbl("streak", "買盤竭盡", cs.RED, "center", bold=True)
+        elif ex < 0:
+            lbl("streak", "賣盤竭盡", cs.GREEN, "center", bold=True)
+        elif sd == 0 or sc == 0:
             lbl("streak", "—", "#6a6a6a", "center")
         else:
             sclr = cs.RED if sd > 0 else cs.GREEN

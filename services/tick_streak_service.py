@@ -33,6 +33,11 @@ class StreakState:
     big_orders: int = 0            # 大單筆數（單筆量 >= 門檻）
     last_big: int = 0             # 最近一筆大單量（0=無）
     last_side: int = 0            # 最近一筆方向（+1/-1/0）
+    # 竭盡偵測：追蹤本段連續的峰值（反轉判斷用）
+    peak_count: int = 0            # 本段連續峰值筆數
+    peak_vol: int = 0             # 本段連續峰值累計量
+    exhaust: int = 0             # 竭盡旗標：+1=買盤竭盡(做頭) -1=賣盤竭盡(打底) 0=無
+    exhaust_at: str = ""          # 觸發時間戳（供 UI 顯示/去重）
 
     @property
     def change(self) -> float:
@@ -51,15 +56,22 @@ class StreakState:
         return (self.outer_vol / tot * 100) if tot else 0.0
 
 
+# 竭盡偵測門檻：本段連續達「N 筆」或「M 張」後反轉，視為買/賣盤竭盡
+_EXHAUST_MIN_COUNT = 8      # 反轉前連續筆數 >= 此值
+_EXHAUST_MIN_VOL = 300     # 或反轉前連續累計量(張) >= 此值
+
+
 def update(st: StreakState, tick: dict, big_lots: int = 100) -> None:
     """以一筆 tick 更新連次連量狀態（就地）。
 
     tick: {close, volume(張), tick_type(1外/2內/0), ...}。
     big_lots: 單筆量 >= 此值視為大單。
+    反轉時若前段連續達門檻 → 設 st.exhaust（+1買盤竭盡/-1賣盤竭盡）。
     """
     price = tick.get("close") or tick.get("price") or 0
     vol = int(tick.get("volume") or 0)
     tt = tick.get("tick_type", 0)
+    st.exhaust = 0      # 每筆先清，僅在觸發的那一筆為非零（供 UI 閃燈）
     if price:
         st.last_price = float(price)
     if vol <= 0:
@@ -81,10 +93,23 @@ def update(st: StreakState, tick: dict, big_lots: int = 100) -> None:
     if side == st.streak_dir:
         st.streak_count += 1
         st.streak_vol += vol
+        if st.streak_count > st.peak_count:
+            st.peak_count = st.streak_count
+        if st.streak_vol > st.peak_vol:
+            st.peak_vol = st.streak_vol
     else:
+        # 方向反轉：檢查「前一段連續」峰值是否達竭盡門檻
+        if st.streak_dir != 0 and (
+                st.streak_count >= _EXHAUST_MIN_COUNT
+                or st.streak_vol >= _EXHAUST_MIN_VOL):
+            # 前段為連買(+1)反轉 → 買盤竭盡(+1，做頭)；連賣反轉 → 賣盤竭盡(-1)
+            st.exhaust = st.streak_dir
+            st.exhaust_at = str(tick.get("time", ""))
         st.streak_dir = side
         st.streak_count = 1
         st.streak_vol = vol
+        st.peak_count = 1
+        st.peak_vol = vol
 
 
 def reset_streak(st: StreakState) -> None:
