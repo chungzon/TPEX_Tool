@@ -1,6 +1,6 @@
 import customtkinter as ctk
 
-from viewmodels.broker_download_viewmodel import BrokerDownloadViewModel
+from viewmodels.tick_monitor_viewmodel import TickMonitorViewModel
 from viewmodels.batch_download_viewmodel import BatchDownloadViewModel
 from viewmodels.broker_analysis_viewmodel import BrokerAnalysisViewModel
 from viewmodels.backfill_viewmodel import BackfillViewModel
@@ -15,7 +15,7 @@ from viewmodels.signal_viewmodel import SignalViewModel
 from viewmodels.chip_swing_viewmodel import ChipSwingViewModel
 from viewmodels.dashboard_viewmodel import DashboardViewModel
 from viewmodels.turnover_monitor_viewmodel import TurnoverMonitorViewModel
-from views.broker_download_view import BrokerDownloadView
+from views.tick_monitor_view import TickMonitorView
 from views.batch_download_view import BatchDownloadView
 from views.broker_analysis_view import BrokerAnalysisView
 from views.backfill_view import BackfillView
@@ -102,12 +102,13 @@ class MainWindow(ctk.CTk):
             tab_turn_mon, self.turnover_monitor_vm)
         turnover_monitor_view.pack(fill="both", expand=True)
 
-        # Tab 1: 上櫃分點資料下載
-        tab1 = self.tabview.add("上櫃分點資料下載")
+        # Tab 1: 即時神手（連次連量多檔監控，共用同一 Shioaji 連線）
+        tab1 = self.tabview.add("即時神手")
 
-        self.broker_vm = BrokerDownloadViewModel()
-        broker_view = BrokerDownloadView(tab1, self.broker_vm)
-        broker_view.pack(fill="both", expand=True)
+        self.tick_monitor_vm = TickMonitorViewModel(
+            self._config_svc, shioaji_svc=self._shioaji_svc)
+        tick_monitor_view = TickMonitorView(tab1, self.tick_monitor_vm)
+        tick_monitor_view.pack(fill="both", expand=True)
 
         # Tab 2: 批次下載至資料庫
         tab2 = self.tabview.add("批次下載至資料庫")
@@ -221,7 +222,7 @@ class MainWindow(ctk.CTk):
     def _on_close(self):
         self.dashboard_vm.shutdown()
         self.turnover_monitor_vm.shutdown()
-        self.broker_vm.shutdown()
+        self.tick_monitor_vm.shutdown()
         self.batch_vm.shutdown()
         self.analysis_vm.shutdown()
         self.backfill_vm.shutdown()
