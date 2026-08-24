@@ -24,7 +24,7 @@ _MKT_STYLE = {"上市": ("市", "#3d6fb4"), "上櫃": ("櫃", "#b07a2e")}
 
 # (key, 標題, 寬px, 對齊, 權重)
 _COLS = [
-    ("nd", "隔", 24, "center", 0),
+    ("nd", "隔日", 44, "center", 0),
     ("rank", "#", 26, "center", 0),
     ("mkt", "", 30, "center", 0),
     ("code", "代碼", 48, "center", 0),
@@ -169,32 +169,6 @@ class TurnoverMonitorView(ctk.CTkFrame):
             self._bind_row_click(rowf, r)
             self._row_widgets.append(rowf)
 
-    def _attach_tip(self, widget, text: str):
-        """輕量 hover tooltip：滑鼠移入顯示小浮窗，移出關閉。"""
-        state = {"tw": None}
-
-        def _show(_e=None):
-            if state["tw"] is not None:
-                return
-            tw = ctk.CTkToplevel(self)
-            tw.wm_overrideredirect(True)
-            tw.attributes("-topmost", True)
-            x = widget.winfo_rootx() + 24
-            y = widget.winfo_rooty() + 18
-            tw.wm_geometry(f"+{x}+{y}")
-            ctk.CTkLabel(tw, text=text, fg_color="#2a2b2f",
-                         corner_radius=6, text_color="#e6e6e6",
-                         font=ctk.CTkFont(size=11)).pack(padx=1, pady=1)
-            state["tw"] = tw
-
-        def _hide(_e=None):
-            if state["tw"] is not None:
-                state["tw"].destroy()
-                state["tw"] = None
-
-        widget.bind("<Enter>", _show)
-        widget.bind("<Leave>", _hide)
-
     def _bind_row_click(self, rowf, r):
         """監控模式下：整列（含子元件）可點擊 → 開監控彈窗，游標改手形。"""
         def _open(_e=None):
@@ -232,17 +206,13 @@ class TurnoverMonitorView(ctk.CTkFrame):
                         else "e" if anc == "e" else "w")).grid(
                 row=0, column=col[key], sticky="ew", padx=3, pady=2)
 
-        # 隔日多空建議 icon（箭頭 + 強度色，滑鼠 tooltip 顯示分數）
+        # 隔日多空建議：箭頭 + 分數（強度色）直接標在同一格
         nd = r.get("nd_bias")
         nds = _ND_STYLE.get(nd)
         if nds:
-            ndlbl = ctk.CTkLabel(
-                rowf, text=nds[0], text_color=nds[1],
-                font=ctk.CTkFont(size=13, weight="bold"))
-            ndlbl.grid(row=0, column=col["nd"], sticky="ew", padx=1, pady=2)
             sc = r.get("nd_score")
-            self._attach_tip(ndlbl, f"隔日{nd}（分數 {sc:+d}）"
-                             if sc is not None else f"隔日{nd}")
+            txt = f"{nds[0]}{sc:+d}" if sc is not None else nds[0]
+            lbl("nd", txt, nds[1], "center", bold=True)
         else:
             lbl("nd", "", "#6a6a6a", "center")
         lbl("rank", str(idx), "#7a7a7e", "center")
