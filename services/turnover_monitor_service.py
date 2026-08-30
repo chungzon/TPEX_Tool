@@ -522,11 +522,13 @@ _GRAN_NEAR = 3.0         # 乖離率絕對值 <= 此(%)視為貼近均線
 _GRAN_CROSS_LOOKBACK = 3  # 穿越偵測回看根數
 
 
-def granville_signal(dt: dict) -> dict | None:
-    """依葛蘭碧八大法則（股價 vs 月線MA20）判斷當前買賣點。
+def granville_signal(dt: dict, ma_period: int = 20) -> dict | None:
+    """依葛蘭碧八大法則（股價 vs 均線）判斷當前買賣點。
 
-    dt 為 daily_trend() 回傳。回 {signal(買進/賣出/觀望), color(red/green/flat),
-    rule_no, rule_name, desc, bias(乖離%), ma_dir(上揚/走平/下彎), pos(上方/下方)}。
+    dt 為 daily_trend() 回傳；ma_period 為該均線週期（日線＝月線MA20；分K 同用20）。
+    回 {signal(買進/賣出/觀望), color(red/green/flat), rule_no, rule_name, desc,
+    bias(乖離%), ma_dir(上揚/走平/下彎), pos(上方/下方), deduct(扣抵值)}。
+    均線方向改採「扣抵值法」：比較現價與即將被扣抵的最舊一根收盤價，判斷均線續揚/翻彎。
     資料不足回 None。判斷取「當前最符合」的一條法則（買賣訊號優先於觀望）。
     """
     close = (dt or {}).get("close") or []
@@ -544,11 +546,24 @@ def granville_signal(dt: dict) -> dict | None:
     if not last_m:
         return None
     bias = (last_c - last_m) / last_m * 100          # 乖離率%
-    # 均線方向（近5根斜率%）
-    base = m[-6] if n >= 6 else m[0]
-    slope = (last_m - base) / base * 100 if base else 0.0
-    ma_dir = ("上揚" if slope > _GRAN_FLAT
-              else "下彎" if slope < -_GRAN_FLAT else "走平")
+    # 均線方向：扣抵值法 —— 現價 vs 即將被扣抵的最舊一根收盤價。
+    # 該根為目前均線視窗的第一根，下一根 K 成形時被移出視窗；現價>扣抵值→均線續揚，
+    # 現價<扣抵值→均線翻彎，貼近→走平。較「近5根斜率」更能預判均線轉折。
+    full_close = (dt or {}).get("close") or []
+    last_idx = idx[-1]
+    deduct_i = last_idx - ma_period + 1
+    deduct_val = (full_close[deduct_i]
+                  if 0 <= deduct_i < len(full_close) else None)
+    if deduct_val:
+        dev = (last_c - deduct_val) / deduct_val * 100
+        ma_dir = ("上揚" if dev > _GRAN_FLAT
+                  else "下彎" if dev < -_GRAN_FLAT else "走平")
+    else:      # 資料不足退回近5根斜率
+        base = m[-6] if n >= 6 else m[0]
+        slope = (last_m - base) / base * 100 if base else 0.0
+        ma_dir = ("上揚" if slope > _GRAN_FLAT
+                  else "下彎" if slope < -_GRAN_FLAT else "走平")
+    deduct = round(deduct_val, 2) if deduct_val else None
     pos = "上方" if last_c >= last_m else "下方"
     # 近 N 根穿越偵測
     lb = min(_GRAN_CROSS_LOOKBACK, n - 1)
@@ -561,68 +576,141 @@ def granville_signal(dt: dict) -> dict | None:
     poked = any(c[i] > m[i] for i in range(n - lb, n))
 
     mm = round(last_m, 2)        # 月線值（葛蘭碧核心參考價）
-    px = round(last_c, 2)        # 現價
+    px = round(last_c, 2)        # 現價（僅供比較，非進場價）
+
+    # 布林軌（超買/超跌區的計算基準）；無則退回「月線 ± 遠乖離門檻%」
+    bb_up_arr = (dt or {}).get("bb_up") or []
+    bb_dn_arr = (dt or {}).get("bb_dn") or []
+    bbu = (bb_up_arr[last_idx] if last_idx < len(bb_up_arr)
+           and bb_up_arr[last_idx] else None)
+    bbd = (bb_dn_arr[last_idx] if last_idx < len(bb_dn_arr)
+           and bb_dn_arr[last_idx] else None)
+    over_lvl = round(bbu, 2) if bbu else round(last_m * (1 + _GRAN_FAR / 100), 2)
+    under_lvl = round(bbd, 2) if bbd else round(last_m * (1 - _GRAN_FAR / 100), 2)
+    over_src = "布林上軌" if bbu else "月線+乖離門檻"
+    under_src = "布林下軌" if bbd else "月線−乖離門檻"
 
     def out(sig, color, no, name, desc, entry=None, stop=None, target=None,
-            price_label=""):
+            price_label="", entry_basis=""):
         return {"signal": sig, "color": color, "rule_no": no,
                 "rule_name": name, "desc": desc, "bias": round(bias, 2),
                 "ma_dir": ma_dir, "pos": pos, "close": px, "ma": mm,
+                "deduct": deduct,
                 "entry": entry, "stop": stop, "target": target,
+                "entry_basis": entry_basis,
                 "price_label": price_label, "signal_date": sig_date}
 
-    # ---- 買進訊號（法則 1~4）：進場≈現價，停損守月線，目標為前高/正乖離 ----
+    # 進場價一律取「技術價位」計算（月線/布林軌），非現價；停損守月線、目標按乖離。
+    # ---- 買進訊號（法則 1~4）----
     if crossed_up and ma_dir != "下彎":
         return out("買進", "red", 1, "突破買進",
                    "股價向上突破月線，且月線走平或上揚，趨勢翻多。",
-                   entry=px, stop=mm, target=round(last_m * 1.10, 2),
-                   price_label="突破後進場，跌回月線停損")
+                   entry=mm, stop=round(last_m * 0.97, 2),
+                   target=round(last_m * 1.10, 2),
+                   entry_basis=f"突破後回測月線 {mm} 承接（不追高）",
+                   price_label="進場＝回測月線，跌破月線3%停損，目標月線+10%")
     if pos == "上方" and dipped and ma_dir == "上揚":
         return out("買進", "red", 2, "假跌破買進",
                    "月線上揚中，股價一度跌破月線隨即收回，屬洗盤假跌破。",
-                   entry=px, stop=round(last_m * 0.97, 2),
+                   entry=mm, stop=round(last_m * 0.97, 2),
                    target=round(last_m * 1.10, 2),
-                   price_label="收回月線上方進場，跌破月線3%停損")
+                   entry_basis=f"重新站回月線 {mm} 進場",
+                   price_label="進場＝月線，跌破月線3%停損，目標月線+10%")
     if pos == "上方" and ma_dir == "上揚" and 0 <= bias <= _GRAN_NEAR:
         return out("買進", "red", 3, "回檔買進",
                    "多頭沿月線上升，股價回檔貼近月線未破即轉強，可續抱/加碼。",
                    entry=mm, stop=round(last_m * 0.97, 2),
                    target=round(last_m * 1.12, 2),
-                   price_label="回檔至月線附近承接，跌破月線3%停損")
+                   entry_basis=f"回檔至月線 {mm} 支撐承接",
+                   price_label="進場＝月線支撐，跌破月線3%停損，目標月線+12%")
     if pos == "下方" and bias <= -_GRAN_FAR:
         return out("買進", "red", 4, "超跌反彈買進",
                    f"股價深跌遠離月線（負乖離 {bias:.1f}%），乖離過大易反彈。",
-                   entry=px, stop=round(last_c * 0.95, 2), target=mm,
-                   price_label="搶反彈進場，跌破近期低5%停損，反彈目標月線")
-    # ---- 賣出訊號（法則 5~8）：出場≈現價，反彈至月線/停損參考 ----
+                   entry=under_lvl, stop=round(under_lvl * 0.95, 2), target=mm,
+                   entry_basis=f"超跌至{under_src} {under_lvl} 承接",
+                   price_label=f"進場＝{under_src}，破該價5%停損，反彈目標月線")
+    # ---- 賣出訊號（法則 5~8）----
     if crossed_dn and ma_dir != "上揚":
         return out("賣出", "green", 5, "跌破賣出",
                    "股價向下跌破月線，且月線走平或下彎，趨勢翻空。",
-                   entry=px, stop=mm, target=round(last_m * 0.90, 2),
-                   price_label="跌破月線出場，站回月線則停損（回補）")
+                   entry=mm, stop=round(last_m * 1.03, 2),
+                   target=round(last_m * 0.90, 2),
+                   entry_basis=f"反彈至月線 {mm} 壓力出場/放空",
+                   price_label="出場＝月線壓力，站回月線3%停損，目標月線−10%")
     if pos == "下方" and poked and ma_dir == "下彎":
         return out("賣出", "green", 6, "假突破賣出",
                    "月線下彎中，股價一度突破月線隨即跌回，屬反彈假突破。",
-                   entry=px, stop=round(last_m * 1.03, 2),
+                   entry=mm, stop=round(last_m * 1.03, 2),
                    target=round(last_m * 0.90, 2),
-                   price_label="跌回月線下方出場，站上月線3%停損")
+                   entry_basis=f"跌回月線 {mm} 下方出場",
+                   price_label="出場＝月線，站上月線3%停損，目標月線−10%")
     if pos == "下方" and ma_dir == "下彎" and -_GRAN_NEAR <= bias <= 0:
         return out("賣出", "green", 7, "反彈賣出",
                    "空頭沿月線下降，股價反彈貼近月線未過即轉弱，宜減碼。",
                    entry=mm, stop=round(last_m * 1.03, 2),
                    target=round(last_m * 0.88, 2),
-                   price_label="反彈至月線附近減碼，突破月線3%停損")
+                   entry_basis=f"反彈至月線 {mm} 壓力減碼",
+                   price_label="出場＝月線壓力，突破月線3%停損，目標月線−12%")
     if pos == "上方" and bias >= _GRAN_FAR:
         return out("賣出", "green", 8, "超買回檔賣出",
                    f"股價急漲遠離月線（正乖離 +{bias:.1f}%），乖離過大易回檔。",
-                   entry=px, stop=round(last_c * 1.05, 2), target=mm,
-                   price_label="漲多獲利了結，續創高5%停損，回檔目標月線")
+                   entry=over_lvl, stop=round(over_lvl * 1.05, 2), target=mm,
+                   entry_basis=f"超買至{over_src} {over_lvl} 了結",
+                   price_label=f"出場＝{over_src}，過該價5%停損，回檔目標月線")
     # ---- 無明確訊號 ----
     trend = ("多方（站上月線）" if pos == "上方" else "空方（月線之下）")
     return out("觀望", "flat", 0, "無明確訊號",
                f"股價位於月線{pos}、月線{ma_dir}，乖離 {bias:+.1f}%，"
                f"暫無葛蘭碧買賣點，偏{trend}。",
                price_label=f"月線參考 {mm}")
+
+
+def aggregate_minute_bars(bars: list[dict], minutes: int) -> list[dict]:
+    """把 1 分 K 依「日期 + N 分桶」彙總成 N 分 K（供 5分K / 15分K 葛蘭碧）。
+
+    bars 需含 date('YYYY-MM-DD')、minute_of_day(當日第幾分)、OHLC、volume；跨日安全。
+    同桶內：open＝首根開、high/low＝極值、close＝末根收、volume＝加總。
+    回 [{label('日期 時:分'), date, time, open, high, low, close, volume}] 依時序升冪。
+    """
+    from collections import OrderedDict
+    if not bars or minutes <= 0:
+        return []
+    buckets: "OrderedDict[tuple, dict]" = OrderedDict()
+    for b in bars:
+        mod = b.get("minute_of_day")
+        if mod is None:
+            continue
+        key = (b["date"], mod // minutes)
+        g = buckets.get(key)
+        if g is None:
+            buckets[key] = {"date": b["date"], "time": b.get("time", ""),
+                            "open": b["open"], "high": b["high"],
+                            "low": b["low"], "close": b["close"],
+                            "volume": b.get("volume", 0) or 0}
+        else:
+            g["high"] = max(g["high"], b["high"])
+            g["low"] = min(g["low"], b["low"])
+            g["close"] = b["close"]
+            g["time"] = b.get("time", g["time"])
+            g["volume"] += b.get("volume", 0) or 0
+    out = [dict(g, label=f"{g['date']} {g['time']}") for g in buckets.values()]
+    out.sort(key=lambda x: (x["date"], x["time"]))
+    return out
+
+
+def granville_from_bars(agg_bars: list[dict], ma_period: int = 20) -> dict | None:
+    """由彙總後的 N 分 K 算葛蘭碧訊號（重用 daily_trend + granville_signal）。
+
+    agg_bars 為 aggregate_minute_bars() 回傳。資料不足回 None。
+    """
+    if not agg_bars:
+        return None
+    rows = [{"trade_date": b["label"], "close_price": b["close"],
+             "open_price": b["open"], "high_price": b["high"],
+             "low_price": b["low"], "total_volume": b["volume"]}
+            for b in agg_bars]
+    return granville_signal(daily_trend(rows, ma_period=ma_period),
+                            ma_period=ma_period)
 
 
 def warrant_for(date: str, code: str, name: str, market: str) -> dict | None:

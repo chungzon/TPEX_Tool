@@ -64,7 +64,8 @@ class SettingsView(ctk.CTkFrame):
 
         ctk.CTkLabel(
             list_card,
-            text="從 TPEX（上櫃）+ TWSE（上市）取得交易量前 N 名，存入設定檔",
+            text="從 TPEX（上櫃）+ TWSE（上市）取得清單存入設定檔（上市可勾選「全部」）。"
+            "分點下載時會一併補下三大法人（含自營避險）+ 融資融券。",
             font=ctk.CTkFont(size=11), text_color="gray",
         ).pack(anchor="w", padx=24, pady=(0, 10))
 
@@ -85,6 +86,17 @@ class SettingsView(ctk.CTkFrame):
             corner_radius=6, font=ctk.CTkFont(size=12),
             command=self._on_save_topn,
         ).pack(side="left", padx=(12, 0))
+
+        # 全部上市選項（分點下載較耗時）
+        all_row = ctk.CTkFrame(list_card, fg_color="transparent")
+        all_row.pack(fill="x", padx=24, pady=(2, 4))
+        self.twse_all_switch = ctk.CTkCheckBox(
+            all_row, text="下載全部上市股票（分點，忽略上方前N，較耗時）",
+            command=self._on_toggle_twse_all, checkbox_width=18,
+            checkbox_height=18, font=ctk.CTkFont(size=12))
+        self.twse_all_switch.pack(side="left")
+        if self.vm.twse_all:
+            self.twse_all_switch.select()
 
         # Current list info + refresh button
         info_row = ctk.CTkFrame(list_card, fg_color="transparent")
@@ -332,6 +344,9 @@ class SettingsView(ctk.CTkFrame):
 
     def _on_save_topn(self):
         self.vm.save_top_n(self.topn_entry.get())
+
+    def _on_toggle_twse_all(self):
+        self.vm.set_twse_all(bool(self.twse_all_switch.get()))
 
     def _on_refresh_list(self):
         self.vm.refresh_stock_list()

@@ -97,12 +97,17 @@ class MonitorDetailWindow(ctk.CTkToplevel):
         self.lbl_ohl.pack(anchor="w", padx=16, pady=(0, 8))
 
         # ---- 葛蘭碧八大法則買賣點（KPI 下方橫幅）----
+        # 上半＝日線(月線MA20)；下半＝5分K/15分K（扣抵值判均線方向）。
         self.gran_body = ctk.CTkFrame(head, fg_color="#141416",
                                       corner_radius=8)
         self.gran_body.pack(fill="x", padx=12, pady=(0, 12))
-        ctk.CTkLabel(self.gran_body, text="葛蘭碧策略計算中…",
+        self.gran_daily = ctk.CTkFrame(self.gran_body, fg_color="transparent")
+        self.gran_daily.pack(fill="x")
+        ctk.CTkLabel(self.gran_daily, text="葛蘭碧策略計算中…",
                      font=ctk.CTkFont(size=12), text_color="gray").pack(
             anchor="w", padx=12, pady=8)
+        self.gran_mk = ctk.CTkFrame(self.gran_body, fg_color="transparent")
+        self.gran_mk.pack(fill="x")
 
         # ---- 兩圖並排 ----
         self.trend_card, self.trend_body = self._card(
@@ -160,6 +165,8 @@ class MonitorDetailWindow(ctk.CTkToplevel):
                      lambda v: self.after(0, lambda: self._render_top_brokers(v)))
         self.vm.bind("granville",
                      lambda v: self.after(0, lambda: self._render_granville(v)))
+        self.vm.bind("granville_mk",
+                     lambda v: self.after(0, lambda: self._render_granville_mk(v)))
         self.vm.bind("status",
                      lambda v: self.after(0, lambda: self.status_label.configure(
                          text=v or "")))
@@ -512,14 +519,14 @@ class MonitorDetailWindow(ctk.CTkToplevel):
     _GRAN_CLR = {"red": cs.RED, "green": cs.GREEN, "flat": "#8a8a8e"}
 
     def _render_granville(self, g):
-        self._clear(self.gran_body)
+        self._clear(self.gran_daily)
         if not g:
-            ctk.CTkLabel(self.gran_body, text="（月線資料不足，無法計算葛蘭碧策略）",
+            ctk.CTkLabel(self.gran_daily, text="（月線資料不足，無法計算葛蘭碧策略）",
                          font=ctk.CTkFont(size=12), text_color="gray").pack(
                 anchor="w", padx=12, pady=8)
             return
         clr = self._GRAN_CLR.get(g.get("color"), "#8a8a8e")
-        row = ctk.CTkFrame(self.gran_body, fg_color="transparent")
+        row = ctk.CTkFrame(self.gran_daily, fg_color="transparent")
         row.pack(fill="x", padx=10, pady=8)
         # 左：買賣徽章
         sig = g.get("signal", "觀望")
@@ -538,22 +545,15 @@ class MonitorDetailWindow(ctk.CTkToplevel):
         ctk.CTkLabel(mid, text=g.get("desc", ""), font=ctk.CTkFont(size=12),
                      text_color="#c7c7cc", anchor="w", justify="left",
                      wraplength=560).pack(anchor="w", pady=(2, 0))
-        # 買賣參考價位（進場 / 停損 / 目標）
+        # 買賣建議價位（進場 / 停損 / 目標）——皆為技術價位計算，非現價
         entry, stop, target = g.get("entry"), g.get("stop"), g.get("target")
-        # 有即時報價時，進出場參考改用即時價（停損/目標仍以月線為基準不變）
-        live = None
-        q = getattr(self.vm, "quote", None)
-        if q and q.get("last"):
-            live = q["last"]
-            if entry is not None:
-                entry = round(live, 2)
         if entry is not None or stop is not None or target is not None:
             prow = ctk.CTkFrame(mid, fg_color="transparent")
             prow.pack(anchor="w", pady=(5, 0))
             is_buy = g.get("color") == "red"
-            entry_lbl = ("進場" if is_buy else "出場") + ("(即時)" if live else "")
+            entry_lbl = "建議進場" if is_buy else "建議出場"
             for lbl_txt, val, vclr in (
-                (entry_lbl, entry, "#e8e8ea"),
+                (entry_lbl, entry, "#ffffff"),
                 ("停損", stop, cs.GREEN if is_buy else cs.RED),
                 ("目標", target, cs.RED if is_buy else cs.GREEN)):
                 if val is None:
@@ -563,23 +563,40 @@ class MonitorDetailWindow(ctk.CTkToplevel):
                 ctk.CTkLabel(chip, text=f"{lbl_txt} ", font=ctk.CTkFont(size=11),
                              text_color="#8a8a8e").pack(side="left", padx=(6, 0))
                 ctk.CTkLabel(chip, text=f"{val:,.2f}",
-                             font=ctk.CTkFont(size=13, weight="bold"),
+                             font=ctk.CTkFont(size=14, weight="bold"),
                              text_color=vclr).pack(side="left", padx=(0, 6))
+            # 進場依據（明確說明價格怎麼算出來的）
+            eb = g.get("entry_basis")
+            cur = g.get("close")
+            if eb:
+                gap = ""
+                if entry is not None and cur:
+                    d = (entry - cur) / cur * 100
+                    gap = f"（現價 {cur:,.2f}，距進場 {d:+.1f}%）"
+                ctk.CTkLabel(mid, text=f"進場依據：{eb}{gap}",
+                             font=ctk.CTkFont(size=12, weight="bold"),
+                             text_color="#c9c9cf", anchor="w", justify="left",
+                             wraplength=560).pack(anchor="w", pady=(4, 0))
             pl = g.get("price_label")
             sd = g.get("signal_date")
             note = f"※ {pl}" if pl else "※"
             if sd:
-                note += f"（訊號基準 {sd[5:]} 收盤 {g.get('close')}）"
+                note += f"（訊號基準 {sd[5:]} 收盤 {cur}）"
+            dv = g.get("deduct")
+            if dv is not None:
+                note += f"　扣抵值 {dv:,.2f}（現價{'>' if (cur or 0) >= dv else '<'}扣抵 → 月線{g.get('ma_dir', '')}）"
             ctk.CTkLabel(mid, text=note, font=ctk.CTkFont(size=11),
                          text_color="#7a7a7e", anchor="w", justify="left",
-                         wraplength=560).pack(anchor="w", pady=(3, 0))
+                         wraplength=560).pack(anchor="w", pady=(2, 0))
         # 右：三個輔助數據（月線方向 / 股價位置 / 乖離率）
         right = ctk.CTkFrame(row, fg_color="transparent")
         right.pack(side="right", padx=(12, 4))
         bias = g.get("bias", 0.0)
         bclr = cs.RED if bias > 0 else cs.GREEN if bias < 0 else "#8a8a8e"
+        dv = g.get("deduct")
         for label, val, vclr in (
             ("月線", g.get("ma_dir", "—"), "#e6e6e6"),
+            ("扣抵", f"{dv:,.2f}" if dv is not None else "—", "#e6e6e6"),
             ("股價", f"月線{g.get('pos', '—')}", "#e6e6e6"),
             ("乖離", f"{bias:+.1f}%", bclr)):
             cell = ctk.CTkFrame(right, fg_color="transparent")
@@ -588,6 +605,88 @@ class MonitorDetailWindow(ctk.CTkToplevel):
                          text_color="#8a8a8e").pack()
             ctk.CTkLabel(cell, text=val, font=ctk.CTkFont(size=13,
                          weight="bold"), text_color=vclr).pack()
+
+    _MK_LABEL = {"5K": "5分K", "15K": "15分K"}
+
+    def _render_granville_mk(self, mk):
+        """5分K / 15分K 葛蘭碧：法則列 + 明顯的買賣建議價位（進場/停損/目標）。
+
+        均線方向採扣抵值法；買賣價位取 granville_signal 計算的 entry/stop/target
+        （皆為月線/布林軌等技術價位，非現價），並附進場依據說明。
+        """
+        self._clear(self.gran_mk)
+        if not mk:
+            return
+        # 分隔線
+        ctk.CTkFrame(self.gran_mk, height=1, fg_color="#2a2b2f").pack(
+            fill="x", padx=12, pady=(4, 4))
+        for key in ("5K", "15K"):
+            g = mk.get(key)
+            item = ctk.CTkFrame(self.gran_mk, fg_color="transparent")
+            item.pack(fill="x", padx=12, pady=(2, 4))
+            # ---- 第一列：週期徽章 + 買賣徽章 + 法則名 + 技術細節 ----
+            r1 = ctk.CTkFrame(item, fg_color="transparent")
+            r1.pack(fill="x")
+            ctk.CTkLabel(r1, text=self._MK_LABEL.get(key, key), width=48,
+                         height=22, corner_radius=6, fg_color="#26272b",
+                         text_color="#c7c7cc",
+                         font=ctk.CTkFont(size=12, weight="bold")).pack(
+                side="left", padx=(0, 8))
+            if not g or g.get("error"):
+                ctk.CTkLabel(r1, text=(g or {}).get("error", "資料不足"),
+                             font=ctk.CTkFont(size=12),
+                             text_color="gray").pack(side="left")
+                continue
+            clr = self._GRAN_CLR.get(g.get("color"), "#8a8a8e")
+            sig = g.get("signal", "觀望")
+            ctk.CTkLabel(r1, text=sig, width=40, height=22, corner_radius=6,
+                         fg_color=clr, text_color="#0d0d0f",
+                         font=ctk.CTkFont(size=12, weight="bold")).pack(
+                side="left", padx=(0, 8))
+            no = g.get("rule_no") or 0
+            title = (f"第{no}法則·{g.get('rule_name')}" if no
+                     else g.get("rule_name", "無明確訊號"))
+            ctk.CTkLabel(r1, text=title, font=ctk.CTkFont(size=12,
+                         weight="bold"), text_color=clr).pack(
+                side="left", padx=(0, 10))
+            bias = g.get("bias", 0.0)
+            dv = g.get("deduct")
+            detail = (f"均線{g.get('ma_dir', '—')}·股價{g.get('pos', '—')}"
+                      f"·乖離{bias:+.1f}%")
+            if dv is not None:
+                detail += f"·扣抵{dv:,.2f}"
+            ctk.CTkLabel(r1, text=detail, font=ctk.CTkFont(size=11),
+                         text_color="#9a9a9e").pack(side="left")
+            # ---- 第二列：買賣建議價位（明顯 chips），縮排對齊 ----
+            r2 = ctk.CTkFrame(item, fg_color="transparent")
+            r2.pack(fill="x", padx=(56, 0), pady=(3, 0))
+            entry, stop, target = g.get("entry"), g.get("stop"), g.get("target")
+            is_buy = g.get("color") == "red"
+            if entry is None and stop is None and target is None:
+                pl = g.get("price_label") or "暫無明確買賣點"
+                ctk.CTkLabel(r2, text=f"↳ {pl}", font=ctk.CTkFont(size=12),
+                             text_color="#8a8a8e").pack(side="left")
+                continue
+            entry_lbl = "建議進場" if is_buy else "建議出場"
+            for lbl_txt, val, vclr in (
+                (entry_lbl, entry, "#ffffff"),
+                ("停損", stop, cs.GREEN if is_buy else cs.RED),
+                ("目標", target, cs.RED if is_buy else cs.GREEN)):
+                if val is None:
+                    continue
+                chip = ctk.CTkFrame(r2, fg_color="#1f2024", corner_radius=6)
+                chip.pack(side="left", padx=(0, 6))
+                ctk.CTkLabel(chip, text=f"{lbl_txt} ",
+                             font=ctk.CTkFont(size=11),
+                             text_color="#8a8a8e").pack(side="left", padx=(7, 0))
+                ctk.CTkLabel(chip, text=f"{val:,.2f}",
+                             font=ctk.CTkFont(size=14, weight="bold"),
+                             text_color=vclr).pack(side="left", padx=(0, 7),
+                                                   pady=1)
+            eb = g.get("entry_basis") or g.get("price_label")
+            if eb:
+                ctk.CTkLabel(r2, text=f"　依據：{eb}", font=ctk.CTkFont(size=11),
+                             text_color="#8a8a8e").pack(side="left")
 
     def _render_top_brokers(self, data):
         self._clear(self.tb_body)

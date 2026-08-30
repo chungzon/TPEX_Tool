@@ -176,6 +176,31 @@ class ShioajiService:
             log.warning("Snapshot failed for %s: %s", stock_code, e)
         return None
 
+    def get_snapshots(self, codes: list[str]) -> dict[str, dict]:
+        """批次快照（供隔日沖監控取權證參考價/量）。回 {code: {close, change_price,
+        total_volume, volume}}。未登入或失敗回已取得部分。"""
+        if not self._logged_in or not self._api:
+            return {}
+        contracts = []
+        for c in codes:
+            ct = self.get_stock_contract(c)
+            if ct is not None:
+                contracts.append(ct)
+        if not contracts:
+            return {}
+        out: dict[str, dict] = {}
+        try:
+            for s in self._api.snapshots(contracts, timeout=15000):
+                out[s.code] = {
+                    "close": getattr(s, "close", 0),
+                    "change_price": getattr(s, "change_price", 0),
+                    "total_volume": getattr(s, "total_volume", 0),
+                    "volume": getattr(s, "volume", 0),
+                }
+        except Exception as e:  # noqa: BLE001
+            log.warning("get_snapshots failed: %s", e)
+        return out
+
     # ---- Real-time quote streaming (tick / bidask) ----
 
     def _ensure_quote_callbacks(self):
@@ -368,6 +393,43 @@ class ShioajiService:
             return out
         except Exception:
             log.exception("get_intraday_kbars failed for %s %s", stock_code, date)
+            return []
+
+    def get_kbars_range(self, stock_code: str, start: str,
+                        end: str) -> list[dict]:
+        """區間 1 分 K（可跨日），供分 K 均線/扣抵值計算的往前抓取。
+
+        start/end 格式 'YYYY-MM-DD'（含頭尾）。回 [{date, time(HH:MM),
+        minute_of_day(當日第幾分), open, high, low, close, volume}] 依時序升冪。
+        盤中呼叫今日區間回到目前為止已成形的分 K。
+        """
+        if not self._logged_in or not self._api:
+            return []
+        contract = self.get_stock_contract(stock_code)
+        if not contract:
+            return []
+        try:
+            from datetime import datetime as _dt
+            kb = self._api.kbars(contract, start=start, end=end, timeout=30000)
+            ts = list(kb.ts)
+            out: list[dict] = []
+            for i in range(len(ts)):
+                d = _dt.fromtimestamp(ts[i] / 1e9)
+                out.append({
+                    "date": d.strftime("%Y-%m-%d"),
+                    "time": d.strftime("%H:%M"),
+                    "minute_of_day": d.hour * 60 + d.minute,
+                    "open": float(kb.Open[i]),
+                    "high": float(kb.High[i]),
+                    "low": float(kb.Low[i]),
+                    "close": float(kb.Close[i]),
+                    "volume": float(kb.Volume[i]),
+                })
+            out.sort(key=lambda x: (x["date"], x["time"]))
+            return out
+        except Exception:
+            log.exception("get_kbars_range failed for %s %s~%s",
+                          stock_code, start, end)
             return []
 
     # ---- Order ----

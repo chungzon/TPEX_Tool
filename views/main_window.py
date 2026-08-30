@@ -15,7 +15,9 @@ from viewmodels.signal_viewmodel import SignalViewModel
 from viewmodels.chip_swing_viewmodel import ChipSwingViewModel
 from viewmodels.dashboard_viewmodel import DashboardViewModel
 from viewmodels.turnover_monitor_viewmodel import TurnoverMonitorViewModel
+from viewmodels.nextday_monitor_viewmodel import NextDayMonitorViewModel
 from views.tick_monitor_view import TickMonitorView
+from views.nextday_monitor_view import NextDayMonitorView
 from views.batch_download_view import BatchDownloadView
 from views.broker_analysis_view import BrokerAnalysisView
 from views.backfill_view import BackfillView
@@ -110,6 +112,14 @@ class MainWindow(ctk.CTk):
         tick_monitor_view = TickMonitorView(tab1, self.tick_monitor_vm)
         tick_monitor_view.pack(fill="both", expand=True)
 
+        # Tab 1b: 隔日沖監控（前一日自營避險買入排行 + 盤中權證即時監控）
+        tab_nextday = self.tabview.add("隔日沖監控")
+
+        self.nextday_vm = NextDayMonitorViewModel(
+            shioaji_svc=self._shioaji_svc)
+        nextday_view = NextDayMonitorView(tab_nextday, self.nextday_vm)
+        nextday_view.pack(fill="both", expand=True)
+
         # Tab 2: 批次下載至資料庫
         tab2 = self.tabview.add("批次下載至資料庫")
 
@@ -138,12 +148,11 @@ class MainWindow(ctk.CTk):
         signal_view = SignalView(tab5, self.signal_vm)
         signal_view.pack(fill="both", expand=True)
 
-        # Tab 6: 補資料
-        tab6 = self.tabview.add("補資料")
-
+        # Tab 6: 補資料（已隱藏；VM 保留供其他流程/收尾使用）
+        # tab6 = self.tabview.add("補資料")
         self.backfill_vm = BackfillViewModel()
-        backfill_view = BackfillView(tab6, self.backfill_vm)
-        backfill_view.pack(fill="both", expand=True)
+        # backfill_view = BackfillView(tab6, self.backfill_vm)
+        # backfill_view.pack(fill="both", expand=True)
 
         # Tab 7: 效益評估
         tab7 = self.tabview.add("效益評估")
@@ -223,6 +232,7 @@ class MainWindow(ctk.CTk):
         self.dashboard_vm.shutdown()
         self.turnover_monitor_vm.shutdown()
         self.tick_monitor_vm.shutdown()
+        self.nextday_vm.shutdown()
         self.batch_vm.shutdown()
         self.analysis_vm.shutdown()
         self.backfill_vm.shutdown()

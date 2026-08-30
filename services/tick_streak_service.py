@@ -38,6 +38,8 @@ class StreakState:
     peak_vol: int = 0             # 本段連續峰值累計量
     exhaust: int = 0             # 竭盡旗標：+1=買盤竭盡(做頭) -1=賣盤竭盡(打底) 0=無
     exhaust_at: str = ""          # 觸發時間戳（供 UI 顯示/去重）
+    exhaust_count: int = 0        # 觸發竭盡時「前一段連續」筆數（peak 已重置，另存供錄製）
+    exhaust_vol: int = 0          # 觸發竭盡時「前一段連續」累計量（張）
 
     @property
     def change(self) -> float:
@@ -105,6 +107,8 @@ def update(st: StreakState, tick: dict, big_lots: int = 100) -> None:
             # 前段為連買(+1)反轉 → 買盤竭盡(+1，做頭)；連賣反轉 → 賣盤竭盡(-1)
             st.exhaust = st.streak_dir
             st.exhaust_at = str(tick.get("time", ""))
+            st.exhaust_count = st.streak_count      # 峰值即將被重置，先存供錄製
+            st.exhaust_vol = st.streak_vol
         st.streak_dir = side
         st.streak_count = 1
         st.streak_vol = vol

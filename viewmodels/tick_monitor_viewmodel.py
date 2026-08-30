@@ -14,10 +14,12 @@ import threading
 
 from viewmodels.base_viewmodel import BaseViewModel, ObservableProperty
 from services.tick_streak_service import StreakState, update
+from services import shenshou_record_service as rec
 
 log = logging.getLogger(__name__)
 
 _BIG_LOTS = 100          # 單筆 >= 此張數視為大單（可調）
+_AUTOSAVE_EVERY = 75     # refresh 每 N 次自動存檔一次（≈ 800ms × 75 ≈ 60s，防當機遺失）
 
 
 class TickMonitorViewModel(BaseViewModel):
@@ -26,6 +28,7 @@ class TickMonitorViewModel(BaseViewModel):
     rows = ObservableProperty(None)          # list[dict] | None（各檔快照）
     status = ObservableProperty("尚未開始監控")
     is_running = ObservableProperty(False)
+    records = ObservableProperty(None)       # list[dict] | None（可回放的錄製檔清單）
 
     def __init__(self, config=None, shioaji_svc=None):
         super().__init__()
@@ -36,7 +39,9 @@ class TickMonitorViewModel(BaseViewModel):
         self._lock = threading.Lock()
         self._big_lots = _BIG_LOTS
         self._pending_exhaust: dict[str, int] = {}   # 鎖存竭盡供下次 emit 閃燈
-        self._pending_exhaust: dict[str, int] = {}   # 鎖存竭盡供下次 emit 閃燈
+        self._recorder: rec.SessionRecorder | None = None   # 目前 session 錄製器
+        self._refresh_ticks = 0              # refresh 計數（自動存檔用）
+        self.refresh_records()               # 開頁即載入既有錄製檔清單
 
     # ------------------------------------------------------------------
     def start(self, codes_text: str, big_lots: int = _BIG_LOTS) -> None:
@@ -53,6 +58,8 @@ class TickMonitorViewModel(BaseViewModel):
         with self._lock:
             self._states = {}
             self._order = []
+        self._recorder = rec.SessionRecorder(big_lots=big_lots)   # 開新錄製 session
+        self._refresh_ticks = 0
         subbed, failed = [], []
         for code in codes:
             st = StreakState(code)
@@ -66,11 +73,14 @@ class TickMonitorViewModel(BaseViewModel):
                     st.prev_close = (cl - chg) if cl else 0
                     if cl:
                         st.last_price = cl
+                    st.name = snap.get("name") or st.name
             except Exception:  # noqa: BLE001
                 pass
             with self._lock:
                 self._states[code] = st
                 self._order.append(code)
+            self._recorder.register(code, name=st.name, prev_close=st.prev_close,
+                                    open_price=st.open_price)
             ok = False
             try:
                 ok = self._sj.subscribe_quote(
@@ -93,6 +103,15 @@ class TickMonitorViewModel(BaseViewModel):
                 except Exception:  # noqa: BLE001
                     pass
         self.is_running = False
+        # 收盤/停止：把本 session 錄製落地成 JSON，並刷新回放清單
+        if self._recorder is not None:
+            try:
+                paths = self._recorder.save()
+                if paths:
+                    log.info("神手錄製已存檔：%d 檔", len(paths))
+            except Exception as e:  # noqa: BLE001
+                log.warning("神手錄製存檔失敗：%s", e)
+            self.refresh_records()
 
     def clear_totals(self) -> None:
         """歸零當日累計（重新統計）。"""
@@ -114,6 +133,9 @@ class TickMonitorViewModel(BaseViewModel):
                 # 竭盡只在觸發那一筆為非零；節流刷新恐錯過，故鎖存到下次 emit
                 if st.exhaust:
                     self._pending_exhaust[code] = st.exhaust
+                # 錄製：逐筆軌跡 + 事件（供同頁下方回放江波圖）
+                if self._recorder is not None:
+                    self._recorder.on_tick(code, tick, st)
         except Exception:  # noqa: BLE001
             log.exception("tick update failed %s", code)
 
@@ -146,6 +168,29 @@ class TickMonitorViewModel(BaseViewModel):
         """定時由 view 呼叫，把最新狀態推到 UI（節流刷新）。"""
         if self.is_running:
             self._emit()
+            # 定期自動存檔（背景執行緒，避免阻塞 UI）
+            self._refresh_ticks += 1
+            if (self._recorder is not None
+                    and self._refresh_ticks % _AUTOSAVE_EVERY == 0):
+                threading.Thread(target=self._recorder.save, daemon=True).start()
+
+    # ---- 回放（錄製檔清單 / 讀取）----
+    def refresh_records(self) -> None:
+        """重新掃描錄製資料夾，更新可回放清單。"""
+        try:
+            self.records = rec.list_records()
+        except Exception as e:  # noqa: BLE001
+            log.warning("list shenshou records failed: %s", e)
+            self.records = []
+
+    def load_record(self, path: str) -> dict | None:
+        """讀取單一錄製檔（供 view 繪製江波圖）。"""
+        return rec.load_record(path)
+
+    def live_snapshot(self) -> list[dict]:
+        """監控中各檔即時快照（逐筆+事件），供即時江波圖。未在錄製回空清單。"""
+        r = self._recorder
+        return r.snapshot_all() if r is not None else []
 
     @staticmethod
     def _parse_codes(text: str) -> list[str]:

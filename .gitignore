@@ -18,3 +18,9 @@ mede_data/
 *.sqlite
 *.sqlite-wal
 *.sqlite-shm
+
+# 即時神手 逐筆/事件錄製（勿入版控）
+shenshou_data/
+
+# 隔日沖監控 事件錄製（勿入版控）
+nextday_data/

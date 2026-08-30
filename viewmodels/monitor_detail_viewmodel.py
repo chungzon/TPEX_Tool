@@ -24,6 +24,7 @@ _MARKET_OPEN = (9, 0)
 _MARKET_CLOSE = (13, 35)
 _POLL_SEC = 12          # 盤中即時輪詢間隔
 _TREND_DAYS = 160       # 日線回溯天數（足夠算 MA20 + 顯示約 90 根）
+_MK_LOOKBACK_DAYS = 12  # 分 K 往前抓取日曆天（≈8 交易日，足夠 15分K MA20+緩衝）
 
 
 def _is_market_open(now: datetime | None = None) -> bool:
@@ -46,7 +47,8 @@ class MonitorDetailViewModel(BaseViewModel):
     warrant = ObservableProperty(None)          # dict | None
     quote = ObservableProperty(None)            # dict | None（即時個股報價 KPI）
     top_brokers = ObservableProperty(None)      # dict | None（最賺錢前5分點）
-    granville = ObservableProperty(None)        # dict | None（葛蘭碧八大法則）
+    granville = ObservableProperty(None)        # dict | None（葛蘭碧八大法則·日線）
+    granville_mk = ObservableProperty(None)     # dict | None（{"5K":..,"15K":..}）
     status = ObservableProperty("載入中…")
 
     def __init__(self, stock_code: str, stock_name: str, market: str,
@@ -166,20 +168,47 @@ class MonitorDetailViewModel(BaseViewModel):
             log.warning("warrant load failed %s: %s", self.code, e)
             self.warrant = None
 
-    # ---- 即時分 K 走勢（Shioaji，需登入正式環境） ----
+    # ---- 即時分 K 走勢 + 5分K/15分K 葛蘭碧（Shioaji，需登入正式環境） ----
     def _poll_intraday(self) -> None:
+        from datetime import timedelta
+        from services.turnover_monitor_service import (
+            aggregate_minute_bars, granville_from_bars)
         if not self._sj or not self._sj.is_logged_in:
             self.intraday = {"error": "需登入永豐（正式環境）以顯示即時分 K 走勢"}
+            self.granville_mk = {"5K": {"error": "需登入永豐（正式環境）"},
+                                 "15K": {"error": "需登入永豐（正式環境）"}}
             return
         try:
-            date_dash = datetime.strptime(self.date, "%Y%m%d").strftime("%Y-%m-%d")
+            end_dt = datetime.strptime(self.date, "%Y%m%d")
         except (ValueError, TypeError):
-            date_dash = datetime.now().strftime("%Y-%m-%d")
+            end_dt = datetime.now()
+        end_dash = end_dt.strftime("%Y-%m-%d")
+        start_dash = (end_dt - timedelta(days=_MK_LOOKBACK_DAYS)).strftime(
+            "%Y-%m-%d")
+        prior_dash = (end_dt - timedelta(days=1)).strftime("%Y-%m-%d")
+        prior_bars: list[dict] | None = None      # 前幾日分K只抓一次快取
         while not self._stop.is_set():
             try:
-                bars = self._sj.get_intraday_kbars(self.code, date_dash)
+                # 往前抓取：未開盤/剛開盤時，今日分K不足以算 MA20，補前幾日
+                if prior_bars is None:
+                    prior_bars = self._sj.get_kbars_range(
+                        self.code, start_dash, prior_dash) or []
+                today = self._sj.get_kbars_range(self.code, end_dash,
+                                                 end_dash) or []
+                if today:
+                    self.intraday = {"bars": [
+                        {k: b[k] for k in ("time", "open", "high", "low",
+                                           "close", "volume")} for b in today]}
+                bars = prior_bars + today
                 if bars:
-                    self.intraday = {"bars": bars}
+                    self.granville_mk = {
+                        "5K": (granville_from_bars(
+                            aggregate_minute_bars(bars, 5))
+                            or {"error": "分K資料不足"}),
+                        "15K": (granville_from_bars(
+                            aggregate_minute_bars(bars, 15))
+                            or {"error": "分K資料不足"}),
+                    }
             except Exception as e:  # noqa: BLE001
                 log.warning("intraday poll failed %s: %s", self.code, e)
             if not _is_market_open():

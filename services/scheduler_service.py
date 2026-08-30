@@ -166,6 +166,16 @@ class SchedulerService:
         except Exception as e:
             log.warning("Failed to get latest trading date: %s", e)
 
+        # 日期端點改版失效時，退回本地最近平日，確保輔助資料(三大法人+避險+融資融券)仍下載
+        if not trading_date:
+            d = datetime.now()
+            while d.weekday() >= 5:
+                d -= timedelta(days=1)
+            trading_date = d.strftime("%Y-%m-%d")
+            self._status(f"（無法取得最新交易日，改用最近平日 {trading_date}）")
+            log.warning("Trading-date endpoints unavailable; fallback to %s",
+                        trading_date)
+
         label = {"otc": "上櫃", "twse": "上市", "all": "上櫃+上市"}.get(market, market)
         date_info = f"（交易日 {trading_date}）" if trading_date else ""
         self._status(f"分點資料下載（{label} {len(codes)} 檔）{date_info}...")
@@ -212,79 +222,89 @@ class SchedulerService:
         self._status(f"完成：{self.last_result}")
         log.info("Download result: %s", self.last_result)
 
-    def _download_aux(self, trading_date: str, market: str) -> None:
-        """下載三大法人 + 融資融券，依 market 決定上櫃/上市/兩者。
+    @staticmethod
+    def _recent_weekdays(end_date: str, n: int) -> list[str]:
+        """由 end_date（yyyy-mm-dd）往回取 n 個平日（含當日），新到舊。"""
+        try:
+            d = datetime.strptime(end_date, "%Y-%m-%d")
+        except (ValueError, TypeError):
+            d = datetime.now()
+        out: list[str] = []
+        while len(out) < n:
+            if d.weekday() < 5:
+                out.append(d.strftime("%Y-%m-%d"))
+            d -= timedelta(days=1)
+        return out
 
-        兩種資料都支援歷史日期，使用 MERGE 寫入 → 重跑不會出錯。
+    def _download_aux(self, trading_date: str, market: str) -> None:
+        """下載三大法人（含自營避險）+ 融資融券，依 market 決定上櫃/上市/兩者。
+
+        近 3 個平日一起補（MERGE 幂等），避免日期端點失效或當日尚未公布時漏抓；
+        三大法人/融資融券端點皆為「全市場單一查詢」，涵蓋所有上市/上櫃股票。
         """
         from services.db_service import DbService
 
         do_otc = market in ("otc", "all")
         do_twse = market in ("twse", "all")
-        aux_results: list[str] = []      # 累積輔助資料下載結果，併入 last_result
+        dates = self._recent_weekdays(trading_date, 3)
+        insti_total = 0
+        margin_total = 0
 
         db = DbService()
         try:
             db.connect()
             db.ensure_tables()
-
-            # --- 三大法人 ---
-            if do_otc:
-                try:
-                    from services.insti_service import fetch_insti_daily
-                    rows = fetch_insti_daily(trading_date)
-                    if rows:
-                        n = db.save_insti_daily_batch(rows)
-                        self._status(f"上櫃三大法人：寫入 {n} 筆")
-                        aux_results.append(f"上櫃三大法人 {n}")
-                        log.info("OTC insti %s: %d rows", trading_date, n)
-                except Exception as e:
-                    log.warning("OTC insti download failed: %s", e)
-
-            if do_twse:
-                try:
-                    from services.twse_api_service import fetch_twse_insti_daily
-                    from services.insti_service import InstiDaily
-                    raw = fetch_twse_insti_daily(trading_date)
-                    if raw:
-                        objs = [InstiDaily(**r) for r in raw]
-                        n = db.save_insti_daily_batch(objs)
-                        self._status(f"上市三大法人：寫入 {n} 筆")
-                        aux_results.append(f"上市三大法人 {n}")
-                        log.info("TWSE insti %s: %d rows", trading_date, n)
-                except Exception as e:
-                    log.warning("TWSE insti download failed: %s", e)
-
-            # --- 融資融券 ---
-            if do_otc:
-                try:
-                    from services.margin_service import fetch_otc_margin
-                    rows = fetch_otc_margin(trading_date)
-                    if rows:
-                        n = db.save_margin_daily_batch(rows)
-                        self._status(f"上櫃融資融券：寫入 {n} 筆")
-                        aux_results.append(f"上櫃融資融券 {n}")
-                        log.info("OTC margin %s: %d rows", trading_date, n)
-                except Exception as e:
-                    log.warning("OTC margin download failed: %s", e)
-
-            if do_twse:
-                try:
-                    from services.margin_service import fetch_twse_margin
-                    rows = fetch_twse_margin(trading_date)
-                    if rows:
-                        n = db.save_margin_daily_batch(rows)
-                        self._status(f"上市融資融券：寫入 {n} 筆")
-                        aux_results.append(f"上市融資融券 {n}")
-                        log.info("TWSE margin %s: %d rows", trading_date, n)
-                except Exception as e:
-                    log.warning("TWSE margin download failed: %s", e)
+            for ds in dates:
+                # --- 三大法人（含避險）---
+                if do_otc:
+                    try:
+                        from services.insti_service import fetch_insti_daily
+                        rows = fetch_insti_daily(ds)
+                        if rows:
+                            insti_total += db.save_insti_daily_batch(rows)
+                    except Exception as e:
+                        log.warning("OTC insti %s failed: %s", ds, e)
+                if do_twse:
+                    try:
+                        from services.twse_api_service import fetch_twse_insti_daily
+                        from services.insti_service import InstiDaily
+                        raw = fetch_twse_insti_daily(ds)
+                        if raw:
+                            objs = [InstiDaily(**r) for r in raw]
+                            insti_total += db.save_insti_daily_batch(objs)
+                    except Exception as e:
+                        log.warning("TWSE insti %s failed: %s", ds, e)
+                # --- 融資融券 ---
+                if do_otc:
+                    try:
+                        from services.margin_service import fetch_otc_margin
+                        rows = fetch_otc_margin(ds)
+                        if rows:
+                            margin_total += db.save_margin_daily_batch(rows)
+                    except Exception as e:
+                        log.warning("OTC margin %s failed: %s", ds, e)
+                if do_twse:
+                    try:
+                        from services.margin_service import fetch_twse_margin
+                        rows = fetch_twse_margin(ds)
+                        if rows:
+                            margin_total += db.save_margin_daily_batch(rows)
+                    except Exception as e:
+                        log.warning("TWSE margin %s failed: %s", ds, e)
+                self._status(f"輔助資料 近{len(dates)}日：三大法人+避險 {insti_total} 筆"
+                             f"、融資融券 {margin_total} 筆")
+            log.info("Aux download: insti=%d margin=%d over %s",
+                     insti_total, margin_total, dates)
         finally:
             try:
                 db.close()
             except Exception:
                 pass
-        # 併入最終結果，讓輔助資料下載筆數顯示在狀態/log（不被分點結果蓋掉）
+        aux_results = []
+        if insti_total:
+            aux_results.append(f"三大法人+避險 {insti_total}")
+        if margin_total:
+            aux_results.append(f"融資融券 {margin_total}")
         if aux_results:
             self.last_result = (self.last_result or "") + \
                 " ｜ 輔助資料：" + "、".join(aux_results)

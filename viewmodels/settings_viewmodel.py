@@ -14,11 +14,30 @@ from services.scheduler_service import SchedulerService
 log = logging.getLogger(__name__)
 
 
+def _recent_weekdays(n: int) -> list[str]:
+    """今日往回取 n 個平日（yyyy-mm-dd），新到舊。"""
+    d = datetime.now()
+    out: list[str] = []
+    while len(out) < n:
+        if d.weekday() < 5:
+            out.append(d.strftime("%Y-%m-%d"))
+        d -= timedelta(days=1)
+    return out
+
+
+def _vol_of(r: dict) -> float:
+    try:
+        return float(str(r.get("total_volume", "")).replace(",", "").strip())
+    except (ValueError, TypeError):
+        return 0.0
+
+
 class SettingsViewModel(BaseViewModel):
 
     scheduler_enabled = ObservableProperty(False)
     scheduler_time = ObservableProperty("18:00")
     scheduler_top_n = ObservableProperty(300)
+    twse_all = ObservableProperty(False)       # 上市清單是否取全部（不限前 N）
     status_text = ObservableProperty("")
     next_run_text = ObservableProperty("")
     last_result_text = ObservableProperty("")
@@ -53,6 +72,7 @@ class SettingsViewModel(BaseViewModel):
         self.scheduler_enabled = config.get("scheduler_enabled")
         self.scheduler_time = config.get("scheduler_time")
         self.scheduler_top_n = config.get("scheduler_top_n")
+        self.twse_all = bool(config.get("twse_all"))
         self._update_list_info()
         self._refresh_status()
 
@@ -89,6 +109,12 @@ class SettingsViewModel(BaseViewModel):
         self._config.set("scheduler_top_n", n)
         self.status_text = f"下載數量已更新為 {n} 檔"
 
+    def set_twse_all(self, on: bool) -> None:
+        self.twse_all = bool(on)
+        self._config.set("twse_all", bool(on))
+        self.status_text = ("上市清單將取「全部上市股票」（分點下載較耗時）" if on
+                            else f"上市清單改取前 {self.scheduler_top_n} 名")
+
     # ---- Stock list management ----
 
     def refresh_stock_list(self) -> None:
@@ -111,17 +137,30 @@ class SettingsViewModel(BaseViewModel):
                 self._config.set("stock_codes", otc_codes)
                 self._config.set("stock_list_date", today)
 
-                # TWSE (上市)
-                self.status_text = "取得上市股票清單..."
-                from services.twse_api_service import fetch_twse_top_volume_stocks
-                twse_stocks = fetch_twse_top_volume_stocks(top_n)
-                twse_codes = [s.stock_code for s in twse_stocks] if twse_stocks else []
+                # TWSE (上市)：全部 or 前 N 名
+                # 用 MI_INDEX（backfill_service）——STOCK_DAY_ALL 已改版失效
+                twse_all = bool(self._config.get("twse_all"))
+                self.status_text = ("取得上市股票清單（全部）..." if twse_all
+                                    else "取得上市股票清單...")
+                from services.backfill_service import fetch_twse_daily
+                twse_rows: list[dict] = []
+                for ds in _recent_weekdays(6):
+                    try:
+                        twse_rows = fetch_twse_daily(ds) or []
+                    except Exception:  # noqa: BLE001
+                        twse_rows = []
+                    if twse_rows:
+                        break
+                twse_rows.sort(key=_vol_of, reverse=True)
+                picked = twse_rows if twse_all else twse_rows[:top_n]
+                twse_codes = [r["stock_code"] for r in picked]
                 self._config.set("twse_stock_codes", twse_codes)
                 self._config.set("twse_stock_list_date", today)
 
                 self._update_list_info()
+                twse_lbl = f"上市 {len(twse_codes)} 檔" + ("（全部）" if twse_all else "")
                 self.status_text = (
-                    f"已更新：上櫃 {len(otc_codes)} 檔 + 上市 {len(twse_codes)} 檔"
+                    f"已更新：上櫃 {len(otc_codes)} 檔 + {twse_lbl}"
                 )
             except Exception as e:
                 self.status_text = f"更新清單失敗：{e}"
