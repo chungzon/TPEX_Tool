@@ -15,6 +15,7 @@ from views.chart_style import HAS_MPL
 
 try:
     from matplotlib.figure import Figure
+    from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
     import matplotlib.ticker as mticker
     _HAS_MPL2 = True
 except Exception:      # noqa: BLE001
@@ -106,14 +107,48 @@ class NextDayMonitorView(ctk.CTkFrame):
             anchor="w", justify="left", wraplength=1100)
         self.status_label.pack(fill="x", padx=22, pady=(2, 6))
 
-        body = ctk.CTkFrame(self, fg_color="transparent")
-        body.pack(fill="both", expand=True, padx=0, pady=0)
+        # 檢視切換（候選表 / 即時監控）——各自全高，手機遠端小螢幕不會被擠到看不見
+        modebar = ctk.CTkFrame(self, fg_color="transparent")
+        modebar.pack(fill="x", padx=20, pady=(0, 4))
+        ctk.CTkLabel(modebar, text="檢視：",
+                     font=ctk.CTkFont(size=13)).pack(side="left")
+        self.mode_switch = ctk.CTkSegmentedButton(
+            modebar, values=["候選表", "即時監控"], command=self._on_mode,
+            font=ctk.CTkFont(size=13, weight="bold"))
+        self.mode_switch.set("候選表")
+        self.mode_switch.pack(side="left", padx=(4, 0))
 
-        # ---- 下方：盤中即時權證監控（固定高度，置底）----
-        mon_card = ctk.CTkFrame(body, corner_radius=12, height=250)
-        mon_card.pack(side="bottom", fill="x", padx=16, pady=(0, 8))
-        mon_card.pack_propagate(False)
-        montop = ctk.CTkFrame(mon_card, fg_color="transparent")
+        self.top_container = ctk.CTkFrame(self, fg_color="transparent")
+        self.top_container.pack(fill="both", expand=True, padx=0, pady=0)
+
+        # ---- 候選表 ----
+        self.cand_card = ctk.CTkFrame(self.top_container, corner_radius=12)
+        header = ctk.CTkFrame(self.cand_card, fg_color="transparent")
+        header.pack(fill="x", padx=12, pady=(12, 2))
+        for i, (_k, title, w, anc, weight) in enumerate(_COLS):
+            header.grid_columnconfigure(i, weight=weight, minsize=w)
+            ctk.CTkLabel(header, text=title,
+                         font=ctk.CTkFont(size=12, weight="bold"),
+                         text_color="#8a8a8e",
+                         anchor=("center" if anc == "center"
+                                 else "e" if anc == "e" else "w")).grid(
+                row=0, column=i, sticky="ew", padx=3)
+        self.table = ctk.CTkScrollableFrame(self.cand_card, fg_color="transparent")
+        self.table.pack(fill="both", expand=True, padx=6, pady=(0, 6))
+        for i, (_k, _t, w, _a, weight) in enumerate(_COLS):
+            self.table.grid_columnconfigure(i, weight=weight, minsize=w)
+        ctk.CTkLabel(
+            self.cand_card,
+            text="說明：自營商發行權證後以標的避險（認購→買股）。前一日「避險買入」較多者，"
+            "隔日若認購被倒賣/認售被買進，自營可能賣股解避險。勾選後按「開始監控所選」即時追蹤其權證"
+            "買賣壓；自營賣壓＝認售淨買−認購淨買，正值偏賣股。（期貨欄位待接 TAIFEX 個股期貨）",
+            font=ctk.CTkFont(size=11), text_color="#6a6a6a",
+            anchor="w", justify="left", wraplength=1120).pack(
+            fill="x", padx=12, pady=(0, 8))
+
+        # ---- 即時監控 ----
+        self.mon_card = ctk.CTkFrame(self.top_container, corner_radius=12)
+        montop = ctk.CTkFrame(self.mon_card, fg_color="transparent")
         montop.pack(fill="x", padx=12, pady=(10, 2))
         ctk.CTkLabel(montop, text="盤中即時 · 權證買賣壓（自營避險鬆動偵測）",
                      font=ctk.CTkFont(size=14, weight="bold")).pack(side="left")
@@ -130,7 +165,7 @@ class NextDayMonitorView(ctk.CTkFrame):
         self.replay_menu.pack(side="right")
         ctk.CTkLabel(montop, text="事件回放：", font=ctk.CTkFont(size=12)).pack(
             side="right", padx=(0, 4))
-        monhdr = ctk.CTkFrame(mon_card, fg_color="transparent")
+        monhdr = ctk.CTkFrame(self.mon_card, fg_color="transparent")
         monhdr.pack(fill="x", padx=12, pady=(2, 2))
         for i, (_k, title, w, anc, weight) in enumerate(_MON_COLS):
             monhdr.grid_columnconfigure(i, weight=weight, minsize=w)
@@ -139,35 +174,22 @@ class NextDayMonitorView(ctk.CTkFrame):
                          anchor=("center" if anc == "center" else "e"
                                  if anc == "e" else "w")).grid(
                 row=0, column=i, sticky="ew", padx=3)
-        self.mon_table = ctk.CTkScrollableFrame(mon_card, fg_color="transparent")
-        self.mon_table.pack(fill="both", expand=True, padx=6, pady=(0, 8))
+        # 欄位說明（置底）
+        ctk.CTkLabel(
+            self.mon_card,
+            text="說明：認購倒賣＝認購權證被大量賣出（投資人倒貨→自營買回權證→縮減避險"
+            "→賣標的股）。自營賣壓＝認售淨買−認購淨買：正值(紅⚠)自營偏賣股、"
+            "負值(綠)偏加碼買避險股，數值越大訊號越強。→ 越紅越大＝自營快不需要那麼多避險股、準備賣出。",
+            font=ctk.CTkFont(size=11), text_color="#8a8a8e",
+            anchor="w", justify="left", wraplength=1120).pack(
+            side="bottom", fill="x", padx=12, pady=(2, 8))
+        self.mon_table = ctk.CTkScrollableFrame(self.mon_card,
+                                                fg_color="transparent")
+        self.mon_table.pack(fill="both", expand=True, padx=6, pady=(0, 4))
         for i, (_k, _t, w, _a, weight) in enumerate(_MON_COLS):
             self.mon_table.grid_columnconfigure(i, weight=weight, minsize=w)
 
-        # ---- 上方：候選表（填滿剩餘空間）----
-        card = ctk.CTkFrame(body, corner_radius=12)
-        card.pack(side="top", fill="both", expand=True, padx=16, pady=(0, 8))
-        header = ctk.CTkFrame(card, fg_color="transparent")
-        header.pack(fill="x", padx=12, pady=(12, 2))
-        for i, (_k, title, w, anc, weight) in enumerate(_COLS):
-            header.grid_columnconfigure(i, weight=weight, minsize=w)
-            ctk.CTkLabel(header, text=title,
-                         font=ctk.CTkFont(size=12, weight="bold"),
-                         text_color="#8a8a8e",
-                         anchor=("center" if anc == "center"
-                                 else "e" if anc == "e" else "w")).grid(
-                row=0, column=i, sticky="ew", padx=3)
-        self.table = ctk.CTkScrollableFrame(card, fg_color="transparent")
-        self.table.pack(fill="both", expand=True, padx=6, pady=(0, 6))
-        for i, (_k, _t, w, _a, weight) in enumerate(_COLS):
-            self.table.grid_columnconfigure(i, weight=weight, minsize=w)
-        ctk.CTkLabel(
-            card, text="說明：自營商發行權證後以標的避險（認購→買股）。前一日「避險買入」較多者，"
-            "隔日若認購被倒賣/認售被買進，自營可能賣股解避險。勾選後按「開始監控所選」即時追蹤其權證"
-            "買賣壓；自營賣壓＝認售淨買−認購淨買，正值偏賣股。（期貨欄位待接 TAIFEX 個股期貨）",
-            font=ctk.CTkFont(size=11), text_color="#6a6a6a",
-            anchor="w", justify="left", wraplength=1120).pack(
-            fill="x", padx=12, pady=(0, 8))
+        self._on_mode("候選表")      # 預設顯示候選表
 
     # ================================================================ Bindings
     def _bind_vm(self):
@@ -187,11 +209,23 @@ class NextDayMonitorView(ctk.CTkFrame):
     def _on_load(self):
         self.vm.load()
 
+    def _on_mode(self, value):
+        """切換 候選表 / 即時監控（各自全高，避免小螢幕被擠壓）。"""
+        self.cand_card.pack_forget()
+        self.mon_card.pack_forget()
+        if value == "即時監控":
+            self.mon_card.pack(fill="both", expand=True, padx=16, pady=(0, 8))
+        else:
+            self.cand_card.pack(fill="both", expand=True, padx=16, pady=(0, 8))
+
     def _on_monitor(self):
         if not self.vm.selected:
             self.status_label.configure(text="請先勾選至少一檔要監控的標的")
             return
         self.vm.start_monitor()
+        # 開始監控後自動切到即時監控檢視
+        self.mode_switch.set("即時監控")
+        self._on_mode("即時監控")
 
     def _on_stop(self):
         self.vm.stop_monitor()
@@ -408,7 +442,7 @@ class NextDayMonitorView(ctk.CTkFrame):
         body = ctk.CTkFrame(top, fg_color="#1b1c1f", corner_radius=10)
         body.pack(fill="both", expand=True, padx=12, pady=(0, 12))
 
-        fig = Figure(figsize=(12.0, 6.4), dpi=200, facecolor=cs.BG,
+        fig = Figure(figsize=(11.4, 6.2), dpi=130, facecolor=cs.BG,
                      layout="constrained")
         gs = fig.add_gridspec(3, 1, hspace=0.10)
         ax1 = fig.add_subplot(gs[0:2, 0])
@@ -416,15 +450,16 @@ class NextDayMonitorView(ctk.CTkFrame):
         for ax in (ax1, ax2):
             ax.set_facecolor(cs.BG)
         clr = cs.RED if (n and price[-1] >= (price[0] or 0)) else cs.GREEN
-        ax1.plot(xs, price, color=clr, lw=2.4, solid_capstyle="round", zorder=5)
+        ax1.plot(xs, price, color=clr, lw=1.6, solid_capstyle="round", zorder=5)
         if cost:
-            ax1.axhline(cost, color=cs.AMBER, lw=1.6, linestyle=(0, (5, 3)),
+            ax1.axhline(cost, color=cs.AMBER, lw=1.4, linestyle=(0, (5, 3)),
                         alpha=0.8, zorder=3)
             ax1.annotate(f"主力成本 {cost:,.2f}", xy=(0, cost),
-                         xytext=(4, 4), textcoords="offset points",
-                         fontsize=15, color=cs.AMBER)
-        # 事件標記（分組）
+                         xytext=(4, 3), textcoords="offset points",
+                         fontsize=9, color=cs.AMBER)
+        # 事件標記（分組）+ 抽樣點→事件標籤對照
         groups = {}
+        ev_at: dict[int, list] = {}
         for ev in events:
             i = ev.get("i")
             if i is None or not (0 <= i < n):
@@ -432,30 +467,32 @@ class NextDayMonitorView(ctk.CTkFrame):
             groups.setdefault(ev["type"], ([], []))
             groups[ev["type"]][0].append(i)
             groups[ev["type"]][1].append(price[i])
+            ev_at.setdefault(i, []).append(
+                _NR_EV_STYLE.get(ev["type"], {}).get("label", ""))
         for et in _NR_EV_ORDER:
             if et in groups:
                 gx, gy = groups[et]
                 ax1.scatter(gx, gy, zorder=9, **_NR_EV_STYLE[et])
         if groups:
-            ax1.legend(loc="upper left", fontsize=14, framealpha=0.0,
+            ax1.legend(loc="upper left", fontsize=8.5, framealpha=0.0,
                        labelcolor=cs.TXT, ncol=4, columnspacing=1.0,
                        handlelength=1.2)
         # 自營賣壓面板
-        ax2.axhline(sp_th, color=cs.RED, lw=1.2, linestyle=(0, (4, 3)),
+        ax2.axhline(sp_th, color=cs.RED, lw=1.1, linestyle=(0, (4, 3)),
                     alpha=0.6)
         ax2.axhline(0, color=cs.FLAT, lw=1.0, alpha=0.4)
         pos = [max(v, 0) for v in sp]
         neg = [min(v, 0) for v in sp]
         ax2.fill_between(xs, 0, pos, color=cs.RED, alpha=0.30, zorder=2)
         ax2.fill_between(xs, 0, neg, color=cs.GREEN, alpha=0.30, zorder=2)
-        ax2.plot(xs, sp, color=cs.TXT, lw=1.2, zorder=4)
-        ax2.set_ylabel("自營賣壓", fontsize=14, color=cs.TXT)
+        ax2.plot(xs, sp, color=cs.TXT, lw=1.1, zorder=4)
+        ax2.set_ylabel("自營賣壓", fontsize=9, color=cs.TXT)
 
         for ax in (ax1, ax2):
             for spn in ax.spines.values():
                 spn.set_visible(False)
-            ax.grid(True, axis="y", alpha=0.13, color=cs.GRID, linewidth=0.8)
-            ax.tick_params(colors=cs.TXT, labelsize=13, length=0)
+            ax.grid(True, axis="y", alpha=0.13, color=cs.GRID, linewidth=0.7)
+            ax.tick_params(colors=cs.TXT, labelsize=8.5, length=0)
         m = max(n, 1)
         step = max(m // 8, 1)
         ticks = list(range(0, m, step))
@@ -463,4 +500,70 @@ class NextDayMonitorView(ctk.CTkFrame):
         ax2.set_xticklabels([times[t][:5] if 0 <= t < n else "" for t in ticks])
         ax1.tick_params(labelbottom=False)
         ax1.set_xlim(-0.5, m - 0.5)
-        top._embed = cs.embed(body, fig, 12.0, 6.4)
+
+        # ---- 查價線（隨滑鼠自動 snap 到最近價格點）----
+        y0 = price[0] if price else 0.0
+        vline1 = ax1.axvline(0, color=cs.TXT, lw=0.7, alpha=0.6, zorder=12,
+                             visible=False)
+        vline2 = ax2.axvline(0, color=cs.TXT, lw=0.7, alpha=0.6, zorder=12,
+                             visible=False)
+        hline1 = ax1.axhline(y0, color=cs.TXT, lw=0.7, alpha=0.5,
+                             linestyle=(0, (3, 3)), zorder=12, visible=False)
+        dot, = ax1.plot([0], [y0], marker="o", ms=7, color="#ffffff",
+                        mec=cs.BG, mew=1.2, zorder=14, visible=False)
+        ptag = ax1.text(1.0, y0, "", transform=ax1.get_yaxis_transform(),
+                        ha="left", va="center", fontsize=8.5, color="#0d0d0f",
+                        zorder=15, visible=False,
+                        bbox=dict(boxstyle="round,pad=0.22", fc=cs.TXT,
+                                  ec="none"))
+        info = ax1.text(0.985, 0.97, "", transform=ax1.transAxes, ha="right",
+                        va="top", fontsize=8.5, color=cs.TXT, linespacing=1.5,
+                        zorder=15,
+                        bbox=dict(boxstyle="round,pad=0.34", fc="#1b1c1f",
+                                  ec="#3a3b40", alpha=0.92))
+        ref = record.get("prev_close") or y0
+
+        def _info_text(i):
+            p, s, t = price[i], sp[i], times[i]
+            pct = ((p - ref) / ref * 100) if ref else 0.0
+            txt = f"{t}\n價 {p:,.2f}（{pct:+.2f}%）\n自營賣壓 {s:+,}"
+            evs = ev_at.get(i)
+            if evs:
+                txt += "\n◆ " + "、".join(dict.fromkeys(evs))
+            return txt
+
+        if n:
+            info.set_text(_info_text(n - 1))
+            info.set_visible(True)
+
+        def _on_move(ev):
+            if ev.inaxes not in (ax1, ax2) or ev.xdata is None:
+                for a in (vline1, vline2, hline1, dot, ptag):
+                    a.set_visible(False)
+                if n:
+                    info.set_text(_info_text(n - 1))
+                canvas.draw_idle()
+                return
+            i = max(0, min(n - 1, int(round(ev.xdata))))
+            yi = price[i]
+            for v in (vline1, vline2):
+                v.set_xdata([i, i])
+                v.set_visible(True)
+            hline1.set_ydata([yi, yi])
+            hline1.set_visible(True)
+            dot.set_data([i], [yi])
+            dot.set_visible(True)
+            ptag.set_y(yi)
+            ptag.set_text(f" {yi:,.2f} ")
+            ptag.set_visible(True)
+            info.set_text(_info_text(i))
+            info.set_visible(True)
+            canvas.draw_idle()
+
+        canvas = FigureCanvasTkAgg(fig, master=body)
+        canvas.draw()
+        wdg = canvas.get_tk_widget()
+        wdg.configure(bg=cs.BG, highlightthickness=0)
+        wdg.pack(fill="both", expand=True)
+        canvas.mpl_connect("motion_notify_event", _on_move)
+        top._canvas = canvas      # 保留參考避免 GC
