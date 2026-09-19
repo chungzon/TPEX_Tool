@@ -5,9 +5,22 @@ from __future__ import annotations
 import logging
 import threading
 import time
+from datetime import datetime, timezone
 from typing import Any, Callable
 
 log = logging.getLogger(__name__)
+
+
+def _kbar_dt(ts_ns: float) -> datetime:
+    """kbars.ts（奈秒）→ 台北當地時間的 naive datetime。
+
+    永豐 kbars.ts 存的已經是「台北牆上時間」當成 epoch 的值，不是真正的 UTC
+    epoch。用 datetime.fromtimestamp() 會再加一次本機時區位移，在 UTC+8 的機器
+    上整份分 K 會晚 8 小時（09:01~13:30 變成 17:01~21:30）。固定以 UTC 解讀再
+    去掉 tzinfo，才能拿回原本的台北時間，且不受執行機器時區影響。
+    """
+    return datetime.fromtimestamp(ts_ns / 1e9, tz=timezone.utc).replace(
+        tzinfo=None)
 
 
 class ShioajiService:
@@ -367,7 +380,7 @@ class ShioajiService:
 
         盤中呼叫回到目前為止已成形的分 K，供即時走勢圖用（可重覆輪詢延伸）。
         回 [{time(HH:MM), open, high, low, close, volume}]，依時間升冪。
-        kbars.ts 為 epoch 奈秒；轉本地時間取 HH:MM。
+        kbars.ts 為奈秒時戳，以 _kbar_dt() 轉回台北時間。
         """
         if not self._logged_in or not self._api:
             return []
@@ -375,12 +388,11 @@ class ShioajiService:
         if not contract:
             return []
         try:
-            from datetime import datetime as _dt
             kb = self._api.kbars(contract, start=date, end=date, timeout=30000)
             ts = list(kb.ts)
             out: list[dict] = []
             for i in range(len(ts)):
-                hhmm = _dt.fromtimestamp(ts[i] / 1e9).strftime("%H:%M")
+                hhmm = _kbar_dt(ts[i]).strftime("%H:%M")
                 out.append({
                     "time": hhmm,
                     "open": float(kb.Open[i]),
@@ -409,12 +421,11 @@ class ShioajiService:
         if not contract:
             return []
         try:
-            from datetime import datetime as _dt
             kb = self._api.kbars(contract, start=start, end=end, timeout=30000)
             ts = list(kb.ts)
             out: list[dict] = []
             for i in range(len(ts)):
-                d = _dt.fromtimestamp(ts[i] / 1e9)
+                d = _kbar_dt(ts[i])
                 out.append({
                     "date": d.strftime("%Y-%m-%d"),
                     "time": d.strftime("%H:%M"),
