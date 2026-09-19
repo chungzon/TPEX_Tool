@@ -479,6 +479,21 @@ class DbService:
         )
         return cur.fetchone() is not None
 
+    def broker_data_exists(self, stock_code: str, trade_date: str) -> bool:
+        """分點明細是否已下載。
+
+        不能改用 stock_exists()：StockDailySummary 也會被「補資料」分頁
+        （每日行情 API）寫入，拿它判斷會讓分點下載誤以為已完成而整批跳過。
+        """
+        cur = self._cursor()
+        trade_date = _normalize_date(trade_date)
+        cur.execute(
+            "SELECT TOP 1 1 FROM BrokerDailyStats "
+            "WHERE stock_code=%s AND trade_date=%s",
+            (stock_code, trade_date),
+        )
+        return cur.fetchone() is not None
+
     def get_all_broker_buys_by_date(self, trade_date: str) -> list[dict]:
         """All broker buy records for a given date, with stock info."""
         cur = self._cursor()

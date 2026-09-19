@@ -190,19 +190,30 @@ class SchedulerService:
                 log.warning("Aux data download failed: %s", e)
                 self._status(f"輔助資料下載失敗（不影響主流程）：{e}")
 
-        # Check if we already have data for this trading date
+        # Check if we already have data for this trading date.
+        # 每個要跑的市場各取一檔抽樣：只看上櫃第一檔的話，上市整批失敗時
+        # 隔天會誤判「已存在」整批跳過，上市分點就永遠補不回來。
         if trading_date:
             from services.db_service import DbService
+            samples: list[tuple[str, str]] = []
+            if market in ("otc", "all") and otc_codes:
+                samples.append(("上櫃", otc_codes[0]))
+            if market in ("twse", "all") and twse_codes:
+                samples.append(("上市", twse_codes[0]))
             db = DbService()
             try:
                 db.connect()
-                # Sample check: see if first stock already has data for this date
-                sample = codes[0] if codes else ""
-                if sample and db.stock_exists(sample, trading_date):
+                missing = [lbl for lbl, code in samples
+                           if not db.broker_data_exists(code, trading_date)]
+                if samples and not missing:
                     self.last_result = f"{trading_date} 資料已存在，跳過"
                     self._status(self.last_result)
                     log.info("Data for %s already exists, skipping", trading_date)
                     return
+                if missing and len(missing) < len(samples):
+                    self._status(f"{trading_date} 缺少 {'/'.join(missing)} 資料，續跑")
+                    log.info("Partial data for %s, missing: %s",
+                             trading_date, missing)
             except Exception:
                 pass
             finally:

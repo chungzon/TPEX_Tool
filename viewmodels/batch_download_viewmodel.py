@@ -240,7 +240,8 @@ class BatchDownloadViewModel(BaseViewModel):
                     self.trade_date_text = batch_trade_date
 
                 # Check skip
-                if skip_existing and self._db_svc.stock_exists(code, result.trade_date):
+                if skip_existing and self._db_svc.broker_data_exists(
+                        code, result.trade_date):
                     self._log(
                         f"[{tag}][{code}] {result.stock_name}"
                         f"（{api_date}）— 已存在，跳過\n"

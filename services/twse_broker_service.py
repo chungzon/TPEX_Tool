@@ -131,10 +131,12 @@ class TwseBrokerService:
         resp.raise_for_status()
         html = resp.text
 
-        vs = self._field(html, "__VIEWSTATE")
-        vsg = self._field(html, "__VIEWSTATEGENERATOR")
-        ev = self._field(html, "__EVENTVALIDATION")
-        if not vs:
+        # 所有 __ 開頭的 hidden 欄位都要原樣回傳。2026-09 起 BSR 多了
+        # __VIEWSTATEENCRYPTED，漏帶會讓 ASP.NET 丟例外並 302 到
+        # GenericErrorPage.htm（不是驗證碼錯誤），整個上市分點會靜默全失敗。
+        # 改成通吃 hidden 欄位，日後再加欄位也不會壞。
+        hidden = self._hidden_fields(html)
+        if not hidden.get("__VIEWSTATE"):
             raise RuntimeError("無 ViewState")
 
         # 2. Captcha
@@ -153,15 +155,17 @@ class TwseBrokerService:
         time.sleep(random.uniform(1.0, 2.5))
         form = {
             "__EVENTTARGET": "", "__EVENTARGUMENT": "", "__LASTFOCUS": "",
-            "__VIEWSTATE": vs, "__VIEWSTATEGENERATOR": vsg,
-            "__EVENTVALIDATION": ev,
+            **hidden,
             "RadioButton_Normal": "RadioButton_Normal",
             "TextBox_Stkno": stock_code,
             "CaptchaControl1": code,
             "btnOK": "查詢",
         }
         resp2 = s.post(self.BSR_URL, data=form, timeout=15)
-        resp2.raise_for_status()
+        if resp2.status_code >= 400 or "GenericErrorPage" in resp2.url:
+            raise RuntimeError(
+                f"BSR 查詢頁回錯誤（status={resp2.status_code}, url={resp2.url}）"
+                "，表單欄位可能已改版")
         post_html = resp2.text
 
         if "驗證碼錯誤" in post_html:
@@ -221,6 +225,22 @@ class TwseBrokerService:
         if stock_name:
             result.stock_name = stock_name
         return result
+
+    @staticmethod
+    def _hidden_fields(html: str) -> dict[str, str]:
+        """抓出表單所有 hidden 欄位（__VIEWSTATE / __EVENTVALIDATION /
+        __VIEWSTATEENCRYPTED …），原樣回傳給 postback。"""
+        out: dict[str, str] = {}
+        for tag in re.finditer(r"<input\b[^>]*>", html, re.I):
+            t = tag.group(0)
+            if not re.search(r'type=["\']?hidden', t, re.I):
+                continue
+            nm = re.search(r'name=["\']?([^"\'\s>]+)', t)
+            if not nm:
+                continue
+            val = re.search(r'value=["\']([^"\']*)["\']', t)
+            out[nm.group(1)] = val.group(1) if val else ""
+        return out
 
     @staticmethod
     def _field(html: str, name: str) -> str:
