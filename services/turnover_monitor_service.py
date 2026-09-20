@@ -37,6 +37,97 @@ _FLIP_RATIO_LO = 0.4     # ≤ → 波段；中間 → 混合
 _CONC_TOPN = 15          # 主力集中度取買/賣超各前 N 家
 
 
+def main_cost(r: dict) -> tuple[float | None, bool]:
+    """表格「主力均價」欄的顯示值。回 (價格, 是否為買均價)。
+
+    集中度為負（賣超主導）→ 取主力賣均價；否則 → 主力買均價。
+    篩選與繪表共用此函式，避免兩邊各判一次而標準不一致。無資料回 (None, True)。
+    """
+    cc = r.get("concentration")
+    if cc is not None and cc < 0:
+        return r.get("main_sell_cost"), False
+    return r.get("main_buy_cost"), True
+
+
+def _gt(a, b) -> bool:
+    """a > b；任一為 None 回 False（缺值無法驗證條件，一律視為不通過）。"""
+    return a is not None and b is not None and a > b
+
+
+def net_buy_ratio(r: dict) -> float | None:
+    """(外資淨 + 主力淨) ÷ 當日成交量 ×100。三者單位皆為張，故可直接相除。
+
+    正值＝合計買超佔量比重，負值＝合計賣超。任一欄缺值或成交量為 0 回 None。
+    """
+    f = r.get("foreign_lots")
+    m = r.get("main_net_lots")
+    v = r.get("volume_lots")
+    if f is None or m is None or not v:
+        return None
+    return (f + m) / v * 100
+
+
+def _f_close_gt_cost(r: dict, _v) -> bool:
+    return _gt(r.get("close"), main_cost(r)[0])
+
+
+def _f_net_buy_ratio(r: dict, v) -> bool:
+    ratio = net_buy_ratio(r)
+    return ratio is not None and v is not None and ratio >= v
+
+
+# 篩選條件註冊表。每筆為 dict：
+#   key     內部識別碼
+#   label   勾選框文字
+#   suffix  參數輸入框後的單位文字（無參數條件留空）
+#   desc    說明（供未來 tooltip / 文件用）
+#   fn      判斷函式 fn(row, value) -> bool；value 為參數值，無參數條件收到 None
+#   default 參數預設值；None 代表此條件不帶輸入框
+# 多條件取交集（AND）。新增條件在此加一筆即可，UI 與 VM 會自動帶出。
+MONITOR_FILTERS: list[dict] = [
+    {"key": "close_gt_cost",
+     "label": "收盤 > 主力均價",
+     "suffix": "",
+     "desc": "收盤價站上主力均價（集中度為負時比賣均價，與「主力均價」欄同源）",
+     "fn": _f_close_gt_cost,
+     "default": None},
+    {"key": "net_buy_ratio",
+     "label": "外資+主力買超佔成交量 ≥",
+     "suffix": "%",
+     "desc": "(外資買賣超 + 主力買賣超) ÷ 當日成交量，三者皆為張；"
+             "衡量當日籌碼被外資與主力吃走的比重",
+     "fn": _f_net_buy_ratio,
+     "default": 5.0},
+]
+
+
+def filter_default(key: str):
+    """取某條件的參數預設值；無此條件或不帶參數回 None。"""
+    for f in MONITOR_FILTERS:
+        if f["key"] == key:
+            return f.get("default")
+    return None
+
+
+def apply_filters(rows: list[dict], keys, params: dict | None = None
+                  ) -> list[dict]:
+    """依 keys（已勾選條件）取交集過濾 rows。keys 為空則原樣回傳。
+
+    params: {key: 參數值}，未提供者退回該條件的 default。
+    """
+    if not keys:
+        return list(rows or [])
+    params = params or {}
+    sel = [f for f in MONITOR_FILTERS if f["key"] in keys]
+    if not sel:
+        return list(rows or [])
+    return [
+        r for r in (rows or [])
+        if all(f["fn"](r, params.get(f["key"], f.get("default")))
+               for f in sel)
+    ]
+
+
 def score_next_day_bias(r: dict) -> None:
     """依現有技術/籌碼欄位算隔日多空傾向。就地設 r['nd_score']、r['nd_bias']。
 

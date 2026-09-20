@@ -12,7 +12,8 @@ from viewmodels.turnover_monitor_viewmodel import TurnoverMonitorViewModel
 from views import chart_style as cs
 from views.monitor_detail_window import MonitorDetailWindow
 from services import broker_tags as bt
-from services.turnover_monitor_service import MF_SWING, MF_FLIP, MF_MIXED
+from services.turnover_monitor_service import (MF_SWING, MF_FLIP, MF_MIXED,
+                                               MONITOR_FILTERS, main_cost)
 
 # 主力型態徽章配色（沿用 broker_tags 色）
 _MF_STYLE = {
@@ -66,6 +67,11 @@ _GRAN_BADGE = {"red": ("#ef5350", "#2a0f0f"),
                "flat": ("#3a3b40", "#c7c7cc")}
 
 
+def _fmt_num(v) -> str:
+    """門檻值顯示：整數不帶小數點（5.0 → '5'），其餘保留原樣。"""
+    return "" if v is None else f"{v:g}"
+
+
 class TurnoverMonitorView(ctk.CTkFrame):
     """高周轉率監控 tab page。"""
 
@@ -97,9 +103,46 @@ class TurnoverMonitorView(ctk.CTkFrame):
         self._btn_fg = self.monitor_btn.cget("fg_color")
         self._btn_hover = self.monitor_btn.cget("hover_color")
 
+        # 篩選列：條件取交集（AND）；條件清單由 MONITOR_FILTERS 帶出
+        fbar = ctk.CTkFrame(self, fg_color="transparent")
+        fbar.pack(fill="x", padx=22, pady=(2, 2))
+        ctk.CTkLabel(fbar, text="篩選", font=ctk.CTkFont(size=12, weight="bold"),
+                     text_color="#8a8a8e").pack(side="left", padx=(0, 10))
+        self._filter_vars: dict = {}
+        self._filter_entries: dict = {}
+        for f in MONITOR_FILTERS:
+            key = f["key"]
+            var = ctk.BooleanVar(value=False)
+            cb = ctk.CTkCheckBox(
+                fbar, text=f["label"], variable=var, checkbox_width=16,
+                checkbox_height=16, corner_radius=4,
+                font=ctk.CTkFont(size=12),
+                command=lambda k=key: self.vm.toggle_filter(k))
+            pad = (0, 4) if f.get("default") is not None else (0, 14)
+            cb.pack(side="left", padx=pad)
+            self._filter_vars[key] = var
+            # 帶參數的條件：接一個門檻輸入框（Enter 或離開焦點時套用）
+            if f.get("default") is not None:
+                ent = ctk.CTkEntry(fbar, width=48, height=24, justify="center",
+                                   font=ctk.CTkFont(size=12))
+                ent.insert(0, _fmt_num(f["default"]))
+                ent.bind("<Return>", lambda _e, k=key: self._commit_param(k))
+                ent.bind("<FocusOut>", lambda _e, k=key: self._commit_param(k))
+                ent.pack(side="left")
+                self._filter_entries[key] = ent
+                if f.get("suffix"):
+                    ctk.CTkLabel(fbar, text=f["suffix"],
+                                 font=ctk.CTkFont(size=12),
+                                 text_color="#8a8a8e").pack(side="left",
+                                                            padx=(3, 14))
+        self.filter_count = ctk.CTkLabel(
+            fbar, text="", font=ctk.CTkFont(size=12, weight="bold"),
+            text_color="#c7c7cc")
+        self.filter_count.pack(side="right")
+
         self.status_label = ctk.CTkLabel(
             self, text="尚未載入", font=ctk.CTkFont(size=12), text_color="gray",
-            anchor="w", justify="left")
+            anchor="w", justify="left", wraplength=1100)
         self.status_label.pack(fill="x", padx=22, pady=(0, 8))
 
         card = ctk.CTkFrame(self, corner_radius=12)
@@ -124,10 +167,29 @@ class TurnoverMonitorView(ctk.CTkFrame):
 
     # ================================================================ Bindings
     def _bind_vm(self):
-        self.vm.bind("monitor_rows", self._on_rows)
+        # 綁 filtered_rows（非 monitor_rows）：VM 已套用篩選，View 只負責畫
+        self.vm.bind("filtered_rows", self._on_rows)
+        self.vm.bind("filter_summary", self._on_filter_summary)
         self.vm.bind("monitor_status", self._on_status)
         self.vm.bind("is_loading", self._on_loading)
         self.vm.bind("monitor_mode", self._on_monitor_mode)
+
+    def _on_filter_summary(self, v):
+        self.after(0, lambda: self.filter_count.configure(text=v or ""))
+
+    def _commit_param(self, key):
+        """把輸入框的門檻值送進 VM；非數字則還原成目前生效值。"""
+        ent = self._filter_entries.get(key)
+        if ent is None:
+            return
+        try:
+            val = float(ent.get().strip())
+        except ValueError:
+            cur = self.vm.filter_param(key)
+            ent.delete(0, "end")
+            ent.insert(0, _fmt_num(cur))
+            return
+        self.vm.set_filter_param(key, val)
 
     def _on_monitor_mode(self, on):
         def _u():
@@ -220,7 +282,7 @@ class TurnoverMonitorView(ctk.CTkFrame):
             lbl("nd", txt, nds[1], "center", bold=True)
         else:
             lbl("nd", "", "#6a6a6a", "center")
-        lbl("rank", str(idx), "#7a7a7e", "center")
+        lbl("rank", str(r.get("rank", idx)), "#7a7a7e", "center")
         # 市場徽章
         mkt = r.get("market", "")
         m = _MKT_STYLE.get(mkt)
@@ -296,13 +358,9 @@ class TurnoverMonitorView(ctk.CTkFrame):
             cclr2 = cs.RED if cc > 0 else cs.GREEN if cc < 0 else cs.FLAT
             lbl("conc", f"{cc:+.2f}", cclr2, "e", bold=abs(cc) >= 10)
         # 主力均價：集中度負(賣超為主)→賣均價(綠)；否則→買均價(紅)
-        cc2 = r.get("concentration")
-        if cc2 is not None and cc2 < 0:
-            mc = r.get("main_sell_cost")
-            mcclr = cs.GREEN
-        else:
-            mc = r.get("main_buy_cost")
-            mcclr = cs.RED
+        # 取值與篩選條件共用 main_cost()，確保兩邊判斷一致
+        mc, mc_is_buy = main_cost(r)
+        mcclr = cs.RED if mc_is_buy else cs.GREEN
         if mc is None:
             lbl("mcost", "—", "#6a6a6a", "e")
         else:
