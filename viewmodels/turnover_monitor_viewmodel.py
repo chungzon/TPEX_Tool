@@ -25,9 +25,11 @@ class TurnoverMonitorViewModel(BaseViewModel):
     monitor_status = ObservableProperty("尚未載入")
     is_loading = ObservableProperty(False)
     monitor_mode = ObservableProperty(False)    # 監控模式（點列開彈窗）
+    top_n = ObservableProperty(30)              # 取周轉率前 N 檔
 
     MIN_LOTS = 1000
-    TOP_N = 30
+    TOP_N = 30                    # 預設值
+    TOP_N_CHOICES = (30, 50, 100)
 
     def __init__(self, shioaji_svc=None):
         super().__init__()
@@ -39,6 +41,13 @@ class TurnoverMonitorViewModel(BaseViewModel):
 
     def toggle_monitor(self) -> None:
         self.monitor_mode = not self.monitor_mode
+
+    def set_top_n(self, n: int) -> None:
+        """改變取樣檔數並重新載入（載入中則忽略，避免疊起多條執行緒）。"""
+        if n == self.top_n or (self._thread and self._thread.is_alive()):
+            return
+        self.top_n = n
+        self.load()
 
     # ---- 篩選 ---------------------------------------------------------
     def toggle_filter(self, key: str) -> None:
@@ -104,7 +113,7 @@ class TurnoverMonitorViewModel(BaseViewModel):
         try:
             db.connect()
             date, rows, ctx = latest_monitor(db, min_lots=self.MIN_LOTS,
-                                             top_n=self.TOP_N, return_ctx=True)
+                                             top_n=self.top_n, return_ctx=True)
             self.data_date = date
             self.ctx = ctx
         except Exception as e:  # noqa: BLE001
@@ -126,7 +135,7 @@ class TurnoverMonitorViewModel(BaseViewModel):
         self.monitor_rows = rows
         self._apply_filters()
         self.monitor_status = (
-            f"資料日 {date}　量 > {self.MIN_LOTS:,} 張、依周轉率 Top {self.TOP_N}"
+            f"資料日 {date}　量 > {self.MIN_LOTS:,} 張、依周轉率 Top {self.top_n}"
             f"　主力型態＝近15日分點淨買（隔日沖 vs 波段）；"
             f"MA斜率＝月線斜率%；布林位階 −10~+10（突破可超出）；"
             f"主力均價＝當日買超前15家分點、以各家買進量加權的買進均價"

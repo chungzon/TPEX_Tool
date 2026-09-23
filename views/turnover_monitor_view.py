@@ -100,6 +100,14 @@ class TurnoverMonitorView(ctk.CTkFrame):
             font=ctk.CTkFont(size=13, weight="bold"),
             command=self.vm.toggle_monitor)
         self.monitor_btn.pack(side="right", padx=(0, 8))
+        # 取樣檔數（周轉率前 N 檔）：變更即重新載入
+        self.topn_menu = ctk.CTkOptionMenu(
+            top, width=76, height=30, corner_radius=8,
+            font=ctk.CTkFont(size=13, weight="bold"),
+            values=[f"Top {n}" for n in self.vm.TOP_N_CHOICES],
+            command=self._on_topn_pick)
+        self.topn_menu.set(f"Top {self.vm.top_n}")
+        self.topn_menu.pack(side="right", padx=(0, 8))
         self._btn_fg = self.monitor_btn.cget("fg_color")
         self._btn_hover = self.monitor_btn.cget("hover_color")
 
@@ -170,12 +178,26 @@ class TurnoverMonitorView(ctk.CTkFrame):
         # 綁 filtered_rows（非 monitor_rows）：VM 已套用篩選，View 只負責畫
         self.vm.bind("filtered_rows", self._on_rows)
         self.vm.bind("filter_summary", self._on_filter_summary)
+        self.vm.bind("top_n", self._on_top_n)
         self.vm.bind("monitor_status", self._on_status)
         self.vm.bind("is_loading", self._on_loading)
         self.vm.bind("monitor_mode", self._on_monitor_mode)
 
     def _on_filter_summary(self, v):
         self.after(0, lambda: self.filter_count.configure(text=v or ""))
+
+    def _on_topn_pick(self, choice):
+        """'Top 50' → 50，交給 VM 重新載入。"""
+        try:
+            self.vm.set_top_n(int(str(choice).split()[-1]))
+        except ValueError:
+            pass
+        # VM 可能因載入中而拒絕；拉回實際生效值以免選單與資料不符
+        self.topn_menu.set(f"Top {self.vm.top_n}")
+
+    def _on_top_n(self, v):
+        # VM 端拒絕變更（載入中）時把下拉選單拉回實際值，避免顯示與資料不符
+        self.after(0, lambda: self.topn_menu.set(f"Top {v}"))
 
     def _commit_param(self, key):
         """把輸入框的門檻值送進 VM；非數字則還原成目前生效值。"""
@@ -209,8 +231,10 @@ class TurnoverMonitorView(ctk.CTkFrame):
         def _u():
             if v:
                 self.refresh_btn.configure(state="disabled", text="載入中...")
+                self.topn_menu.configure(state="disabled")
             else:
                 self.refresh_btn.configure(state="normal", text="刷新")
+                self.topn_menu.configure(state="normal")
         self.after(0, _u)
 
     def _on_rows(self, rows):
