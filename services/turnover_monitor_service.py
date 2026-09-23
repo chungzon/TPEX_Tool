@@ -67,8 +67,8 @@ def net_buy_ratio(r: dict) -> float | None:
     return (f + m) / v * 100
 
 
-def _f_close_gt_cost(r: dict, _v) -> bool:
-    return _gt(r.get("close"), main_cost(r)[0])
+def _f_cost_gt_close(r: dict, _v) -> bool:
+    return _gt(main_cost(r)[0], r.get("close"))
 
 
 def _f_net_buy_ratio(r: dict, v) -> bool:
@@ -85,11 +85,12 @@ def _f_net_buy_ratio(r: dict, v) -> bool:
 #   default 參數預設值；None 代表此條件不帶輸入框
 # 多條件取交集（AND）。新增條件在此加一筆即可，UI 與 VM 會自動帶出。
 MONITOR_FILTERS: list[dict] = [
-    {"key": "close_gt_cost",
-     "label": "收盤 > 主力均價",
+    {"key": "cost_gt_close",
+     "label": "主力均價 > 收盤",
      "suffix": "",
-     "desc": "收盤價站上主力均價（集中度為負時比賣均價，與「主力均價」欄同源）",
-     "fn": _f_close_gt_cost,
+     "desc": "主力均價高於收盤價，即主力帳面成本被套牢"
+             "（集中度為負時比賣均價，與「主力均價」欄同源）",
+     "fn": _f_cost_gt_close,
      "default": None},
     {"key": "net_buy_ratio",
      "label": "外資+主力買超佔成交量 ≥",
