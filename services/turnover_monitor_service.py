@@ -936,10 +936,10 @@ def top_profit_brokers(db, code: str, rank_date: str, lookback_days: int = 120,
 
 def broker_net_ranking(db, code: str, start: str, end: str,
                        top_n: int = 15) -> dict:
-    """區間「買賣超前 N 名」分點 + 區間損益。db 需已 connect。
+    """區間「買超前 N 名」與「賣超前 N 名」分點 + 區間損益。db 需已 connect。
 
-    排序依買賣超「絕對值」，故買超與賣超的大戶都會進榜（各列以正負標示），
-    這樣點進去看趨勢圖時，吃貨與倒貨的分點都看得到。
+    買超榜依淨買量遞減、賣超榜依淨賣量遞減，各取前 top_n，分開兩份回傳。
+    排序以未取整的淨額（股）為準，避免換算成張後因四捨五入產生假平手。
 
     損益（元 → 回傳時換算萬元）：
       已實現 = (賣均價 − 買均價) × 配對量 min(買量, 賣量)
@@ -947,14 +947,14 @@ def broker_net_ranking(db, code: str, start: str, end: str,
     淨賣超者的未實現一律為 0 —— 其賣出可能來自區間前既有部位，成本無從得知，
     硬算會變成憑空捏造的數字。
 
-    回 {start, end, sessions, last_close, brokers: [...]}；
-    brokers 每筆含 code/name/net_lots/buy_lots/sell_lots/buy_avg/sell_avg/
+    回 {start, end, sessions, last_close, buyers: [...], sellers: [...]}；
+    每筆含 code/name/net_lots/buy_lots/sell_lots/buy_avg/sell_avg/
     realized/unrealized（萬元）。
     """
     start = _to_dash(start) if len(start) == 8 else start
     end = _to_dash(end) if len(end) == 8 else end
     out = {"start": start, "end": end, "sessions": 0, "last_close": None,
-           "brokers": []}
+           "buyers": [], "sellers": []}
     try:
         cur = db._cursor()
         cur.execute("""
@@ -1004,6 +1004,7 @@ def broker_net_ranking(db, code: str, start: str, end: str,
         rows.append({
             "code": b.get("broker_code", ""),
             "name": b["broker_name"],
+            "net": net,                          # 股，僅供排序用
             "net_lots": round(net / 1000),
             "buy_lots": round(bv / 1000),
             "sell_lots": round(sv / 1000),
@@ -1012,8 +1013,10 @@ def broker_net_ranking(db, code: str, start: str, end: str,
             "realized": realized / 10000.0,      # 萬元
             "unrealized": unreal / 10000.0,      # 萬元
         })
-    rows.sort(key=lambda x: abs(x["net_lots"]), reverse=True)
-    out["brokers"] = rows[:top_n]
+    out["buyers"] = sorted((r for r in rows if r["net"] > 0),
+                           key=lambda x: x["net"], reverse=True)[:top_n]
+    out["sellers"] = sorted((r for r in rows if r["net"] < 0),
+                            key=lambda x: x["net"])[:top_n]
     return out
 
 

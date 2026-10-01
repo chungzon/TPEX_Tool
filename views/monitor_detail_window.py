@@ -126,23 +126,27 @@ class MonitorDetailWindow(ctk.CTkToplevel):
         self.tb_card, self.tb_body, self.tb_label = self._card(
             3, 0, self.tb_title, span=2, with_subtitle=True)
 
-        # ---- 買賣超前15名分點 + 區間損益（跨兩欄，可點列看趨勢）----
-        self.br_card, self.br_body, self.br_label = self._card(
-            4, 0, "買賣超前15名分點（依買賣超絕對值 · 點選看該分點趨勢）",
+        # ---- 買超 / 賣超前15名分點 + 區間損益（各跨兩欄，可點列看趨勢）----
+        # 一列 7 欄，並排會擠到看不清，故上下堆疊；區間輸入只放買超卡，兩表共用。
+        self.buy_card, self.buy_body, self.buy_label = self._card(
+            4, 0, "買超前15名分點（點選看該分點趨勢）",
             span=2, with_subtitle=True)
-        self._build_range_bar(self.br_card)
+        self._build_range_bar(self.buy_card, self.buy_body)
+        self.sell_card, self.sell_body, self.sell_label = self._card(
+            5, 0, "賣超前15名分點（點選看該分點趨勢）",
+            span=2, with_subtitle=True)
 
         self.status_label = ctk.CTkLabel(
             root, text="載入中…", font=ctk.CTkFont(size=11),
             text_color="gray", anchor="w", justify="left")
-        self.status_label.grid(row=5, column=0, columnspan=2, sticky="ew",
+        self.status_label.grid(row=6, column=0, columnspan=2, sticky="ew",
                                padx=12, pady=(2, 6))
 
-    def _build_range_bar(self, card):
-        """損益統計區間輸入（Enter 或按「套用」重算）。"""
+    def _build_range_bar(self, card, before):
+        """損益統計區間輸入（Enter 或按「套用」重算）。買超/賣超兩表共用。"""
         bar = ctk.CTkFrame(card, fg_color="transparent")
         # 插在副標之後、表格之前
-        bar.pack(fill="x", padx=16, pady=(2, 4), before=self.br_body)
+        bar.pack(fill="x", padx=16, pady=(2, 4), before=before)
         ctk.CTkLabel(bar, text="統計區間", font=ctk.CTkFont(size=12),
                      text_color="#8a8a8e").pack(side="left", padx=(0, 8))
         self.e_rank_start = ctk.CTkEntry(bar, width=104, height=26,
@@ -800,25 +804,32 @@ class MonitorDetailWindow(ctk.CTkToplevel):
                     row=0, column=i, sticky="ew", padx=4, pady=2)
 
     def _render_broker_rank(self, data):
-        self._clear(self.br_body)
         if not data:
             return
-        brokers = data.get("brokers") or []
         sess = data.get("sessions", 0)
         lc = data.get("last_close")
-        note = (f"{data.get('start', '')} ~ {data.get('end', '')}　"
-                f"統計 {sess} 個交易日　"
-                f"已實現＝(賣均價−買均價)×配對量；"
-                f"未實現＝(期末收盤{f' {lc:,.2f}' if lc else ''}−買均價)×剩餘淨買量"
-                f"（淨賣超者不認列）")
-        self.br_label.configure(text=note)
+        head = (f"{data.get('start', '')} ~ {data.get('end', '')}　"
+                f"統計 {sess} 個交易日")
+        self.buy_label.configure(
+            text=f"{head}　已實現＝(賣均價−買均價)×配對量；"
+                 f"未實現＝(期末收盤{f' {lc:,.2f}' if lc else ''}−買均價)"
+                 f"×剩餘淨買量")
+        self.sell_label.configure(
+            text=f"{head}　淨賣超者不認列未實現"
+                 f"（賣出可能來自區間前既有部位，成本無從得知）")
+        self._render_rank_table(self.buy_body, data, "buyers", "（此區間無買超分點）")
+        self._render_rank_table(self.sell_body, data, "sellers", "（此區間無賣超分點）")
+
+    def _render_rank_table(self, body, data, key, empty_msg):
+        self._clear(body)
         if data.get("error"):
-            ctk.CTkLabel(self.br_body, text=f"（{data['error']}）",
+            ctk.CTkLabel(body, text=f"（{data['error']}）",
                          font=ctk.CTkFont(size=12), text_color="gray").pack(
                 pady=12)
             return
+        brokers = data.get(key) or []
         if not brokers:
-            ctk.CTkLabel(self.br_body, text="（此區間無分點交易資料）",
+            ctk.CTkLabel(body, text=empty_msg,
                          font=ctk.CTkFont(size=12), text_color="gray").pack(
                 pady=12)
             return
@@ -827,7 +838,7 @@ class MonitorDetailWindow(ctk.CTkToplevel):
                 ("buy", "買均價", 76, "e"), ("sell", "賣均價", 76, "e"),
                 ("real", "已實現(萬)", 92, "e"),
                 ("unreal", "未實現(萬)", 92, "e")]
-        header = ctk.CTkFrame(self.br_body, fg_color="transparent")
+        header = ctk.CTkFrame(body, fg_color="transparent")
         header.pack(fill="x", padx=8, pady=(2, 2))
         for i, (k, t, w, a) in enumerate(cols):
             header.grid_columnconfigure(i, minsize=w,
@@ -839,7 +850,7 @@ class MonitorDetailWindow(ctk.CTkToplevel):
                                  else "center")).grid(
                 row=0, column=i, sticky="ew", padx=4)
         for idx, b in enumerate(brokers, 1):
-            rowf = ctk.CTkFrame(self.br_body,
+            rowf = ctk.CTkFrame(body,
                                 fg_color="#1d1e21" if idx % 2 == 0
                                 else "transparent", corner_radius=4)
             rowf.pack(fill="x", padx=8, pady=1)
