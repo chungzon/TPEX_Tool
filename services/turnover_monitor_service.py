@@ -934,6 +934,162 @@ def top_profit_brokers(db, code: str, rank_date: str, lookback_days: int = 120,
     return {"sessions": sessions, "brokers": top}
 
 
+def broker_net_ranking(db, code: str, start: str, end: str,
+                       top_n: int = 15) -> dict:
+    """區間「買賣超前 N 名」分點 + 區間損益。db 需已 connect。
+
+    排序依買賣超「絕對值」，故買超與賣超的大戶都會進榜（各列以正負標示），
+    這樣點進去看趨勢圖時，吃貨與倒貨的分點都看得到。
+
+    損益（元 → 回傳時換算萬元）：
+      已實現 = (賣均價 − 買均價) × 配對量 min(買量, 賣量)
+      未實現 = (期末收盤 − 買均價) × 剩餘淨買量   （僅淨買超者認列）
+    淨賣超者的未實現一律為 0 —— 其賣出可能來自區間前既有部位，成本無從得知，
+    硬算會變成憑空捏造的數字。
+
+    回 {start, end, sessions, last_close, brokers: [...]}；
+    brokers 每筆含 code/name/net_lots/buy_lots/sell_lots/buy_avg/sell_avg/
+    realized/unrealized（萬元）。
+    """
+    start = _to_dash(start) if len(start) == 8 else start
+    end = _to_dash(end) if len(end) == 8 else end
+    out = {"start": start, "end": end, "sessions": 0, "last_close": None,
+           "brokers": []}
+    try:
+        cur = db._cursor()
+        cur.execute("""
+            SELECT COUNT(DISTINCT trade_date) FROM BrokerDailyStats
+            WHERE stock_code=%s AND trade_date>=%s AND trade_date<=%s
+        """, (code, start, end))
+        out["sessions"] = cur.fetchone()[0] or 0
+    except Exception as e:  # noqa: BLE001
+        log.warning("broker rank sessions failed %s: %s", code, e)
+
+    # 期末收盤（區間內最後一個有價格的交易日）供未實現損益計算
+    last_close = None
+    try:
+        prices = db.get_stock_prices(code, start, end)
+        for p in reversed(prices):
+            c = _numf(p.get("close_price"))
+            if c > 0:
+                last_close = c
+                break
+    except Exception as e:  # noqa: BLE001
+        log.warning("broker rank price failed %s: %s", code, e)
+    out["last_close"] = last_close
+
+    try:
+        summ = db.get_brokers_summary(code, start, end)
+    except Exception as e:  # noqa: BLE001
+        log.warning("broker rank summary failed %s: %s", code, e)
+        out["error"] = str(e)
+        return out
+
+    rows = []
+    for b in summ:
+        bv = b.get("buy_volume") or 0
+        sv = b.get("sell_volume") or 0
+        net = b.get("net_volume")
+        if net is None:
+            net = bv - sv
+        if bv == 0 and sv == 0:
+            continue
+        ab = b.get("avg_buy_price")
+        asl = b.get("avg_sell_price")
+        matched = min(bv, sv)
+        realized = (asl - ab) * matched if (ab and asl and matched > 0) else 0.0
+        unreal = 0.0
+        if net > 0 and ab and last_close:
+            unreal = (last_close - ab) * net
+        rows.append({
+            "code": b.get("broker_code", ""),
+            "name": b["broker_name"],
+            "net_lots": round(net / 1000),
+            "buy_lots": round(bv / 1000),
+            "sell_lots": round(sv / 1000),
+            "buy_avg": round(ab, 2) if ab else None,
+            "sell_avg": round(asl, 2) if asl else None,
+            "realized": realized / 10000.0,      # 萬元
+            "unrealized": unreal / 10000.0,      # 萬元
+        })
+    rows.sort(key=lambda x: abs(x["net_lots"]), reverse=True)
+    out["brokers"] = rows[:top_n]
+    return out
+
+
+def broker_daily_series(db, code: str, broker_code: str, broker_name: str,
+                        start: str, end: str) -> dict:
+    """單一分點在單一個股的日線股價 + 每日買賣超（供趨勢圖）。db 需已 connect。
+
+    時間軸取「有股價」與「分點有進出」兩者日期的聯集，而非只用股價日：
+    StockDailySummary 有近半數列的 OHLC 是空字串（分點爬蟲建列時不帶價，
+    補資料未必補到），只用股價日會讓整張圖縮成零星幾根。缺價日的 OHLC 以
+    None 表示（繪圖端跳過該根 K 線），買賣超量棒則照畫，資訊不會憑空消失。
+
+    回 {dates, open, high, low, close, net_lots, cum_lots, buy_lots,
+    sell_lots, price_days}；net_lots 為當日買賣超（張，正買負賣），
+    cum_lots 為區間累計買賣超，price_days 為實際有價格的天數。
+    """
+    start = _to_dash(start) if len(start) == 8 else start
+    end = _to_dash(end) if len(end) == 8 else end
+    empty = {"dates": [], "open": [], "high": [], "low": [], "close": [],
+             "net_lots": [], "cum_lots": [], "buy_lots": [], "sell_lots": [],
+             "price_days": 0,
+             "name": broker_name, "code": broker_code, "stock_code": code,
+             "start": start, "end": end}
+    price_by: dict[str, dict] = {}
+    try:
+        for p in db.get_stock_prices(code, start, end):
+            if _numf(p.get("close_price")) > 0:
+                price_by[str(p.get("trade_date", ""))[:10]] = p
+    except Exception as e:  # noqa: BLE001
+        log.warning("broker series price failed %s: %s", code, e)
+        return dict(empty, error=f"股價載入失敗：{e}")
+
+    by_date: dict[str, tuple[int, int]] = {}
+    try:
+        daily = db.get_brokers_daily_multi([broker_code], start, end,
+                                           stock_codes=[code])
+        for d in daily:
+            key = str(d.get("trade_date", ""))[:10]
+            bv = d.get("buy_volume") or 0
+            sv = d.get("sell_volume") or 0
+            pb, ps = by_date.get(key, (0, 0))
+            by_date[key] = (pb + bv, ps + sv)
+    except Exception as e:  # noqa: BLE001
+        log.warning("broker series daily failed %s/%s: %s", code,
+                    broker_code, e)
+        return dict(empty, error=f"分點明細載入失敗：{e}")
+
+    timeline = sorted(set(price_by) | set(by_date))
+    if not timeline:
+        return dict(empty, error="此區間無股價也無分點資料")
+
+    dates, opn, high, low, close = [], [], [], [], []
+    net_lots, cum_lots, buy_lots, sell_lots = [], [], [], []
+    cum = 0
+    for d in timeline:
+        bv, sv = by_date.get(d, (0, 0))
+        net = round((bv - sv) / 1000)
+        cum += net
+        p = price_by.get(d)
+        dates.append(d)
+        close.append(_numf(p.get("close_price")) if p else None)
+        opn.append(_numf(p.get("open_price")) if p else None)
+        high.append(_numf(p.get("high_price")) if p else None)
+        low.append(_numf(p.get("low_price")) if p else None)
+        net_lots.append(net)
+        cum_lots.append(cum)
+        buy_lots.append(round(bv / 1000))
+        sell_lots.append(round(sv / 1000))
+    return {"dates": dates, "open": opn, "high": high, "low": low,
+            "close": close, "net_lots": net_lots, "cum_lots": cum_lots,
+            "buy_lots": buy_lots, "sell_lots": sell_lots,
+            "price_days": len(price_by),
+            "name": broker_name, "code": broker_code, "stock_code": code,
+            "start": start, "end": end}
+
+
 def latest_monitor(db, min_lots: int = 1000, top_n: int = 30,
                    anchor: str | None = None, return_ctx: bool = False):
     """周轉率排行 + 監控欄位（含同類股漲跌）。回 (資料日 yyyymmdd, rows)。

@@ -126,11 +126,47 @@ class MonitorDetailWindow(ctk.CTkToplevel):
         self.tb_card, self.tb_body, self.tb_label = self._card(
             3, 0, self.tb_title, span=2, with_subtitle=True)
 
+        # ---- 買賣超前15名分點 + 區間損益（跨兩欄，可點列看趨勢）----
+        self.br_card, self.br_body, self.br_label = self._card(
+            4, 0, "買賣超前15名分點（依買賣超絕對值 · 點選看該分點趨勢）",
+            span=2, with_subtitle=True)
+        self._build_range_bar(self.br_card)
+
         self.status_label = ctk.CTkLabel(
             root, text="載入中…", font=ctk.CTkFont(size=11),
             text_color="gray", anchor="w", justify="left")
-        self.status_label.grid(row=4, column=0, columnspan=2, sticky="ew",
+        self.status_label.grid(row=5, column=0, columnspan=2, sticky="ew",
                                padx=12, pady=(2, 6))
+
+    def _build_range_bar(self, card):
+        """損益統計區間輸入（Enter 或按「套用」重算）。"""
+        bar = ctk.CTkFrame(card, fg_color="transparent")
+        # 插在副標之後、表格之前
+        bar.pack(fill="x", padx=16, pady=(2, 4), before=self.br_body)
+        ctk.CTkLabel(bar, text="統計區間", font=ctk.CTkFont(size=12),
+                     text_color="#8a8a8e").pack(side="left", padx=(0, 8))
+        self.e_rank_start = ctk.CTkEntry(bar, width=104, height=26,
+                                         justify="center",
+                                         font=ctk.CTkFont(size=12))
+        self.e_rank_start.insert(0, self.vm.rank_start)
+        self.e_rank_start.pack(side="left")
+        ctk.CTkLabel(bar, text="~", font=ctk.CTkFont(size=12),
+                     text_color="#8a8a8e").pack(side="left", padx=4)
+        self.e_rank_end = ctk.CTkEntry(bar, width=104, height=26,
+                                       justify="center",
+                                       font=ctk.CTkFont(size=12))
+        self.e_rank_end.insert(0, self.vm.rank_end)
+        self.e_rank_end.pack(side="left")
+        ctk.CTkButton(bar, text="套用", width=56, height=26, corner_radius=6,
+                      font=ctk.CTkFont(size=12, weight="bold"),
+                      command=self._apply_rank_range).pack(side="left",
+                                                           padx=(8, 0))
+        for e in (self.e_rank_start, self.e_rank_end):
+            e.bind("<Return>", lambda _e: self._apply_rank_range())
+
+    def _apply_rank_range(self):
+        self.vm.set_rank_range(self.e_rank_start.get().strip(),
+                               self.e_rank_end.get().strip())
 
     def _card(self, row, col, title, span=1, with_subtitle=False):
         card = ctk.CTkFrame(self._grid, corner_radius=12, fg_color="#1b1c1f")
@@ -163,6 +199,8 @@ class MonitorDetailWindow(ctk.CTkToplevel):
                      lambda v: self.after(0, lambda: self._render_warrant(v)))
         self.vm.bind("top_brokers",
                      lambda v: self.after(0, lambda: self._render_top_brokers(v)))
+        self.vm.bind("broker_rank",
+                     lambda v: self.after(0, lambda: self._render_broker_rank(v)))
         self.vm.bind("granville",
                      lambda v: self.after(0, lambda: self._render_granville(v)))
         self.vm.bind("granville_mk",
@@ -760,6 +798,106 @@ class MonitorDetailWindow(ctk.CTkToplevel):
                              anchor=("w" if a == "w" else "e" if a == "e"
                                      else "center")).grid(
                     row=0, column=i, sticky="ew", padx=4, pady=2)
+
+    def _render_broker_rank(self, data):
+        self._clear(self.br_body)
+        if not data:
+            return
+        brokers = data.get("brokers") or []
+        sess = data.get("sessions", 0)
+        lc = data.get("last_close")
+        note = (f"{data.get('start', '')} ~ {data.get('end', '')}　"
+                f"統計 {sess} 個交易日　"
+                f"已實現＝(賣均價−買均價)×配對量；"
+                f"未實現＝(期末收盤{f' {lc:,.2f}' if lc else ''}−買均價)×剩餘淨買量"
+                f"（淨賣超者不認列）")
+        self.br_label.configure(text=note)
+        if data.get("error"):
+            ctk.CTkLabel(self.br_body, text=f"（{data['error']}）",
+                         font=ctk.CTkFont(size=12), text_color="gray").pack(
+                pady=12)
+            return
+        if not brokers:
+            ctk.CTkLabel(self.br_body, text="（此區間無分點交易資料）",
+                         font=ctk.CTkFont(size=12), text_color="gray").pack(
+                pady=12)
+            return
+        cols = [("rank", "#", 28, "center"), ("name", "分點", 132, "w"),
+                ("net", "買賣超(張)", 92, "e"),
+                ("buy", "買均價", 76, "e"), ("sell", "賣均價", 76, "e"),
+                ("real", "已實現(萬)", 92, "e"),
+                ("unreal", "未實現(萬)", 92, "e")]
+        header = ctk.CTkFrame(self.br_body, fg_color="transparent")
+        header.pack(fill="x", padx=8, pady=(2, 2))
+        for i, (k, t, w, a) in enumerate(cols):
+            header.grid_columnconfigure(i, minsize=w,
+                                        weight=1 if k == "name" else 0)
+            ctk.CTkLabel(header, text=t,
+                         font=ctk.CTkFont(size=12, weight="bold"),
+                         text_color="#8a8a8e",
+                         anchor=("w" if a == "w" else "e" if a == "e"
+                                 else "center")).grid(
+                row=0, column=i, sticky="ew", padx=4)
+        for idx, b in enumerate(brokers, 1):
+            rowf = ctk.CTkFrame(self.br_body,
+                                fg_color="#1d1e21" if idx % 2 == 0
+                                else "transparent", corner_radius=4)
+            rowf.pack(fill="x", padx=8, pady=1)
+            for i, (k, _t, w, _a) in enumerate(cols):
+                rowf.grid_columnconfigure(i, minsize=w,
+                                          weight=1 if k == "name" else 0)
+            nl = b["net_lots"]
+            nclr = cs.RED if nl > 0 else cs.GREEN if nl < 0 else "#8a8a8e"
+            rv, uv = b["realized"], b["unrealized"]
+            rclr = cs.RED if rv > 0 else cs.GREEN if rv < 0 else "#8a8a8e"
+            uclr = cs.RED if uv > 0 else cs.GREEN if uv < 0 else "#8a8a8e"
+            cells = [
+                (str(idx), "#7a7a7e", "center"),
+                (b["name"], "#e6e6e6", "w"),
+                (f"{nl:+,}", nclr, "e"),
+                (f"{b['buy_avg']:,.2f}" if b["buy_avg"] else "—",
+                 "#c7c7cc", "e"),
+                (f"{b['sell_avg']:,.2f}" if b["sell_avg"] else "—",
+                 "#c7c7cc", "e"),
+                (f"{rv:+,.1f}", rclr, "e"),
+                (f"{uv:+,.1f}" if uv else "—", uclr, "e"),
+            ]
+            for i, (text, clr, a) in enumerate(cells):
+                ctk.CTkLabel(rowf, text=text, text_color=clr,
+                             font=ctk.CTkFont(size=12),
+                             anchor=("w" if a == "w" else "e" if a == "e"
+                                     else "center")).grid(
+                    row=0, column=i, sticky="ew", padx=4, pady=2)
+            self._bind_broker_click(rowf, b)
+
+    def _bind_broker_click(self, rowf, b):
+        """整列（含子元件）可點 → 開該分點的買賣超趨勢視窗。"""
+        def _open(_e=None):
+            self._open_broker_trend(b)
+        rowf.configure(cursor="hand2")
+        rowf.bind("<Button-1>", _open)
+        for child in rowf.winfo_children():
+            try:
+                child.configure(cursor="hand2")
+            except Exception:
+                pass
+            child.bind("<Button-1>", _open)
+
+    def _open_broker_trend(self, b):
+        from views.broker_trend_window import BrokerTrendWindow
+        rk = self.vm.broker_rank or {}
+        try:
+            win = BrokerTrendWindow(
+                self, stock_code=self.vm.code, stock_name=self.vm.name,
+                broker_code=b.get("code", ""), broker_name=b["name"],
+                start=rk.get("start") or self.vm.rank_start,
+                end=rk.get("end") or self.vm.rank_end)
+            self._broker_windows = [w for w in
+                                    getattr(self, "_broker_windows", [])
+                                    if w.winfo_exists()]
+            self._broker_windows.append(win)      # 保留參考避免被 GC
+        except Exception as e:  # noqa: BLE001
+            self.status_label.configure(text=f"開啟分點趨勢視窗失敗：{e}")
 
     # ================================================================ Close
     def _on_close(self):

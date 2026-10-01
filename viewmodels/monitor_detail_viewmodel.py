@@ -25,6 +25,8 @@ _MARKET_CLOSE = (13, 35)
 _POLL_SEC = 12          # 盤中即時輪詢間隔
 _TREND_DAYS = 160       # 日線回溯天數（足夠算 MA20 + 顯示約 90 根）
 _MK_LOOKBACK_DAYS = 12  # 分 K 往前抓取日曆天（≈8 交易日，足夠 15分K MA20+緩衝）
+_RANK_DAYS = 90         # 買賣超/損益統計區間預設回溯日曆天（≈60 交易日）
+_RANK_TOP_N = 15        # 買賣超排行取前幾名
 
 
 def _is_market_open(now: datetime | None = None) -> bool:
@@ -47,6 +49,9 @@ class MonitorDetailViewModel(BaseViewModel):
     warrant = ObservableProperty(None)          # dict | None
     quote = ObservableProperty(None)            # dict | None（即時個股報價 KPI）
     top_brokers = ObservableProperty(None)      # dict | None（最賺錢前5分點）
+    broker_rank = ObservableProperty(None)      # dict | None（買賣超前15分點+損益）
+    rank_start = ObservableProperty("")         # 損益統計區間起（yyyy-mm-dd）
+    rank_end = ObservableProperty("")           # 損益統計區間迄
     granville = ObservableProperty(None)        # dict | None（葛蘭碧八大法則·日線）
     granville_mk = ObservableProperty(None)     # dict | None（{"5K":..,"15K":..}）
     status = ObservableProperty("載入中…")
@@ -62,6 +67,16 @@ class MonitorDetailViewModel(BaseViewModel):
         self._sj = shioaji_svc
         self._stop = threading.Event()
         self._threads: list[threading.Thread] = []
+        self._rank_thread: threading.Thread | None = None
+        # 買賣超/損益統計區間預設：資料日往回 _RANK_DAYS 個日曆天
+        try:
+            end_dt = datetime.strptime(self.date, "%Y%m%d")
+        except (ValueError, TypeError):
+            end_dt = datetime.now()
+        from datetime import timedelta
+        self.rank_end = end_dt.strftime("%Y-%m-%d")
+        self.rank_start = (end_dt - timedelta(days=_RANK_DAYS)).strftime(
+            "%Y-%m-%d")
 
     # ------------------------------------------------------------------
     def start(self) -> None:
@@ -72,6 +87,45 @@ class MonitorDetailViewModel(BaseViewModel):
             t = threading.Thread(target=fn, daemon=True)
             t.start()
             self._threads.append(t)
+        self.reload_broker_rank()
+
+    # ---- 買賣超前 N 分點 + 區間損益（可自訂統計區間） ----
+    def set_rank_range(self, start: str, end: str) -> None:
+        """設定損益統計區間並重算。日期格式需為 yyyy-mm-dd。"""
+        if not start or not end or start > end:
+            self.broker_rank = dict(self.broker_rank or {},
+                                    error="區間不正確（起始日需早於或等於結束日）")
+            return
+        self.rank_start = start
+        self.rank_end = end
+        self.reload_broker_rank()
+
+    def reload_broker_rank(self) -> None:
+        if self._rank_thread and self._rank_thread.is_alive():
+            return
+        self._rank_thread = threading.Thread(target=self._load_broker_rank,
+                                             daemon=True)
+        self._rank_thread.start()
+
+    def _load_broker_rank(self) -> None:
+        from services.db_service import DbService
+        from services.turnover_monitor_service import broker_net_ranking
+        db = DbService()
+        try:
+            db.connect()
+            self.broker_rank = broker_net_ranking(
+                db, self.code, self.rank_start, self.rank_end,
+                top_n=_RANK_TOP_N)
+        except Exception as e:  # noqa: BLE001
+            log.warning("broker rank load failed %s: %s", self.code, e)
+            self.broker_rank = {"brokers": [], "error": str(e),
+                                "start": self.rank_start,
+                                "end": self.rank_end}
+        finally:
+            try:
+                db.close()
+            except Exception:
+                pass
 
     # ---- 日線趨勢（月線 + 布林 + 量） ----
     def _load_daily(self) -> None:
