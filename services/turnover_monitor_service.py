@@ -24,6 +24,10 @@ MF_SWING = "波段"
 MF_FLIP = "隔日沖"
 MF_MIXED = "混合"
 
+# 分點風格（與 broker_profile_service 同一套字面值，避免 import 循環）
+STYLE_SHORT = "短沖"
+STYLE_FLIP = "隔日沖"
+
 _MA_PERIOD = 20        # 均線扣抵基準（月線）
 
 # 隔日沖主力型態偵測參數
@@ -35,6 +39,7 @@ _FLIP_RATIO_HI = 0.6     # 前10隔日沖買超佔比 ≥ → 隔日沖
 _FLIP_RATIO_LO = 0.4     # ≤ → 波段；中間 → 混合
 
 _CONC_TOPN = 15          # 主力集中度取買/賣超各前 N 家
+_FLIP_SHARE_BEARISH = 3.0  # 隔日沖分點買入佔成交量 ≥ 此(%) → 隔日賣壓訊號
 
 
 def main_cost(r: dict) -> tuple[float | None, bool]:
@@ -161,11 +166,11 @@ def score_next_day_bias(r: dict) -> None:
         # 放量上漲=偏多、放量下跌=偏空；縮量不加分
         if vc > 0:
             score += 1 if chg > 0 else -1 if chg < 0 else 0
-    # 4) 主力型態：波段偏多、隔日沖(隔日賣壓)偏空
-    mf = r.get("main_force")
-    if mf == MF_SWING:
-        score += 1
-    elif mf == MF_FLIP:
+    # 4) 短線籌碼：隔日沖分點買得多 → 隔日有回補賣壓，偏空。
+    #    （原本以「波段 +1 / 隔日沖 −1」計分；主力型態欄改為短沖/隔日沖買入
+    #     佔比後不再逐檔判定波段，故只保留隔日沖的負向訊號。）
+    fs = r.get("flip_buy_share")
+    if fs is not None and fs >= _FLIP_SHARE_BEARISH:
         score -= 1
     r["nd_score"] = score
     if score >= 3:
@@ -303,6 +308,54 @@ def _broker_flip_score(daily: list[dict], tag_fallback: float) -> float:
     if events >= _FLIP_MIN_EVENTS:
         return score
     return tag_fallback
+
+
+def flip_buy_share_for_rows(db, rows: list[dict], rank_date: str) -> None:
+    """就地算「短沖 / 隔日沖分點當日買入量佔成交量比」(%)。
+
+    風格取自 BrokerStockProfile（系統設定頁批次計算），不在這裡即時判定 ——
+    舊版 classify_flip_for_rows 每次載入都要回掃 60 個交易日的分點歷史，
+    既慢又與落地的風格表各判一套、可能不一致。
+
+    分母用排行列上的 `volume_lots`（來自每日行情 API，單位張且可靠），
+    不用 StockDailySummary.total_volume —— 後者單位因來源而異
+    （爬蟲＝張×2、補資料＝股），相除會得到錯誤比例。
+
+    設 r['short_buy_share']、r['flip_buy_share']（%，無資料為 None），
+    並快取 r['_today_brokers'] 供 concentration_for_rows 重用。
+    """
+    day = _to_dash(rank_date)
+    for r in rows:
+        r.setdefault("short_buy_share", None)
+        r.setdefault("flip_buy_share", None)
+        code = r["stock_code"]
+        try:
+            brokers = db.get_all_brokers_daily(code, day, day)
+        except Exception as e:  # noqa: BLE001
+            log.warning("flip share brokers failed %s: %s", code, e)
+            continue
+        r["_today_brokers"] = brokers      # 快取供 concentration_for_rows
+        if not brokers:
+            continue
+        try:
+            styles = db.get_broker_style_map(code)
+        except Exception as e:  # noqa: BLE001
+            log.warning("style map failed %s: %s", code, e)
+            continue
+        if not styles:
+            continue          # 該股尚未計算風格 → 維持 None，UI 顯示「—」
+        lots = r.get("volume_lots") or 0
+        if lots <= 0:
+            continue
+        short_buy = flip_buy = 0
+        for b in brokers:
+            st = styles.get(b.get("broker_name", ""))
+            if st == STYLE_SHORT:
+                short_buy += b.get("buy_volume") or 0
+            elif st == STYLE_FLIP:
+                flip_buy += b.get("buy_volume") or 0
+        r["short_buy_share"] = round(short_buy / 1000 / lots * 100, 2)
+        r["flip_buy_share"] = round(flip_buy / 1000 / lots * 100, 2)
 
 
 def classify_flip_for_rows(db, rows: list[dict], rank_date: str) -> None:
@@ -1129,7 +1182,7 @@ def latest_monitor(db, min_lots: int = 1000, top_n: int = 30,
     if not rows:
         return (date, rows, ctx) if return_ctx else (date, rows)
     enrich_rows(db, rows, date)
-    classify_flip_for_rows(db, rows, date)
+    flip_buy_share_for_rows(db, rows, date)
     concentration_for_rows(db, rows, date)
 
     # 同類股漲跌（同市場 + 同產業別）

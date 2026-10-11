@@ -136,7 +136,8 @@ class TurnoverMonitorViewModel(BaseViewModel):
         self._apply_filters()
         self.monitor_status = (
             f"資料日 {date}　量 > {self.MIN_LOTS:,} 張、依周轉率 Top {self.top_n}"
-            f"　主力型態＝近15日分點淨買（隔日沖 vs 波段）；"
+            f"　短沖/隔日沖買入%＝該風格分點當日買入量佔成交量比"
+            f"（風格取自系統設定計算的分點風格表，未計算則顯示 —）；"
             f"MA斜率＝月線斜率%；布林位階 −10~+10（突破可超出）；"
             f"主力均價＝當日買超前15家分點、以各家買進量加權的買進均價"
             f"（集中度為負即賣超主導時，改顯示賣超前15家的加權賣出均價）；"

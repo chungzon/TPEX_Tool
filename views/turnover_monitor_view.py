@@ -11,16 +11,8 @@ import customtkinter as ctk
 from viewmodels.turnover_monitor_viewmodel import TurnoverMonitorViewModel
 from views import chart_style as cs
 from views.monitor_detail_window import MonitorDetailWindow
-from services import broker_tags as bt
-from services.turnover_monitor_service import (MF_SWING, MF_FLIP, MF_MIXED,
-                                               MONITOR_FILTERS, main_cost)
+from services.turnover_monitor_service import MONITOR_FILTERS, main_cost
 
-# 主力型態徽章配色（沿用 broker_tags 色）
-_MF_STYLE = {
-    MF_SWING: (bt.TAG_COLORS[bt.TAG_SWING], "#10240f"),   # 波段 綠
-    MF_FLIP: (bt.TAG_COLORS[bt.TAG_NEXT], "#2a0f0f"),     # 隔日沖 紅
-    MF_MIXED: ("#8a8a8e", "#1a1a1c"),                     # 混合 灰
-}
 _MKT_STYLE = {"上市": ("市", "#3d6fb4"), "上櫃": ("櫃", "#b07a2e")}
 
 # (key, 標題, 寬px, 對齊, 權重)
@@ -34,7 +26,7 @@ _COLS = [
     ("vol", "量(張)", 62, "e", 0),
     ("turn", "周轉率%", 58, "e", 0),
     ("amp", "5日振幅", 54, "e", 0),
-    ("mf", "主力型態", 92, "center", 0),
+    ("mf", "短沖/隔日沖買入%", 104, "e", 0),
     ("foreign", "外資淨(張)", 74, "e", 0),
     ("dealer", "自營/避險淨(張)", 100, "e", 0),
     ("mnet", "主力買賣超", 78, "e", 0),
@@ -65,6 +57,9 @@ _WARRANT_STYLE = {"多": ("#ef5350", "#2a0f0f"),
 _GRAN_BADGE = {"red": ("#ef5350", "#2a0f0f"),
                "green": ("#26a69a", "#0f2420"),
                "flat": ("#3a3b40", "#c7c7cc")}
+
+
+_SHARE_STRONG = 3.0     # 買入佔比 >= 此(%) 以粗體標示（量能明顯）
 
 
 def _fmt_num(v) -> str:
@@ -332,18 +327,25 @@ class TurnoverMonitorView(ctk.CTkFrame):
             bold=True)
         amp = r.get("amp5")
         lbl("amp", f"{amp:.2f}" if amp is not None else "—", "#b0a17a", "e")
-        # 主力型態徽章（含隔日沖買超佔比%）
-        mf = r.get("main_force")
-        style = _MF_STYLE.get(mf)
-        if style:
-            fr = r.get("flip_ratio")
-            txt = f"{mf} {fr * 100:.0f}%" if fr is not None else mf
-            ctk.CTkLabel(rowf, text=txt, height=20, corner_radius=6,
-                         fg_color=style[0], text_color=style[1],
-                         font=ctk.CTkFont(size=11, weight="bold")).grid(
-                row=0, column=col["mf"], sticky="ew", padx=6, pady=2)
+        # 短沖 / 隔日沖分點當日買入量佔成交量比（風格取自 BrokerStockProfile）
+        ss = r.get("short_buy_share")
+        fs = r.get("flip_buy_share")
+        if ss is None and fs is None:
+            lbl("mf", "—", "#6a6a6a", "e")      # 該股尚未計算分點風格
         else:
-            lbl("mf", "—", "#6a6a6a", "center")
+            cell = ctk.CTkFrame(rowf, fg_color="transparent")
+            cell.grid(row=0, column=col["mf"], sticky="e", padx=4, pady=2)
+            # 隔日沖佔比越高＝隔日賣壓越重，故給紅色警示；短沖藍色中性
+            for val, clr in ((ss, "#42a5f5"), (fs, "#ef5350")):
+                if val is None:
+                    continue
+                strong = val >= _SHARE_STRONG
+                ctk.CTkLabel(
+                    cell, text=f"{val:.1f}",
+                    text_color=clr if val > 0 else "#5a5a5e",
+                    font=ctk.CTkFont(size=12,
+                                     weight="bold" if strong else "normal"),
+                    anchor="e", width=42).pack(side="left")
         # 外資：買賣超淨額（張，正買超紅／負賣超綠）
         fn = r.get("foreign_lots")
         if fn is None:
