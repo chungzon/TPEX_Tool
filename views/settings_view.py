@@ -17,6 +17,8 @@ class SettingsView(ctk.CTkFrame):
         self._build_ui()
         self._bind_vm()
         self._start_refresh_loop()
+        # 分點風格統計只在開啟分頁時讀一次（不放進定時 refresh，避免每秒打 DB）
+        self.after(400, self.vm.refresh_profile_summary)
 
     def _build_ui(self):
         container = ctk.CTkScrollableFrame(self, fg_color="transparent")
@@ -161,6 +163,68 @@ class SettingsView(ctk.CTkFrame):
             tdcc_status_row, text="—",
             font=ctk.CTkFont(size=12), text_color="#b0b0b0")
         self.tdcc_status_label.pack(side="left")
+
+        # ============================================================
+        # 分點風格分類 card
+        # ============================================================
+        prof_card = ctk.CTkFrame(container, corner_radius=12)
+        prof_card.pack(padx=40, pady=8, fill="x")
+
+        ctk.CTkLabel(
+            prof_card, text="主力分點風格分類（波段 / 短沖 / 隔日沖）",
+            font=ctk.CTkFont(size=16, weight="bold"),
+        ).pack(anchor="w", padx=24, pady=(20, 4))
+
+        ctk.CTkLabel(
+            prof_card,
+            text="由 BrokerDailyStats 的每日淨額還原各分點在每檔股票的持有天期，"
+                 "分類後寫入 BrokerStockProfile 供後續應用。\n"
+                 "每檔取進出量前 50 大且活躍 ≥10 日、進出 ≥1000 張的分點；"
+                 "全市場約需 10~15 分鐘。",
+            font=ctk.CTkFont(size=11), text_color="gray", justify="left",
+        ).pack(anchor="w", padx=24, pady=(0, 10))
+
+        prof_row = ctk.CTkFrame(prof_card, fg_color="transparent")
+        prof_row.pack(fill="x", padx=24, pady=(0, 4))
+
+        ctk.CTkLabel(prof_row, text="分析區間：近",
+                     font=ctk.CTkFont(size=12)).pack(side="left")
+        self.prof_days_entry = ctk.CTkEntry(prof_row, width=56, height=32,
+                                            justify="center")
+        self.prof_days_entry.insert(0, "180")
+        self.prof_days_entry.pack(side="left", padx=6)
+        ctk.CTkLabel(prof_row, text="天　", font=ctk.CTkFont(size=12),
+                     text_color="gray").pack(side="left")
+
+        self.prof_btn = ctk.CTkButton(
+            prof_row, text="開始計算（全市場）",
+            width=200, height=36, corner_radius=8,
+            font=ctk.CTkFont(size=13, weight="bold"),
+            fg_color="#7b61ff", hover_color="#6344e0",
+            command=self._on_rebuild_profiles,
+        )
+        self.prof_btn.pack(side="left")
+        self.prof_stop_btn = ctk.CTkButton(
+            prof_row, text="中止", width=72, height=36, corner_radius=8,
+            font=ctk.CTkFont(size=13), fg_color="#8a3b3b",
+            hover_color="#6f2f2f", state="disabled",
+            command=self.vm.stop_broker_profiles,
+        )
+        self.prof_stop_btn.pack(side="left", padx=(8, 0))
+
+        self.prof_bar = ctk.CTkProgressBar(prof_card, height=8)
+        self.prof_bar.set(0)
+        self.prof_bar.pack(fill="x", padx=24, pady=(8, 2))
+
+        self.prof_status_label = ctk.CTkLabel(
+            prof_card, text="—", font=ctk.CTkFont(size=12),
+            text_color="#b0b0b0", anchor="w", justify="left")
+        self.prof_status_label.pack(anchor="w", fill="x", padx=24, pady=(2, 2))
+        self.prof_summary_label = ctk.CTkLabel(
+            prof_card, text="", font=ctk.CTkFont(size=11),
+            text_color="gray", anchor="w", justify="left")
+        self.prof_summary_label.pack(anchor="w", fill="x", padx=24,
+                                     pady=(0, 16))
 
         # ============================================================
         # Institutional (三大法人) card
@@ -357,6 +421,18 @@ class SettingsView(ctk.CTkFrame):
     def _on_download_insti(self):
         self.vm.download_insti()
 
+    def _on_rebuild_profiles(self):
+        try:
+            days = int(self.prof_days_entry.get().strip())
+        except ValueError:
+            self.prof_status_label.configure(text="分析區間需為數字（天）")
+            return
+        if days < 30:
+            self.prof_status_label.configure(
+                text="分析區間太短（至少 30 天），持有天期無法判斷")
+            return
+        self.vm.rebuild_broker_profiles(days)
+
     def _on_run_otc(self):
         self.vm.run_now(market="otc")
 
@@ -379,6 +455,10 @@ class SettingsView(ctk.CTkFrame):
         self.vm.bind("tdcc_loading", self._on_tdcc_loading)
         self.vm.bind("insti_status", self._on_insti_status)
         self.vm.bind("insti_loading", self._on_insti_loading)
+        self.vm.bind("profile_status", self._on_profile_status)
+        self.vm.bind("profile_loading", self._on_profile_loading)
+        self.vm.bind("profile_progress", self._on_profile_progress)
+        self.vm.bind("profile_summary", self._on_profile_summary)
         self.vm.bind("progress", self._on_progress)
         self.vm.bind("progress_text", self._on_progress_text)
         self.vm.bind("log_text", self._on_log)
@@ -487,6 +567,26 @@ class SettingsView(ctk.CTkFrame):
                 self.insti_btn.configure(
                     state="normal",
                     text="下載三大法人資料（近 5 個交易日）")
+        self.after(0, _u)
+
+    def _on_profile_status(self, v: str):
+        self.after(0, lambda: self.prof_status_label.configure(text=v or "—"))
+
+    def _on_profile_summary(self, v: str):
+        self.after(0, lambda: self.prof_summary_label.configure(text=v or ""))
+
+    def _on_profile_progress(self, v: float):
+        self.after(0, lambda: self.prof_bar.set(v))
+
+    def _on_profile_loading(self, v: bool):
+        def _u():
+            if v:
+                self.prof_btn.configure(state="disabled", text="計算中...")
+                self.prof_stop_btn.configure(state="normal")
+            else:
+                self.prof_btn.configure(state="normal",
+                                        text="開始計算（全市場）")
+                self.prof_stop_btn.configure(state="disabled")
         self.after(0, _u)
 
     def _on_progress(self, v: float):

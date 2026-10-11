@@ -52,6 +52,12 @@ class SettingsViewModel(BaseViewModel):
     insti_status = ObservableProperty("")
     insti_loading = ObservableProperty(False)
 
+    # 分點風格分類（BrokerStockProfile）
+    profile_status = ObservableProperty("")
+    profile_loading = ObservableProperty(False)
+    profile_progress = ObservableProperty(0.0)
+    profile_summary = ObservableProperty("")
+
     # Shioaji usage
     shioaji_usage = ObservableProperty(None)  # dict | None
 
@@ -67,6 +73,7 @@ class SettingsViewModel(BaseViewModel):
         self._config = config
         self._scheduler = scheduler
         self._sj = shioaji_svc
+        self._profile_stop = False
 
         # Load persisted values
         self.scheduler_enabled = config.get("scheduler_enabled")
@@ -232,6 +239,107 @@ class SettingsViewModel(BaseViewModel):
                 self.tdcc_loading = False
 
         threading.Thread(target=_work, daemon=True).start()
+
+    # ---- 分點風格分類 -------------------------------------------------
+    def rebuild_broker_profiles(self, days: int = 180) -> None:
+        """重算全市場分點風格並寫入 BrokerStockProfile。
+
+        days：往回取幾個日曆天的分點資料當分析區間。
+        """
+        if self.profile_loading:
+            return
+        self.profile_loading = True
+        self.profile_progress = 0.0
+        self.profile_status = "準備中…"
+        self._profile_stop = False
+
+        def _work():
+            from services.db_service import DbService
+            from services.broker_profile_service import rebuild_all
+
+            db = DbService()
+            try:
+                db.connect()
+                db.ensure_tables()
+                # 區間迄日取「分點資料實際最後一天」，不是今天 ——
+                # 盤後未跑排程時用今天會把區間末端算成空窗。
+                cur = db._cursor()
+                cur.execute("""
+                    SELECT MAX(trade_date) FROM BrokerDailyStats
+                    WHERE trade_date > '2000-01-01'
+                """)
+                row = cur.fetchone()
+                if not row or not row[0]:
+                    self.profile_status = "失敗：BrokerDailyStats 無資料"
+                    return
+                end_dt = row[0]
+                end = end_dt.strftime("%Y-%m-%d")
+                start = (end_dt - timedelta(days=days)).strftime("%Y-%m-%d")
+                self.profile_status = f"分析區間 {start} ~ {end}，掃描股票清單…"
+
+                def _prog(done, total, code, saved):
+                    self.profile_progress = done / total if total else 0.0
+                    if done % 20 == 0 or done == total:
+                        self.profile_status = (
+                            f"計算中 {done}/{total}（{code}）… 已寫入 "
+                            f"{saved:,} 筆")
+
+                res = rebuild_all(db, start, end, on_progress=_prog,
+                                  should_stop=lambda: self._profile_stop)
+                mins = res["elapsed"] / 60
+                tail = "（已中止）" if res["stopped"] else ""
+                self.profile_status = (
+                    f"完成{tail}：{res['stocks']} 檔掃描、寫入 "
+                    f"{res['profiles']:,} 筆分點風格，"
+                    f"{res['skipped']} 檔無合格分點，耗時 {mins:.1f} 分")
+                self._load_profile_summary(db)
+                log.info("broker profiles rebuilt: %s", res)
+            except Exception as e:  # noqa: BLE001
+                self.profile_status = f"失敗：{e}"
+                log.exception("broker profile rebuild failed")
+            finally:
+                try:
+                    db.close()
+                except Exception:
+                    pass
+                self.profile_loading = False
+
+        threading.Thread(target=_work, daemon=True).start()
+
+    def stop_broker_profiles(self) -> None:
+        """中止重算（已寫入的保留）。"""
+        if self.profile_loading:
+            self._profile_stop = True
+            self.profile_status = "中止中…（完成當前個股後停止）"
+
+    def _load_profile_summary(self, db=None) -> None:
+        own = db is None
+        try:
+            if own:
+                from services.db_service import DbService
+                db = DbService()
+                db.connect()
+            s = db.broker_profile_summary()
+            if not s["total"]:
+                self.profile_summary = "尚未計算"
+                return
+            parts = "　".join(f"{k} {v:,}" for k, v in s["by_style"].items())
+            self.profile_summary = (
+                f"{s['total']:,} 筆／{s['stocks']:,} 檔　區間 "
+                f"{s['window_start']}~{s['window_end']}　更新 "
+                f"{s['updated_at']}\n{parts}")
+        except Exception as e:  # noqa: BLE001
+            self.profile_summary = f"讀取統計失敗：{e}"
+        finally:
+            if own and db:
+                try:
+                    db.close()
+                except Exception:
+                    pass
+
+    def refresh_profile_summary(self) -> None:
+        threading.Thread(target=self._load_profile_summary,
+                         daemon=True).start()
 
     def download_insti(self) -> None:
         """Download institutional daily trade data (TPEX + TWSE)."""

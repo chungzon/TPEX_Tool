@@ -259,6 +259,47 @@ CREATE TABLE InstiDailyTrade (
 """
 
 
+_DDL_BROKER_PROFILE = """
+IF NOT EXISTS (
+    SELECT * FROM sys.tables WHERE name = 'BrokerStockProfile'
+)
+CREATE TABLE BrokerStockProfile (
+    id               INT IDENTITY(1,1) PRIMARY KEY,
+    stock_code       NVARCHAR(10)   NOT NULL,
+    broker_code      NVARCHAR(10)   NOT NULL,
+    broker_name      NVARCHAR(100)  NOT NULL DEFAULT '',
+    style            NVARCHAR(10)   NOT NULL,   -- 隔日沖/短沖/波段/混合
+    flip_ratio       DECIMAL(6,4)   NOT NULL DEFAULT 0,
+    short_ratio      DECIMAL(6,4)   NOT NULL DEFAULT 0,
+    swing_ratio      DECIMAL(6,4)   NOT NULL DEFAULT 0,
+    churn_ratio      DECIMAL(6,4)   NOT NULL DEFAULT 0,
+    avg_hold_days    DECIMAL(8,2)   NOT NULL DEFAULT 0,
+    active_days      INT            NOT NULL DEFAULT 0,
+    buy_lots         INT            NOT NULL DEFAULT 0,
+    sell_lots        INT            NOT NULL DEFAULT 0,
+    net_lots         INT            NOT NULL DEFAULT 0,
+    open_lots        INT            NOT NULL DEFAULT 0,
+    orphan_sell_lots INT            NOT NULL DEFAULT 0,
+    window_start     DATE           NULL,
+    window_end       DATE           NULL,
+    updated_at       DATETIME       DEFAULT GETDATE(),
+
+    -- 鍵含 broker_name：約三成列的 broker_code 為空字串（上市 BSR 不給代碼），
+    -- 只用 code 會把數百家分點塞進同一筆。
+    CONSTRAINT UQ_BrokerStockProfile
+        UNIQUE (stock_code, broker_code, broker_name)
+);
+"""
+
+_DDL_BROKER_PROFILE_INDEX = """
+IF NOT EXISTS (
+    SELECT * FROM sys.indexes WHERE name = 'IX_BrokerStockProfile_style'
+)
+CREATE INDEX IX_BrokerStockProfile_style
+    ON BrokerStockProfile (style, stock_code);
+"""
+
+
 # ---------------------------------------------------------------------------
 # Service
 # ---------------------------------------------------------------------------
@@ -329,6 +370,16 @@ class DbService:
         cur.execute(_DDL_HOLDER_DISTRIBUTION)
         cur.execute(_DDL_INSTI_DAILY)
         cur.execute(_DDL_MARGIN_DAILY)
+        # BrokerStockProfile 舊版以毛額判「當沖」且鍵不含 broker_name，
+        # 兩者都會算錯；偵測到舊結構直接重建（內容本就是可重算的衍生資料）。
+        cur.execute("""
+            SELECT 1 FROM INFORMATION_SCHEMA.COLUMNS
+            WHERE TABLE_NAME='BrokerStockProfile' AND COLUMN_NAME='day_ratio'
+        """)
+        if cur.fetchone():
+            cur.execute("DROP TABLE BrokerStockProfile")
+        cur.execute(_DDL_BROKER_PROFILE)
+        cur.execute(_DDL_BROKER_PROFILE_INDEX)
         self._conn.commit()
 
     # -- Write --------------------------------------------------------------
@@ -415,6 +466,122 @@ class DbService:
 
         self._conn.commit()
         return len(agg_list)
+
+    # -- Broker style profile (分點風格) -------------------------------------
+
+    def save_broker_profiles(self, rows: list[dict]) -> int:
+        """Upsert 分點風格分類結果（broker_profile_service 產出）。
+
+        以 (stock_code, broker_code) 為鍵 MERGE，重算可直接覆蓋。
+        rows 欄位見 broker_profile_service.classify_series。
+        """
+        cur = self._cursor()
+        count = 0
+        for r in rows:
+            code = r.get("stock_code", "")
+            bc = r.get("broker_code", "")
+            if not code or not bc:
+                continue
+            bn = r.get("broker_name", "")
+            vals = (
+                r.get("label", ""),
+                r.get("flip_ratio", 0), r.get("short_ratio", 0),
+                r.get("swing_ratio", 0), r.get("churn_ratio", 0),
+                r.get("avg_hold_days", 0), r.get("active_days", 0),
+                r.get("buy_lots", 0), r.get("sell_lots", 0),
+                r.get("net_lots", 0), r.get("open_lots", 0),
+                r.get("orphan_sell_lots", 0),
+                _normalize_date(r.get("window_start", "")) or None,
+                _normalize_date(r.get("window_end", "")) or None,
+            )
+            cur.execute("""
+                MERGE BrokerStockProfile AS tgt
+                USING (SELECT %s AS stock_code, %s AS broker_code,
+                              %s AS broker_name) AS src
+                    ON tgt.stock_code = src.stock_code
+                   AND tgt.broker_code = src.broker_code
+                   AND tgt.broker_name = src.broker_name
+                WHEN MATCHED THEN UPDATE SET
+                    style=%s,
+                    flip_ratio=%s, short_ratio=%s, swing_ratio=%s,
+                    churn_ratio=%s, avg_hold_days=%s, active_days=%s,
+                    buy_lots=%s, sell_lots=%s, net_lots=%s, open_lots=%s,
+                    orphan_sell_lots=%s,
+                    window_start=%s, window_end=%s, updated_at=GETDATE()
+                WHEN NOT MATCHED THEN INSERT (
+                    stock_code, broker_code, broker_name, style,
+                    flip_ratio, short_ratio, swing_ratio, churn_ratio,
+                    avg_hold_days, active_days, buy_lots, sell_lots,
+                    net_lots, open_lots, orphan_sell_lots,
+                    window_start, window_end
+                ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s,
+                          %s, %s, %s, %s, %s);
+            """, (code, bc, bn, *vals, code, bc, bn, *vals))
+            count += 1
+        self._conn.commit()
+        return count
+
+    def get_broker_profiles(self, stock_code: str,
+                            style: str | None = None) -> list[dict]:
+        """單檔的分點風格清單（依進出量遞減）。style 可篩特定風格。"""
+        cur = self._cursor()
+        sql = """
+            SELECT broker_code, broker_name, style, flip_ratio,
+                   short_ratio, swing_ratio, churn_ratio, avg_hold_days,
+                   active_days, buy_lots, sell_lots, net_lots, open_lots,
+                   window_start, window_end, updated_at
+            FROM BrokerStockProfile WHERE stock_code=%s
+        """
+        params: list = [stock_code]
+        if style:
+            sql += " AND style=%s"
+            params.append(style)
+        sql += " ORDER BY (buy_lots + sell_lots) DESC"
+        cur.execute(sql, tuple(params))
+        return [
+            {"broker_code": r[0], "broker_name": r[1], "style": r[2],
+             "flip_ratio": float(r[3]), "short_ratio": float(r[4]),
+             "swing_ratio": float(r[5]), "churn_ratio": float(r[6]),
+             "avg_hold_days": float(r[7]), "active_days": r[8],
+             "buy_lots": r[9], "sell_lots": r[10], "net_lots": r[11],
+             "open_lots": r[12], "window_start": str(r[13])[:10],
+             "window_end": str(r[14])[:10], "updated_at": str(r[15])[:19]}
+            for r in cur.fetchall()
+        ]
+
+    def get_broker_style_map(self, stock_code: str) -> dict[str, str]:
+        """{broker_name: style} —— 供監控頁等逐列快速標記風格。
+
+        以名稱為鍵（非 broker_code）：約三成列的 code 為空字串，名稱才是
+        跨上市/上櫃來源都穩定的識別。
+        """
+        cur = self._cursor()
+        cur.execute("""
+            SELECT broker_name, style FROM BrokerStockProfile
+            WHERE stock_code=%s
+        """, (stock_code,))
+        return {r[0]: r[1] for r in cur.fetchall()}
+
+    def broker_profile_summary(self) -> dict:
+        """整體統計：各風格筆數、涵蓋股票數、最後更新時間。供設定頁顯示。"""
+        cur = self._cursor()
+        cur.execute("""
+            SELECT COUNT(*), COUNT(DISTINCT stock_code), MAX(updated_at),
+                   MIN(window_start), MAX(window_end)
+            FROM BrokerStockProfile
+        """)
+        r = cur.fetchone()
+        out = {"total": r[0] or 0, "stocks": r[1] or 0,
+               "updated_at": str(r[2])[:19] if r[2] else "",
+               "window_start": str(r[3])[:10] if r[3] else "",
+               "window_end": str(r[4])[:10] if r[4] else "",
+               "by_style": {}}
+        cur.execute("""
+            SELECT style, COUNT(*) FROM BrokerStockProfile
+            GROUP BY style ORDER BY COUNT(*) DESC
+        """)
+        out["by_style"] = {r[0]: r[1] for r in cur.fetchall()}
+        return out
 
     def save_daily_summary_batch(self, rows: list[dict]) -> int:
         """Upsert a batch of daily market summary rows into StockDailySummary.
