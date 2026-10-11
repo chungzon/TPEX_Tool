@@ -947,14 +947,18 @@ def broker_net_ranking(db, code: str, start: str, end: str,
     淨賣超者的未實現一律為 0 —— 其賣出可能來自區間前既有部位，成本無從得知，
     硬算會變成憑空捏造的數字。
 
-    回 {start, end, sessions, last_close, buyers: [...], sellers: [...]}；
+    每筆另附 `style`（該分點在這檔股票的交易風格，取自 BrokerStockProfile；
+    未計算過則為空字串）與 `style_window`（風格的統計區間，可能與本表的損益
+    區間不同 —— 風格由設定頁另外批次計算，不隨這裡的區間變動）。
+
+    回 {start, end, sessions, last_close, style_window, buyers, sellers}；
     每筆含 code/name/net_lots/buy_lots/sell_lots/buy_avg/sell_avg/
-    realized/unrealized（萬元）。
+    realized/unrealized（萬元）/style。
     """
     start = _to_dash(start) if len(start) == 8 else start
     end = _to_dash(end) if len(end) == 8 else end
     out = {"start": start, "end": end, "sessions": 0, "last_close": None,
-           "buyers": [], "sellers": []}
+           "style_window": "", "buyers": [], "sellers": []}
     try:
         cur = db._cursor()
         cur.execute("""
@@ -985,6 +989,21 @@ def broker_net_ranking(db, code: str, start: str, end: str,
         out["error"] = str(e)
         return out
 
+    # 分點風格（設定頁批次計算的結果；未算過則為空 dict，UI 顯示「—」）
+    style_of: dict[str, str] = {}
+    try:
+        style_of = db.get_broker_style_map(code)
+        if style_of:
+            cur.execute("""
+                SELECT TOP 1 window_start, window_end FROM BrokerStockProfile
+                WHERE stock_code=%s
+            """, (code,))
+            w = cur.fetchone()
+            if w and w[0]:
+                out["style_window"] = f"{str(w[0])[:10]} ~ {str(w[1])[:10]}"
+    except Exception as e:  # noqa: BLE001
+        log.warning("broker style map failed %s: %s", code, e)
+
     rows = []
     for b in summ:
         bv = b.get("buy_volume") or 0
@@ -1004,6 +1023,7 @@ def broker_net_ranking(db, code: str, start: str, end: str,
         rows.append({
             "code": b.get("broker_code", ""),
             "name": b["broker_name"],
+            "style": style_of.get(b["broker_name"], ""),
             "net": net,                          # 股，僅供排序用
             "net_lots": round(net / 1000),
             "buy_lots": round(bv / 1000),

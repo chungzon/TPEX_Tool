@@ -36,6 +36,14 @@ _MAX_DAILY_BARS = 90        # 趨勢圖最多顯示根數
 _DEDUCT_PERIOD = 20         # 均線扣抵基準（月線MA20）
 _DEDUCT_CLR = cs.GREEN      # 扣抵位置符號色（尖尖綠色，同券商慣例）
 
+# 分點風格徽章（底色, 文字色）；沿用 broker_tags 色系，便於與既有標記對照
+_STYLE_BADGE = {
+    "波段": ("#66bb6a", "#0d2410"),
+    "短沖": ("#42a5f5", "#0c1f30"),
+    "隔日沖": ("#ef5350", "#2a0f0f"),
+    "混合": ("#8a8a8e", "#1a1a1c"),
+}
+
 
 class MonitorDetailWindow(ctk.CTkToplevel):
     """單檔監控彈窗。"""
@@ -810,10 +818,14 @@ class MonitorDetailWindow(ctk.CTkToplevel):
         lc = data.get("last_close")
         head = (f"{data.get('start', '')} ~ {data.get('end', '')}　"
                 f"統計 {sess} 個交易日")
+        sw = data.get("style_window") or ""
+        # 風格由設定頁另外批次計算，區間與本表不同，標明以免誤解
+        style_note = (f"　風格統計區間 {sw}（於系統設定計算）" if sw else
+                      "　風格未計算：請至「系統設定 → 主力分點風格分類」執行")
         self.buy_label.configure(
             text=f"{head}　已實現＝(賣均價−買均價)×配對量；"
                  f"未實現＝(期末收盤{f' {lc:,.2f}' if lc else ''}−買均價)"
-                 f"×剩餘淨買量")
+                 f"×剩餘淨買量{style_note}")
         self.sell_label.configure(
             text=f"{head}　淨賣超者不認列未實現"
                  f"（賣出可能來自區間前既有部位，成本無從得知）")
@@ -834,6 +846,7 @@ class MonitorDetailWindow(ctk.CTkToplevel):
                 pady=12)
             return
         cols = [("rank", "#", 28, "center"), ("name", "分點", 132, "w"),
+                ("style", "風格", 62, "center"),
                 ("net", "買賣超(張)", 92, "e"),
                 ("buy", "買均價", 76, "e"), ("sell", "賣均價", 76, "e"),
                 ("real", "已實現(萬)", 92, "e"),
@@ -865,6 +878,7 @@ class MonitorDetailWindow(ctk.CTkToplevel):
             cells = [
                 (str(idx), "#7a7a7e", "center"),
                 (b["name"], "#e6e6e6", "w"),
+                None,                      # 風格：改以徽章呈現，見下方
                 (f"{nl:+,}", nclr, "e"),
                 (f"{b['buy_avg']:,.2f}" if b["buy_avg"] else "—",
                  "#c7c7cc", "e"),
@@ -873,13 +887,31 @@ class MonitorDetailWindow(ctk.CTkToplevel):
                 (f"{rv:+,.1f}", rclr, "e"),
                 (f"{uv:+,.1f}" if uv else "—", uclr, "e"),
             ]
-            for i, (text, clr, a) in enumerate(cells):
+            for i, cell in enumerate(cells):
+                if cell is None:
+                    self._style_badge(rowf, i, b.get("style", ""))
+                    continue
+                text, clr, a = cell
                 ctk.CTkLabel(rowf, text=text, text_color=clr,
                              font=ctk.CTkFont(size=12),
                              anchor=("w" if a == "w" else "e" if a == "e"
                                      else "center")).grid(
                     row=0, column=i, sticky="ew", padx=4, pady=2)
             self._bind_broker_click(rowf, b)
+
+    @staticmethod
+    def _style_badge(rowf, column, style):
+        """風格徽章；未分類（設定頁尚未計算）顯示灰色「—」。"""
+        sb = _STYLE_BADGE.get(style)
+        if not sb:
+            ctk.CTkLabel(rowf, text="—", text_color="#6a6a6a",
+                         font=ctk.CTkFont(size=12), anchor="center").grid(
+                row=0, column=column, sticky="ew", padx=4, pady=2)
+            return
+        ctk.CTkLabel(rowf, text=style, height=18, corner_radius=5,
+                     fg_color=sb[0], text_color=sb[1],
+                     font=ctk.CTkFont(size=10, weight="bold")).grid(
+            row=0, column=column, sticky="ew", padx=5, pady=2)
 
     def _bind_broker_click(self, rowf, b):
         """整列（含子元件）可點 → 開該分點的買賣超趨勢視窗。"""
