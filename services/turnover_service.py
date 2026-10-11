@@ -103,6 +103,28 @@ def _collect_window(anchor: str | None, window: int,
     return days
 
 
+def _volume_change(code: str, days: list[tuple[str, dict]]) -> float | None:
+    """當日成交量較前一交易日的增減%。資料不足或前一日為 0 回 None。
+
+    以行情視窗（每日行情 API）為來源，不用 StockDailySummary.total_volume：
+    後者約半數列為空字串、且單位因來源而異（爬蟲＝張×2、補資料＝股），
+    拿來跨日相除會得到錯誤比例。
+    """
+    if len(days) < 2:
+        return None
+    _d0, prev = days[-2]
+    _d1, cur = days[-1]
+    c = cur.get(code)
+    p = prev.get(code)
+    if not c or not p:
+        return None
+    v1 = _num(c.get("total_volume"))
+    v0 = _num(p.get("total_volume"))
+    if v0 <= 0:
+        return None
+    return round((v1 - v0) / v0 * 100, 1)
+
+
 def _amplitude_and_change(code: str,
                           days: list[tuple[str, dict]]) -> tuple[float | None,
                                                                  float | None]:
@@ -174,6 +196,7 @@ def latest_top_turnover(db, min_lots: int = 1000, top_n: int = 20,
         amp5, change = _amplitude_and_change(row["stock_code"], days)
         row["amp5"] = amp5
         row["change"] = change
+        row["vol_chg_pct"] = _volume_change(row["stock_code"], days)
         row["change_pct"] = (round(change / (row["close"] - change) * 100, 2)
                              if change is not None and (row["close"] - change)
                              else None)

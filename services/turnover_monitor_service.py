@@ -506,8 +506,9 @@ def enrich_rows(db, rows: list[dict], rank_date: str,
         r["ma_slope"] = None
         r["bb_pos"] = None
         r["bias20"] = None          # 20 日乖離率%（(收盤-MA20)/MA20×100）
-        r["vol_chg_pct"] = None     # 量增減%（當日量較前一交易日）
+        r["price_stale"] = None     # DB 最新有效價格日（非資料日時代表資料過期）
         r["granville"] = None       # 葛蘭碧八大法則買賣點
+        # 量增減% 由 turnover_service 以行情視窗算好（API 來源），此處不覆寫
         try:
             prices = db.get_stock_prices(code, price_start, end)
             # _price_metrics 遇任一 close 為 null 會整個回 None，先濾掉空值列
@@ -515,6 +516,13 @@ def enrich_rows(db, rows: list[dict], rank_date: str,
                       if p.get("close_price") not in (None, "")
                       and p.get("high_price") not in (None, "")
                       and p.get("low_price") not in (None, "")]
+            # StockDailySummary 約半數列 OHLC 為空字串，過濾後最後一列未必是
+            # 資料日 —— 曾導致「量增減%」拿三週前的兩天相除卻顯示成當日。
+            # 技術指標改以此旗標標示資料是否過期，由 UI 決定如何呈現。
+            if prices:
+                last_date = str(prices[-1].get("trade_date", ""))[:10]
+                if last_date != end:
+                    r["price_stale"] = last_date
             m = _price_metrics(prices) if prices else None
             if m:
                 r["ma_slope"] = round(m["slope"], 2)
@@ -525,11 +533,6 @@ def enrich_rows(db, rows: list[dict], rank_date: str,
                 ma20 = sum(closes[-_MA_PERIOD:]) / _MA_PERIOD
                 if ma20:
                     r["bias20"] = round((last - ma20) / ma20 * 100, 2)
-            # 量增減%：最新交易日量 vs 前一交易日量
-            vols = [_numf(p.get("total_volume")) for p in prices]
-            if len(vols) >= 2 and vols[-2] > 0:
-                r["vol_chg_pct"] = round(
-                    (vols[-1] - vols[-2]) / vols[-2] * 100, 1)
             # 葛蘭碧八大法則（用同一份 prices，零額外查詢）
             if prices:
                 r["granville"] = granville_signal(daily_trend(prices))

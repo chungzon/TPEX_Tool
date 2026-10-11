@@ -362,10 +362,13 @@ class TurnoverMonitorView(ctk.CTkFrame):
             hv = hn or 0
             dclr = cs.RED if hv > 0 else cs.GREEN if hv < 0 else cs.FLAT
             lbl("dealer", f"{sn or 0:+,}/{hn or 0:+,}", dclr, "e")
-        # MA 斜率
+        # MA 斜率（價格資料過期時以暗色＋*標示，避免誤讀成當日）
+        stale = r.get("price_stale")
         sl = r.get("ma_slope")
         if sl is None:
             lbl("slope", "—", "#6a6a6a", "e")
+        elif stale:
+            lbl("slope", f"{sl:+.2f}*", "#6a6a6a", "e")
         else:
             sclr = cs.RED if sl > 0 else cs.GREEN if sl < 0 else cs.FLAT
             lbl("slope", f"{sl:+.2f}", sclr, "e")
@@ -395,12 +398,17 @@ class TurnoverMonitorView(ctk.CTkFrame):
         bb = r.get("bb_pos")
         if bb is None:
             lbl("bb", "—", "#6a6a6a", "e")
+        elif stale:
+            lbl("bb", f"{bb:+.0f}*", "#6a6a6a", "e")
         else:
             bclr = (cs.RED if bb >= 8 else cs.GREEN if bb <= -8 else cs.TXT)
             lbl("bb", f"{bb:+.0f}", bclr, "e", bold=abs(bb) >= 8)
         # 葛蘭碧八大法則（徽章：買進紅/賣出綠/觀望灰 + 法則名）
         g = r.get("granville")
-        if g and g.get("signal"):
+        if g and g.get("signal") and stale:
+            # 月線/布林全部建立在過期價格上，訊號不可用，直接標示而非照常顯示
+            lbl("gran", f"價格資料至 {stale[5:]}", "#6a6a6a", "center")
+        elif g and g.get("signal"):
             gs = _GRAN_BADGE.get(g["color"], ("#8a8a8e", "#1a1a1c"))
             no = g.get("rule_no") or 0
             txt = f"{g['signal']}·{g.get('rule_name', '')}" if no else g["signal"]
