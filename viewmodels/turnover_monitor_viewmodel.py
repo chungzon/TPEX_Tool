@@ -26,6 +26,9 @@ class TurnoverMonitorViewModel(BaseViewModel):
     is_loading = ObservableProperty(False)
     monitor_mode = ObservableProperty(False)    # 監控模式（點列開彈窗）
     top_n = ObservableProperty(30)              # 取周轉率前 N 檔
+    search_rows = ObservableProperty(())        # 搜尋加入的個股（置頂顯示）
+    search_status = ObservableProperty("")
+    search_loading = ObservableProperty(False)
 
     MIN_LOTS = 1000
     TOP_N = 30                    # 預設值
@@ -41,6 +44,76 @@ class TurnoverMonitorViewModel(BaseViewModel):
 
     def toggle_monitor(self) -> None:
         self.monitor_mode = not self.monitor_mode
+
+    # ---- 搜尋個股 -----------------------------------------------------
+    def search(self, query: str) -> None:
+        """依代碼或名稱搜尋個股；不在 Top N 內則自行運算後置頂顯示。"""
+        q = (query or "").strip()
+        if not q:
+            return
+        if self.search_loading:
+            return
+        rows = self.monitor_rows or []
+        # 已在排行內 → 不重算，直接提示（該列本來就看得到）
+        for r in rows:
+            if r.get("stock_code") == q or r.get("stock_name") == q:
+                self.search_status = (
+                    f"{r['stock_code']} {r['stock_name']} 已在 Top "
+                    f"{self.top_n} 排行中（第 {r.get('rank', '?')} 名）")
+                return
+        for r in self.search_rows or ():
+            if r.get("stock_code") == q or r.get("stock_name") == q:
+                self.search_status = f"{q} 已在搜尋結果中"
+                return
+        self.search_loading = True
+        self.search_status = f"搜尋 {q}…"
+
+        def _work():
+            from services.db_service import DbService
+            from services.turnover_monitor_service import lookup_stock
+
+            db = DbService()
+            try:
+                db.connect()
+                days = (self.ctx or {}).get("days") or []
+                imap = (self.ctx or {}).get("industry_map") or {}
+                if not days:
+                    self.search_status = "尚未載入行情視窗，請先重新整理"
+                    return
+                row = lookup_stock(db, q, self.data_date, days, imap)
+                if row is None:
+                    self.search_status = f"查無「{q}」或當日無成交"
+                    return
+                # 已在排行內的代碼就不重複置頂（名稱搜尋可能命中排行內個股）
+                if any(x.get("stock_code") == row["stock_code"]
+                       for x in (self.monitor_rows or [])):
+                    self.search_status = (
+                        f"{row['stock_code']} {row['stock_name']} "
+                        f"已在 Top {self.top_n} 排行中")
+                    return
+                self.search_rows = tuple(self.search_rows or ()) + (row,)
+                self.search_status = (
+                    f"已加入 {row['stock_code']} {row['stock_name']}"
+                    f"（不在 Top {self.top_n} 內，單獨運算）")
+                self._apply_filters()
+            except Exception as e:  # noqa: BLE001
+                log.exception("search failed")
+                self.search_status = f"搜尋失敗：{e}"
+            finally:
+                try:
+                    db.close()
+                except Exception:
+                    pass
+                self.search_loading = False
+
+        threading.Thread(target=_work, daemon=True).start()
+
+    def clear_search(self) -> None:
+        if not self.search_rows:
+            return
+        self.search_rows = ()
+        self.search_status = ""
+        self._apply_filters()
 
     def set_top_n(self, n: int) -> None:
         """改變取樣檔數並重新載入（載入中則忽略，避免疊起多條執行緒）。"""
@@ -90,10 +163,14 @@ class TurnoverMonitorViewModel(BaseViewModel):
             self.filter_summary = ""
             return
         out = apply_filters(rows, self.active_filters, self.filter_params)
-        self.filtered_rows = out
-        self.filter_summary = (
-            f"篩選後 {len(out)} / {len(rows)} 檔"
-            if self.active_filters else f"共 {len(rows)} 檔")
+        # 搜尋結果一律置頂且不受篩選影響 —— 使用者指名要看的標的，
+        # 被篩掉會讓人以為搜尋失敗。
+        extra = list(self.search_rows or ())
+        self.filtered_rows = extra + out
+        base = (f"篩選後 {len(out)} / {len(rows)} 檔"
+                if self.active_filters else f"共 {len(rows)} 檔")
+        self.filter_summary = (f"{base}　+ 搜尋 {len(extra)} 檔"
+                               if extra else base)
 
     def load(self) -> None:
         if self._thread and self._thread.is_alive():
@@ -108,6 +185,9 @@ class TurnoverMonitorViewModel(BaseViewModel):
         from services.turnover_monitor_service import latest_monitor
 
         self.is_loading = True
+        # 重新載入可能換資料日，舊的搜尋結果會變成不同日期的列，先清掉
+        self.search_rows = ()
+        self.search_status = ""
         self.monitor_status = "計算高周轉率監控（周轉率 + 主力型態 + 技術面）..."
         db = DbService()
         try:

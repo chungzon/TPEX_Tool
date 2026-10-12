@@ -106,6 +106,30 @@ class TurnoverMonitorView(ctk.CTkFrame):
         self._btn_fg = self.monitor_btn.cget("fg_color")
         self._btn_hover = self.monitor_btn.cget("hover_color")
 
+        # 搜尋列：代碼或名稱；不在 Top N 內則單獨運算後置頂
+        sbar = ctk.CTkFrame(self, fg_color="transparent")
+        sbar.pack(fill="x", padx=22, pady=(4, 2))
+        ctk.CTkLabel(sbar, text="搜尋",
+                     font=ctk.CTkFont(size=12, weight="bold"),
+                     text_color="#8a8a8e").pack(side="left", padx=(0, 10))
+        self.search_entry = ctk.CTkEntry(
+            sbar, width=180, height=28, font=ctk.CTkFont(size=12),
+            placeholder_text="股票代碼或名稱")
+        self.search_entry.pack(side="left")
+        self.search_entry.bind("<Return>", lambda _e: self._do_search())
+        self.search_btn = ctk.CTkButton(
+            sbar, text="搜尋", width=64, height=28, corner_radius=6,
+            font=ctk.CTkFont(size=12, weight="bold"), command=self._do_search)
+        self.search_btn.pack(side="left", padx=(6, 0))
+        ctk.CTkButton(
+            sbar, text="清除", width=56, height=28, corner_radius=6,
+            font=ctk.CTkFont(size=12), fg_color="#3a3b40",
+            hover_color="#4a4b50", command=self._clear_search).pack(
+            side="left", padx=(6, 0))
+        self.search_status = ctk.CTkLabel(
+            sbar, text="", font=ctk.CTkFont(size=12), text_color="#8a8a8e")
+        self.search_status.pack(side="left", padx=(12, 0))
+
         # 篩選列：條件取交集（AND）；條件清單由 MONITOR_FILTERS 帶出
         fbar = ctk.CTkFrame(self, fg_color="transparent")
         fbar.pack(fill="x", padx=22, pady=(2, 2))
@@ -174,12 +198,30 @@ class TurnoverMonitorView(ctk.CTkFrame):
         self.vm.bind("filtered_rows", self._on_rows)
         self.vm.bind("filter_summary", self._on_filter_summary)
         self.vm.bind("top_n", self._on_top_n)
+        self.vm.bind("search_status", self._on_search_status)
+        self.vm.bind("search_loading", self._on_search_loading)
         self.vm.bind("monitor_status", self._on_status)
         self.vm.bind("is_loading", self._on_loading)
         self.vm.bind("monitor_mode", self._on_monitor_mode)
 
     def _on_filter_summary(self, v):
         self.after(0, lambda: self.filter_count.configure(text=v or ""))
+
+    def _do_search(self):
+        self.vm.search(self.search_entry.get())
+
+    def _clear_search(self):
+        self.search_entry.delete(0, "end")
+        self.vm.clear_search()
+
+    def _on_search_status(self, v):
+        self.after(0, lambda: self.search_status.configure(text=v or ""))
+
+    def _on_search_loading(self, v):
+        def _u():
+            self.search_btn.configure(state="disabled" if v else "normal",
+                                      text="搜尋中" if v else "搜尋")
+        self.after(0, _u)
 
     def _on_topn_pick(self, choice):
         """'Top 50' → 50，交給 VM 重新載入。"""
@@ -244,7 +286,10 @@ class TurnoverMonitorView(ctk.CTkFrame):
         if not rows:
             return
         for idx, r in enumerate(rows, 1):
-            stripe = "#1d1e21" if idx % 2 == 0 else "transparent"
+            if r.get("searched"):
+                stripe = "#2a2416"        # 搜尋加入的列：暖色底，與排行區隔
+            else:
+                stripe = "#1d1e21" if idx % 2 == 0 else "transparent"
             rowf = ctk.CTkFrame(self.table, fg_color=stripe, corner_radius=4)
             rowf.grid(row=idx, column=0, columnspan=len(_COLS), sticky="ew",
                       pady=1)
@@ -301,7 +346,11 @@ class TurnoverMonitorView(ctk.CTkFrame):
             lbl("nd", txt, nds[1], "center", bold=True)
         else:
             lbl("nd", "", "#6a6a6a", "center")
-        lbl("rank", str(r.get("rank", idx)), "#7a7a7e", "center")
+        # 搜尋列不在排行內，沒有名次 → 以放大鏡標示
+        if r.get("searched"):
+            lbl("rank", "🔍", cs.AMBER, "center")
+        else:
+            lbl("rank", str(r.get("rank", idx)), "#7a7a7e", "center")
         # 市場徽章
         mkt = r.get("market", "")
         m = _MKT_STYLE.get(mkt)
@@ -322,9 +371,12 @@ class TurnoverMonitorView(ctk.CTkFrame):
             cclr, arrow = cs.GREEN, "▼"
         lbl("close", f"{arrow}{r['close']:,.2f}", cclr, "e", bold=True)
         lbl("vol", f"{r['volume_lots']:,}", "#c7c7cc", "e")
-        turn = r["turnover_pct"]
-        lbl("turn", f"{turn:.2f}", cs.RED if turn >= 20 else cs.TXT, "e",
-            bold=True)
+        turn = r.get("turnover_pct")
+        if turn is None:        # 無集保股數（新股/ETF）→ 周轉率不可得
+            lbl("turn", "—", "#6a6a6a", "e")
+        else:
+            lbl("turn", f"{turn:.2f}", cs.RED if turn >= 20 else cs.TXT, "e",
+                bold=True)
         amp = r.get("amp5")
         lbl("amp", f"{amp:.2f}" if amp is not None else "—", "#b0a17a", "e")
         # 短沖 / 隔日沖分點當日買入量佔成交量比（風格取自 BrokerStockProfile）

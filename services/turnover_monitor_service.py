@@ -1175,7 +1175,7 @@ def latest_monitor(db, min_lots: int = 1000, top_n: int = 30,
 
     return_ctx=True 時回 (date, rows, ctx)，ctx = {days, industry_map} 供監控
     彈窗算同類股前五等統計，避免重抓行情視窗。db 需已 connect。"""
-    from services.turnover_service import latest_top_turnover, market_change_map
+    from services.turnover_service import latest_top_turnover
     from services.industry_service import get_industry_map
 
     date, rows, days = latest_top_turnover(db, min_lots=min_lots, top_n=top_n,
@@ -1184,6 +1184,19 @@ def latest_monitor(db, min_lots: int = 1000, top_n: int = 30,
     ctx = {"days": days, "industry_map": industry_map}
     if not rows:
         return (date, rows, ctx) if return_ctx else (date, rows)
+    decorate_rows(db, rows, date, days, industry_map)
+    return (date, rows, ctx) if return_ctx else (date, rows)
+
+
+def decorate_rows(db, rows: list[dict], date: str, days: list,
+                  industry_map: dict) -> None:
+    """就地把排行列補滿監控頁所有欄位（技術面／籌碼／同類股／權證／法人／評分）。
+
+    排行與「搜尋個股」兩條路徑共用，確保兩者欄位與算法完全一致。
+    db 需已 connect；days 為行情視窗，industry_map 為產業對照。
+    """
+    from services.turnover_service import market_change_map
+
     enrich_rows(db, rows, date)
     flip_buy_share_for_rows(db, rows, date)
     concentration_for_rows(db, rows, date)
@@ -1226,4 +1239,63 @@ def latest_monitor(db, min_lots: int = 1000, top_n: int = 30,
             r["dealer_hedge_lots"] = None
     for r in rows:
         score_next_day_bias(r)
-    return (date, rows, ctx) if return_ctx else (date, rows)
+
+
+def lookup_stock(db, query: str, date: str, days: list, industry_map: dict,
+                 shares_map: dict | None = None) -> dict | None:
+    """依代碼或名稱找個股，算出與排行同樣的監控欄位。db 需已 connect。
+
+    供「搜尋」用：標的不在 Top N 內時自行運算。查無此股或當日無成交回 None。
+    回傳的列多一個 `searched=True` 供 UI 標示。
+    """
+    q = (query or "").strip()
+    if not q or not days:
+        return None
+    _d, latest = days[-1]
+    hit = latest.get(q)              # 代碼完全相符優先
+    if hit is None:
+        # 名稱：完全相符優先，其次前綴，最後包含（避免「台」命中一堆）
+        cands = [r for r in latest.values() if r.get("stock_name") == q]
+        if not cands:
+            cands = [r for r in latest.values()
+                     if str(r.get("stock_name", "")).startswith(q)]
+        if not cands:
+            cands = [r for r in latest.values()
+                     if q in str(r.get("stock_name", ""))]
+        if not cands:
+            return None
+        # 多筆相符取成交量最大者（通常即使用者要找的主標的）
+        hit = max(cands, key=lambda r: _numf(r.get("total_volume")))
+
+    code = hit.get("stock_code", "")
+    vol_shares = _numf(hit.get("total_volume"))
+    if vol_shares <= 0:
+        return None                   # 當日無成交，周轉率無意義
+    if shares_map is None:
+        try:
+            shares_map = db.get_latest_total_shares()
+        except Exception as e:  # noqa: BLE001
+            log.warning("shares map failed: %s", e)
+            shares_map = {}
+    shares = shares_map.get(code, 0)
+    from services.turnover_service import _amplitude_and_change, _volume_change
+    amp5, change = _amplitude_and_change(code, days)
+    close = _numf(hit.get("close_price"))
+    row = {
+        "stock_code": code,
+        "stock_name": hit.get("stock_name", ""),
+        "market": hit.get("market", ""),
+        "close": close,
+        "volume_lots": int(vol_shares / 1000),
+        # 無集保股數（如新股、ETF）則周轉率不可得，不以 0 充數
+        "turnover_pct": (round(vol_shares / shares * 100, 2)
+                         if shares > 0 else None),
+        "amp5": amp5,
+        "change": change,
+        "change_pct": (round(change / (close - change) * 100, 2)
+                       if change is not None and (close - change) else None),
+        "vol_chg_pct": _volume_change(code, days),
+        "searched": True,
+    }
+    decorate_rows(db, [row], date, days, industry_map)
+    return row
