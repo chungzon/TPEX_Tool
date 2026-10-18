@@ -85,7 +85,12 @@ class TwseBrokerService:
         for attempt in range(1, max_tries + 1):
             try:
                 _s(f"查詢 {stock_code}（第{attempt}次）...")
-                result = self._fetch(stock_code)
+                # _fetch 全程是同步 requests + time.sleep。market="all" 時
+                # 本 worker 和 3 個 Playwright 上櫃 worker 共用同一個 event
+                # loop，直接 call 會把 loop 卡住數秒，害上櫃的 click 等到
+                # 30s timeout（兩邊都只跑一半就是這樣來的）→ 丟到執行緒跑。
+                result = await _aio.get_running_loop().run_in_executor(
+                    None, self._fetch, stock_code)
                 if result and result.records:
                     self._consecutive_errors = 0
                     self._query_count += 1
@@ -172,23 +177,31 @@ class TwseBrokerService:
             raise _CaptchaWrong("驗證碼錯誤")
 
         # 4. Extract redirect → get CSV URL params
-        redir = re.search(r"location\.href='([^']+)'", post_html)
-        if not redir:
+        # BSR 成功後有兩種 redirect：帶參數的
+        # 'bsContent.aspx?v=t&StkNo=X&RecCount=Y'，以及只靠 session 狀態的
+        # 'bsContent.aspx?v=Display'。後者原本被當成解析失敗整檔放棄
+        # （上市分點曾整批卡死在這）；其實查詢結果就存在 session，
+        # bsContent.aspx 不帶參數即回傳該次查詢的 CSV。
+        redirs = re.findall(r"location\.href='([^']+)'", post_html)
+        if not redirs:
             raise _CaptchaWrong("無 redirect URL")
+        redir_url = next((u for u in redirs if "StkNo=" in u), redirs[0])
 
-        # Parse StkNo and RecCount from redirect
-        redir_url = redir.group(1)
         stk_m = re.search(r"StkNo=(\w+)", redir_url)
         rec_m = re.search(r"RecCount=(\d+)", redir_url)
-        if not stk_m or not rec_m:
+        if stk_m and rec_m:
+            params = f"&StkNo={stk_m.group(1)}&RecCount={rec_m.group(1)}"
+            html_url = f"{self.BSR_CSV}?v=t{params}"
+        elif "bsContent" in redir_url:
+            params = ""  # session 狀態模式（v=Display）
+            # 這個模式下不帶參數的 ?v=t 只回一個沒有日期/股名表頭的精簡頁，
+            # 得照 redirect 給的 ?v=Display 取完整結果頁才抓得到交易日。
+            html_url = self.BSR_CSV.rsplit("/", 1)[0] + "/" + redir_url
+        else:
             raise RuntimeError(f"無法解析 redirect: {redir_url}")
-
-        stk_no = stk_m.group(1)
-        rec_count = rec_m.group(1)
 
         # 4b. Get trade date + stock name from the HTML version
         time.sleep(random.uniform(0.3, 0.8))
-        html_url = f"{self.BSR_CSV}?v=t&StkNo={stk_no}&RecCount={rec_count}"
         resp_html = s.get(html_url, timeout=30)
         html_text = resp_html.text
         # Extract date and name
@@ -200,10 +213,14 @@ class TwseBrokerService:
         nm = re.search(rf"{stock_code}(?:&nbsp;|\s)+([^<&\s]+)", html_text)
         if nm:
             stock_name = nm.group(1).strip()
+        # 交易日是 DB 主鍵的一部分，抓不到就別往下寫（會寫出空日期的髒資料）
+        if not trade_date:
+            raise RuntimeError(f"結果頁無交易日（{html_url}），表頭可能已改版")
 
         # 5. Download CSV (without v=t → returns CSV not HTML)
         time.sleep(random.uniform(0.5, 1.0))
-        csv_url = f"{self.BSR_CSV}?StkNo={stk_no}&RecCount={rec_count}"
+        csv_url = (f"{self.BSR_CSV}?{params.lstrip('&')}" if params
+                   else self.BSR_CSV)
         log.info("TWSE CSV: %s", csv_url)
         resp3 = s.get(csv_url, timeout=30)
         resp3.raise_for_status()
@@ -220,6 +237,12 @@ class TwseBrokerService:
 
         # 6. Parse CSV
         result = self._parse_csv(csv_text, stock_code)
+        # session 狀態模式不帶股號，萬一 session 錯亂會拿到別檔的 CSV，
+        # 寫進 DB 就是假資料 → 代碼不符一律當失敗重查。
+        if result.stock_code and result.stock_code != stock_code:
+            raise RuntimeError(
+                f"CSV 股票代碼不符：要求 {stock_code}，"
+                f"拿到 {result.stock_code}")
         if trade_date:
             result.trade_date = trade_date
         if stock_name:
