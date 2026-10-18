@@ -59,6 +59,37 @@ _GRAN_BADGE = {"red": ("#ef5350", "#2a0f0f"),
                "flat": ("#3a3b40", "#c7c7cc")}
 
 
+# ---- 精簡版面（兩行格 + 表頭換行），高周轉率監控與主力追價共用 ----
+# 合併欄：MA斜率/布林 放原「MA斜率」位置；代碼/名稱 放原「代碼」位置
+_TECH = ("tech", "MA斜率\n/布林", 54, "e", 0)
+_STOCK = ("stock", "代碼\n名稱", 66, "w", 1)
+
+# 表頭換行 + 縮窄欄寬（key → (標題, 寬px)）。寬度以內容實際所需為下限，
+# 再窄會讓資料列撐開欄位、與表頭錯位。
+_HEAD = {
+    "vol": ("量(張)", 56),
+    "turn": ("周轉\n率%", 46),
+    "amp": ("5日\n振幅", 46),
+    "mf": ("短沖/隔日沖\n買入%", 76),
+    "gran": ("葛蘭碧", 80),
+    "foreign": ("外資淨\n(張)", 60),
+    "dealer": ("自營/避險\n淨(張)", 62),
+    "mnet": ("主力\n買賣超", 58),
+    "conc": ("集中\n度%", 52),
+    "mcost": ("主力\n均價", 62),
+    "volchg": ("量增\n減%", 58),
+    "peer": ("同類股\n漲跌(家數)", 70),
+}
+
+
+def styled_cols(cols=_COLS, drop=()):
+    """把原始欄位轉成精簡版面：合併 MA斜率/布林、代碼/名稱，套表頭換行與欄寬。"""
+    out = [_TECH if c[0] == "slope" else _STOCK if c[0] == "code" else c
+           for c in cols if c[0] not in ("bb", "name", *drop)]
+    return [(k, *_HEAD[k], a, wt) if k in _HEAD else (k, t, w, a, wt)
+            for k, t, w, a, wt in out]
+
+
 _HEADER_ACCENT_CLR = "#e3b65c"   # 核心指標標題（暖金）
 
 _SHARE_STRONG = 3.0     # 買入佔比 >= 此(%) 以粗體標示（量能明顯）
@@ -73,17 +104,18 @@ class TurnoverMonitorView(ctk.CTkFrame):
     """高周轉率監控 tab page。"""
 
     TITLE = "高周轉率監控"
-    COLS = _COLS
-    GRAN_WRAP = False      # 葛蘭碧徽章：訊號與法則名分兩行（可縮窄欄寬）
-    GRAN_BADGE_H = 20
-    ROW_MIN_H = 0          # 資料列最小高度 px（0＝依內容）
-    CELL_WRAP = False      # 自營/避險、同類股漲跌改兩行顯示
-    ALIGN = None           # 表頭與資料統一水平對齊："e"/"center"/"w"；None＝各欄自訂
-    ALIGN_KEEP = ()        # 不受 ALIGN 影響、維持 COLS 自訂對齊的欄位 key
-    HEADER_ALIGN = None    # 表頭水平對齊（優先於 ALIGN）；None＝同資料
-    HEADER_BG = "transparent"   # 表頭底色（非透明時畫成圓角色帶）
-    HEADER_ACCENT = ()     # 以強調色顯示標題的欄位 key（該頁核心指標）
-    ROW_HOVER = None       # 滑鼠移入列的底色；None＝不做 hover
+    COLS = styled_cols()
+    GRAN_WRAP = True       # 葛蘭碧徽章：訊號與法則名分兩行（可縮窄欄寬）
+    GRAN_BADGE_H = 34
+    ROW_MIN_H = 40         # 資料列最小高度 px（0＝依內容）
+    CELL_WRAP = True       # 收盤/短沖隔日沖/自營避險/同類股 改兩行顯示
+    ALIGN = "e"            # 資料統一水平對齊："e"/"center"/"w"；None＝各欄自訂
+    ALIGN_KEEP = ("stock", "nd")   # 不受 ALIGN 影響、維持 COLS 自訂對齊的欄位 key
+    HEADER_ALIGN = "center"   # 表頭水平對齊（優先於 ALIGN）；None＝同資料
+    HEADER_BG = "#202126"     # 表頭底色（非透明時畫成圓角色帶）
+    HEADER_ACCENT = ("turn", "mf")  # 以強調色顯示標題的欄位 key（該頁核心指標）
+    ROW_HOVER = "#2b2d33"     # 滑鼠移入列的底色；None＝不做 hover
+    TURN_BAR = True           # 周轉率% 下方畫迷你橫條（以本表最大值為滿格）
 
     def __init__(self, parent, viewmodel: TurnoverMonitorViewModel):
         super().__init__(parent, fg_color="transparent")
@@ -312,6 +344,8 @@ class TurnoverMonitorView(ctk.CTkFrame):
         self._rows = rows or []
         if not rows:
             return
+        turns = [r.get("turnover_pct") or 0 for r in rows]
+        self._turn_max = max([v for v in turns if v > 0] or [1.0])
         for idx, r in enumerate(rows, 1):
             if r.get("searched"):
                 stripe = "#2a2416"        # 搜尋加入的列：暖色底，與排行區隔
@@ -411,6 +445,46 @@ class TurnoverMonitorView(ctk.CTkFrame):
             ).pack(side="top", fill="x")
         return cell
 
+    def _fill_bar(self, rowf, column, text, value, vmax, clr, bar_clr=None):
+        """數值格：上數字（粗）、下迷你橫條（value/vmax，由右往左長）。"""
+        cell = ctk.CTkFrame(rowf, fg_color="transparent")
+        cell.grid(row=0, column=column, sticky="ew", padx=3, pady=2)
+        ctk.CTkLabel(cell, text=text, text_color=clr, height=18, anchor="e",
+                     font=ctk.CTkFont(size=12, weight="bold")).pack(
+            side="top", fill="x")
+        # width 只是請求寬（CTkFrame 預設 200 會撐開欄位），實際由 fill="x" 撐滿
+        track = ctk.CTkFrame(cell, fg_color="#2e3036", height=4, width=40,
+                             corner_radius=2)
+        track.pack(side="top", fill="x", pady=(2, 0))
+        frac = max(0.04, min(1.0, abs(value) / (vmax or 1.0)))
+        ctk.CTkFrame(track, fg_color=bar_clr or clr, height=4,
+                     corner_radius=2).place(
+            relx=1.0, rely=0, anchor="ne", relwidth=frac, relheight=1.0)
+        return cell
+
+    def _fill_tech(self, rowf, col, r):
+        """MA斜率 / 布林位階 同格兩行（上斜率、下布林）。"""
+        sl = r.get("ma_slope")
+        bb = r.get("bb_pos")
+        stale = r.get("price_stale")
+        star = "*" if stale else ""    # 價格資料過期：暗色＋*
+        if sl is None:
+            st = ("—", "#6a6a6a")
+        elif stale:
+            st = (f"{sl:+.2f}{star}", "#6a6a6a")
+        else:
+            st = (f"{sl:+.2f}",
+                  cs.RED if sl > 0 else cs.GREEN if sl < 0 else cs.FLAT)
+        if bb is None:
+            bt = ("—", "#6a6a6a")
+        elif stale:
+            bt = (f"{bb:+.0f}{star}", "#6a6a6a")
+        else:
+            bt = (f"{bb:+.0f}",
+                  cs.RED if bb >= 8 else cs.GREEN if bb <= -8 else cs.TXT,
+                  abs(bb) >= 8)
+        self._stack(rowf, col["tech"], [st, bt])
+
     def _fill_extra(self, rowf, col, r):
         """子類別額外欄位（基底無）。"""
 
@@ -419,9 +493,9 @@ class TurnoverMonitorView(ctk.CTkFrame):
         self._fill_extra(rowf, col, r)
 
         def lbl(key, text, clr, anc="e", bold=False, size=12):
-            if key not in col:      # 子類別拿掉的欄位（如主力追價合併欄）
+            if key not in col:      # 合併 / 隱藏掉的欄位
                 return
-            if self.ALIGN:
+            if self.ALIGN and key not in self.ALIGN_KEEP:
                 anc = self.ALIGN
             ctk.CTkLabel(
                 rowf, text=text, text_color=clr,
@@ -455,6 +529,13 @@ class TurnoverMonitorView(ctk.CTkFrame):
                 sticky={"center": ""}.get(self.ALIGN, self.ALIGN or ""))
         lbl("code", r["stock_code"], "#d4d4d4", "center")
         lbl("name", r["stock_name"], "#e6e6e6", "w")
+        if "stock" in col:          # 代碼/名稱合併欄：上代碼、下名稱（粗）
+            self._stack(rowf, col["stock"],
+                        [(r["stock_code"], "#d4d4d4"),
+                         (r.get("stock_name", ""), "#e6e6e6", True)],
+                        anchor="w")
+        if "tech" in col:
+            self._fill_tech(rowf, col, r)
         # 收盤（漲跌符號+色）
         chg = r.get("change")
         if chg is None or chg == 0:
@@ -475,6 +556,12 @@ class TurnoverMonitorView(ctk.CTkFrame):
         turn = r.get("turnover_pct")
         if turn is None:        # 無集保股數（新股/ETF）→ 周轉率不可得
             lbl("turn", "—", "#6a6a6a", "e")
+        elif self.TURN_BAR and "turn" in col:
+            hot = turn >= 20
+            self._fill_bar(rowf, col["turn"], f"{turn:.2f}", turn,
+                           getattr(self, "_turn_max", turn),
+                           cs.RED if hot else cs.TXT,
+                           cs.RED if hot else "#6f7480")
         else:
             lbl("turn", f"{turn:.2f}", cs.RED if turn >= 20 else cs.TXT, "e",
                 bold=True)
