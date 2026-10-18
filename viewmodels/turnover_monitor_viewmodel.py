@@ -33,6 +33,7 @@ class TurnoverMonitorViewModel(BaseViewModel):
     MIN_LOTS = 1000
     TOP_N = 30                    # 預設值
     TOP_N_CHOICES = (30, 50, 100)
+    LOADING_TEXT = "計算高周轉率監控（周轉率 + 主力型態 + 技術面）..."
 
     def __init__(self, shioaji_svc=None):
         super().__init__()
@@ -70,7 +71,6 @@ class TurnoverMonitorViewModel(BaseViewModel):
 
         def _work():
             from services.db_service import DbService
-            from services.turnover_monitor_service import lookup_stock
 
             db = DbService()
             try:
@@ -80,7 +80,7 @@ class TurnoverMonitorViewModel(BaseViewModel):
                 if not days:
                     self.search_status = "尚未載入行情視窗，請先重新整理"
                     return
-                row = lookup_stock(db, q, self.data_date, days, imap)
+                row = self._lookup(db, q, days, imap)
                 if row is None:
                     self.search_status = f"查無「{q}」或當日無成交"
                     return
@@ -107,6 +107,11 @@ class TurnoverMonitorViewModel(BaseViewModel):
                 self.search_loading = False
 
         threading.Thread(target=_work, daemon=True).start()
+
+    def _lookup(self, db, q: str, days: list, imap: dict):
+        """搜尋單檔並算出完整監控欄位（子類別可覆寫以補自己的欄位）。"""
+        from services.turnover_monitor_service import lookup_stock
+        return lookup_stock(db, q, self.data_date, days, imap)
 
     def clear_search(self) -> None:
         if not self.search_rows:
@@ -182,18 +187,16 @@ class TurnoverMonitorViewModel(BaseViewModel):
 
     def _work(self) -> None:
         from services.db_service import DbService
-        from services.turnover_monitor_service import latest_monitor
 
         self.is_loading = True
         # 重新載入可能換資料日，舊的搜尋結果會變成不同日期的列，先清掉
         self.search_rows = ()
         self.search_status = ""
-        self.monitor_status = "計算高周轉率監控（周轉率 + 主力型態 + 技術面）..."
+        self.monitor_status = self.LOADING_TEXT
         db = DbService()
         try:
             db.connect()
-            date, rows, ctx = latest_monitor(db, min_lots=self.MIN_LOTS,
-                                             top_n=self.top_n, return_ctx=True)
+            date, rows, ctx = self._fetch(db)
             self.data_date = date
             self.ctx = ctx
         except Exception as e:  # noqa: BLE001
@@ -214,7 +217,16 @@ class TurnoverMonitorViewModel(BaseViewModel):
             r["rank"] = i
         self.monitor_rows = rows
         self._apply_filters()
-        self.monitor_status = (
+        self.monitor_status = self._status_text(date, ctx)
+
+    def _fetch(self, db):
+        """回 (資料日, rows, ctx)。子類別覆寫以換排行來源。"""
+        from services.turnover_monitor_service import latest_monitor
+        return latest_monitor(db, min_lots=self.MIN_LOTS, top_n=self.top_n,
+                              return_ctx=True)
+
+    def _status_text(self, date: str, ctx: dict) -> str:
+        return (
             f"資料日 {date}　量 > {self.MIN_LOTS:,} 張、依周轉率 Top {self.top_n}"
             f"　短沖/隔日沖買入%＝該風格分點當日買入量佔成交量比"
             f"（風格取自系統設定計算的分點風格表，未計算則顯示 —）；"

@@ -59,6 +59,8 @@ _GRAN_BADGE = {"red": ("#ef5350", "#2a0f0f"),
                "flat": ("#3a3b40", "#c7c7cc")}
 
 
+_HEADER_ACCENT_CLR = "#e3b65c"   # 核心指標標題（暖金）
+
 _SHARE_STRONG = 3.0     # 買入佔比 >= 此(%) 以粗體標示（量能明顯）
 
 
@@ -69,6 +71,19 @@ def _fmt_num(v) -> str:
 
 class TurnoverMonitorView(ctk.CTkFrame):
     """高周轉率監控 tab page。"""
+
+    TITLE = "高周轉率監控"
+    COLS = _COLS
+    GRAN_WRAP = False      # 葛蘭碧徽章：訊號與法則名分兩行（可縮窄欄寬）
+    GRAN_BADGE_H = 20
+    ROW_MIN_H = 0          # 資料列最小高度 px（0＝依內容）
+    CELL_WRAP = False      # 自營/避險、同類股漲跌改兩行顯示
+    ALIGN = None           # 表頭與資料統一水平對齊："e"/"center"/"w"；None＝各欄自訂
+    ALIGN_KEEP = ()        # 不受 ALIGN 影響、維持 COLS 自訂對齊的欄位 key
+    HEADER_ALIGN = None    # 表頭水平對齊（優先於 ALIGN）；None＝同資料
+    HEADER_BG = "transparent"   # 表頭底色（非透明時畫成圓角色帶）
+    HEADER_ACCENT = ()     # 以強調色顯示標題的欄位 key（該頁核心指標）
+    ROW_HOVER = None       # 滑鼠移入列的底色；None＝不做 hover
 
     def __init__(self, parent, viewmodel: TurnoverMonitorViewModel):
         super().__init__(parent, fg_color="transparent")
@@ -84,7 +99,7 @@ class TurnoverMonitorView(ctk.CTkFrame):
     def _build_ui(self):
         top = ctk.CTkFrame(self, fg_color="transparent")
         top.pack(fill="x", padx=20, pady=(16, 4))
-        ctk.CTkLabel(top, text="高周轉率監控",
+        ctk.CTkLabel(top, text=self.TITLE,
                      font=ctk.CTkFont(size=22, weight="bold")).pack(side="left")
         self.refresh_btn = ctk.CTkButton(
             top, text="刷新", width=72, height=30, corner_radius=8,
@@ -176,20 +191,32 @@ class TurnoverMonitorView(ctk.CTkFrame):
         card.pack(fill="both", expand=True, padx=16, pady=(0, 16))
 
         # 表頭（固定於卡片頂）
-        header = ctk.CTkFrame(card, fg_color="transparent")
-        header.pack(fill="x", padx=12, pady=(12, 2))
-        for i, (_k, title, w, anc, weight) in enumerate(_COLS):
+        header = ctk.CTkFrame(card, fg_color=self.HEADER_BG,
+                              corner_radius=8)
+        header.pack(fill="x", padx=12, pady=(12, 4))
+        lines = max(t.count("\n") + 1 for _k, t, *_r in self.COLS)
+        for i, (_k, title, w, anc, weight) in enumerate(self.COLS):
             header.grid_columnconfigure(i, weight=weight, minsize=w)
+            if self.HEADER_ALIGN:
+                anc = self.HEADER_ALIGN
+            elif self.ALIGN and _k not in self.ALIGN_KEEP:
+                anc = self.ALIGN
             ctk.CTkLabel(header, text=title,
+                         height=28 if lines == 1 else 17 * lines + 6,
                          font=ctk.CTkFont(size=12, weight="bold"),
-                         text_color="#8a8a8e",
+                         text_color=(_HEADER_ACCENT_CLR
+                                     if _k in self.HEADER_ACCENT
+                                     else "#8a8a8e"),
+                         # 標題可含 \n 換行（子類別藉此縮窄欄寬）
+                         justify=("center" if anc == "center"
+                                  else "right" if anc == "e" else "left"),
                          anchor=("center" if anc == "center"
                                  else "e" if anc == "e" else "w")).grid(
                 row=0, column=i, sticky="ew", padx=3)
 
         self.table = ctk.CTkScrollableFrame(card, fg_color="transparent")
         self.table.pack(fill="both", expand=True, padx=6, pady=(0, 10))
-        for i, (_k, _t, w, _a, weight) in enumerate(_COLS):
+        for i, (_k, _t, w, _a, weight) in enumerate(self.COLS):
             self.table.grid_columnconfigure(i, weight=weight, minsize=w)
 
     # ================================================================ Bindings
@@ -291,13 +318,17 @@ class TurnoverMonitorView(ctk.CTkFrame):
             else:
                 stripe = "#1d1e21" if idx % 2 == 0 else "transparent"
             rowf = ctk.CTkFrame(self.table, fg_color=stripe, corner_radius=4)
-            rowf.grid(row=idx, column=0, columnspan=len(_COLS), sticky="ew",
-                      pady=1)
-            for i, (_k, _t, w, _a, weight) in enumerate(_COLS):
+            rowf.grid(row=idx, column=0, columnspan=len(self.COLS),
+                      sticky="ew", pady=1)
+            for i, (_k, _t, w, _a, weight) in enumerate(self.COLS):
                 rowf.grid_columnconfigure(i, weight=weight, minsize=w)
+            if self.ROW_MIN_H:
+                rowf.grid_rowconfigure(0, minsize=self.ROW_MIN_H)
             self._fill_row(rowf, idx, r)
             # 任何狀態皆可點列開監控彈窗（監控模式僅作視覺標示）
             self._bind_row_click(rowf, r)
+            if self.ROW_HOVER:
+                self._bind_row_hover(rowf, stripe)
             self._row_widgets.append(rowf)
 
     def _bind_row_click(self, rowf, r):
@@ -306,12 +337,49 @@ class TurnoverMonitorView(ctk.CTkFrame):
             self._open_detail(r)
         rowf.configure(cursor="hand2")
         rowf.bind("<Button-1>", _open)
-        for child in rowf.winfo_children():
+        # 遞迴綁定：兩行格 / 迷你橫條等巢狀元件點下去也要能開彈窗
+        stack = list(rowf.winfo_children())
+        while stack:
+            child = stack.pop()
+            stack.extend(child.winfo_children())
             try:
                 child.configure(cursor="hand2")
             except Exception:
                 pass
             child.bind("<Button-1>", _open)
+
+    def _bind_row_hover(self, rowf, base_color):
+        """滑鼠移入整列換底色。子元件的 Enter/Leave 也會觸發，故 Leave 時
+        以游標實際所在的元件判斷是否真的離開這一列。"""
+        def _inside(w):
+            while w is not None:
+                if w is rowf:
+                    return True
+                w = getattr(w, "master", None)
+            return False
+
+        def _enter(_e=None):
+            rowf.configure(fg_color=self.ROW_HOVER)
+
+        def _leave(_e=None):
+            def _chk():
+                try:
+                    x, y = rowf.winfo_pointerxy()
+                    w = rowf.winfo_containing(x, y)
+                except Exception:  # noqa: BLE001
+                    w = None
+                if not _inside(w):
+                    rowf.configure(fg_color=base_color)
+            rowf.after(15, _chk)
+
+        def _walk(w):
+            yield w
+            for ch in w.winfo_children():
+                yield from _walk(ch)
+
+        for w in _walk(rowf):
+            w.bind("<Enter>", _enter, add="+")
+            w.bind("<Leave>", _leave, add="+")
 
     def _open_detail(self, r):
         try:
@@ -326,10 +394,35 @@ class TurnoverMonitorView(ctk.CTkFrame):
         except Exception as e:  # noqa: BLE001
             self.status_label.configure(text=f"開啟監控視窗失敗：{e}")
 
+    def _stack(self, rowf, column, lines, anchor=None):
+        """單格多行：lines 為 [(文字, 顏色[, 粗體[, 字級]])]，由上而下。
+
+        anchor 明確指定時優先，否則依 ALIGN（未設定則靠右）。"""
+        anchor = anchor or self.ALIGN or "e"
+        cell = ctk.CTkFrame(rowf, fg_color="transparent")
+        cell.grid(row=0, column=column, sticky="ew", padx=3, pady=2)
+        for ln in lines:
+            text, clr = ln[0], ln[1]
+            bold = len(ln) > 2 and ln[2]
+            size = ln[3] if len(ln) > 3 else 12
+            ctk.CTkLabel(
+                cell, text=text, text_color=clr, height=16, anchor=anchor,
+                font=ctk.CTkFont(size=size, weight="bold" if bold else "normal")
+            ).pack(side="top", fill="x")
+        return cell
+
+    def _fill_extra(self, rowf, col, r):
+        """子類別額外欄位（基底無）。"""
+
     def _fill_row(self, rowf, idx, r):
-        col = {c[0]: i for i, c in enumerate(_COLS)}
+        col = {c[0]: i for i, c in enumerate(self.COLS)}
+        self._fill_extra(rowf, col, r)
 
         def lbl(key, text, clr, anc="e", bold=False, size=12):
+            if key not in col:      # 子類別拿掉的欄位（如主力追價合併欄）
+                return
+            if self.ALIGN:
+                anc = self.ALIGN
             ctk.CTkLabel(
                 rowf, text=text, text_color=clr,
                 font=ctk.CTkFont(size=size, weight="bold" if bold else "normal"),
@@ -358,7 +451,8 @@ class TurnoverMonitorView(ctk.CTkFrame):
             ctk.CTkLabel(rowf, text=m[0], width=20, height=18, corner_radius=4,
                          fg_color=m[1], text_color="#ffffff",
                          font=ctk.CTkFont(size=10, weight="bold")).grid(
-                row=0, column=col["mkt"], padx=3, pady=2)
+                row=0, column=col["mkt"], padx=3, pady=2,
+                sticky={"center": ""}.get(self.ALIGN, self.ALIGN or ""))
         lbl("code", r["stock_code"], "#d4d4d4", "center")
         lbl("name", r["stock_name"], "#e6e6e6", "w")
         # 收盤（漲跌符號+色）
@@ -369,7 +463,14 @@ class TurnoverMonitorView(ctk.CTkFrame):
             cclr, arrow = cs.RED, "▲"
         else:
             cclr, arrow = cs.GREEN, "▼"
-        lbl("close", f"{arrow}{r['close']:,.2f}", cclr, "e", bold=True)
+        cp = r.get("change_pct")
+        if self.CELL_WRAP and "close" in col and cp is not None:
+            # 兩行：上收盤價（粗）、下漲跌幅%（小字）
+            self._stack(rowf, col["close"],
+                        [(f"{arrow}{r['close']:,.2f}", cclr, True),
+                         (f"{cp:+.2f}%", cclr, False, 11)])
+        else:
+            lbl("close", f"{arrow}{r['close']:,.2f}", cclr, "e", bold=True)
         lbl("vol", f"{r['volume_lots']:,}", "#c7c7cc", "e")
         turn = r.get("turnover_pct")
         if turn is None:        # 無集保股數（新股/ETF）→ 周轉率不可得
@@ -384,9 +485,20 @@ class TurnoverMonitorView(ctk.CTkFrame):
         fs = r.get("flip_buy_share")
         if ss is None and fs is None:
             lbl("mf", "—", "#6a6a6a", "e")      # 該股尚未計算分點風格
+        elif self.CELL_WRAP and "mf" in col:
+            # 同一格兩行：上短沖（藍）、下隔日沖（紅），佔比高者粗體
+            def _ln(tag, val, clr):
+                if val is None:
+                    return (f"{tag} —", "#6a6a6a")
+                return (f"{tag} {val:.1f}", clr if val > 0 else "#5a5a5e",
+                        val >= _SHARE_STRONG)
+            self._stack(rowf, col["mf"], [_ln("短", ss, "#42a5f5"),
+                                          _ln("隔", fs, "#ef5350")])
         else:
             cell = ctk.CTkFrame(rowf, fg_color="transparent")
-            cell.grid(row=0, column=col["mf"], sticky="e", padx=4, pady=2)
+            cell.grid(row=0, column=col["mf"],
+                      sticky={"center": ""}.get(self.ALIGN, self.ALIGN or "e"),
+                      padx=4, pady=2)
             # 隔日沖佔比越高＝隔日賣壓越重，故給紅色警示；短沖藍色中性
             for val, clr in ((ss, "#42a5f5"), (fs, "#ef5350")):
                 if val is None:
@@ -413,7 +525,14 @@ class TurnoverMonitorView(ctk.CTkFrame):
         else:
             hv = hn or 0
             dclr = cs.RED if hv > 0 else cs.GREEN if hv < 0 else cs.FLAT
-            lbl("dealer", f"{sn or 0:+,}/{hn or 0:+,}", dclr, "e")
+            if self.CELL_WRAP and "dealer" in col:
+                # 兩行：上自營、下避險，各自依正負上色
+                sv = sn or 0
+                sclr = cs.RED if sv > 0 else cs.GREEN if sv < 0 else cs.FLAT
+                self._stack(rowf, col["dealer"],
+                            [(f"{sv:+,}", sclr), (f"{hv:+,}", dclr)])
+            else:
+                lbl("dealer", f"{sn or 0:+,}/{hn or 0:+,}", dclr, "e")
         # MA 斜率（價格資料過期時以暗色＋*標示，避免誤讀成當日）
         stale = r.get("price_stale")
         sl = r.get("ma_slope")
@@ -459,12 +578,16 @@ class TurnoverMonitorView(ctk.CTkFrame):
         g = r.get("granville")
         if g and g.get("signal") and stale:
             # 月線/布林全部建立在過期價格上，訊號不可用，直接標示而非照常顯示
-            lbl("gran", f"價格資料至 {stale[5:]}", "#6a6a6a", "center")
+            sep = "\n" if self.GRAN_WRAP else " "
+            lbl("gran", f"價格資料至{sep}{stale[5:]}", "#6a6a6a", "center")
         elif g and g.get("signal"):
             gs = _GRAN_BADGE.get(g["color"], ("#8a8a8e", "#1a1a1c"))
             no = g.get("rule_no") or 0
-            txt = f"{g['signal']}·{g.get('rule_name', '')}" if no else g["signal"]
-            ctk.CTkLabel(rowf, text=txt, height=20, corner_radius=6,
+            sep = "\n" if self.GRAN_WRAP else "·"
+            txt = (f"{g['signal']}{sep}{g.get('rule_name', '')}" if no
+                   else g["signal"])
+            ctk.CTkLabel(rowf, text=txt, height=self.GRAN_BADGE_H,
+                         corner_radius=6,
                          fg_color=gs[0], text_color=gs[1],
                          font=ctk.CTkFont(size=10, weight="bold")).grid(
                 row=0, column=col["gran"], sticky="ew", padx=4, pady=2)
@@ -489,4 +612,8 @@ class TurnoverMonitorView(ctk.CTkFrame):
             avs = f"{av:+.2f}%" if av is not None else "—"
             cnt = f"({up}/{total})" if up is not None and total is not None \
                 else ""
-            lbl("peer", f"{avs} {cnt}".strip(), aclr, "e")
+            if self.CELL_WRAP and "peer" in col and cnt:
+                self._stack(rowf, col["peer"],
+                            [(avs, aclr), (cnt, "#8a8a8e")])
+            else:
+                lbl("peer", f"{avs} {cnt}".strip(), aclr, "e")

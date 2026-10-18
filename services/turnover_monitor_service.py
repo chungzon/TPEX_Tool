@@ -1267,9 +1267,7 @@ def lookup_stock(db, query: str, date: str, days: list, industry_map: dict,
         # 多筆相符取成交量最大者（通常即使用者要找的主標的）
         hit = max(cands, key=lambda r: _numf(r.get("total_volume")))
 
-    code = hit.get("stock_code", "")
-    vol_shares = _numf(hit.get("total_volume"))
-    if vol_shares <= 0:
+    if _numf(hit.get("total_volume")) <= 0:
         return None                   # 當日無成交，周轉率無意義
     if shares_map is None:
         try:
@@ -1277,6 +1275,17 @@ def lookup_stock(db, query: str, date: str, days: list, industry_map: dict,
         except Exception as e:  # noqa: BLE001
             log.warning("shares map failed: %s", e)
             shares_map = {}
+    row = base_row(hit, days, shares_map)
+    row["searched"] = True
+    decorate_rows(db, [row], date, days, industry_map)
+    return row
+
+
+def base_row(hit: dict, days: list, shares_map: dict) -> dict:
+    """由行情視窗最新日的一筆個股資料，組出排行列的基本欄位
+    （收盤/量/周轉率/振幅/漲跌/量增減）。尚未 decorate_rows。"""
+    code = hit.get("stock_code", "")
+    vol_shares = _numf(hit.get("total_volume"))
     shares = shares_map.get(code, 0)
     from services.turnover_service import _amplitude_and_change, _volume_change
     amp5, change = _amplitude_and_change(code, days)
@@ -1295,7 +1304,5 @@ def lookup_stock(db, query: str, date: str, days: list, industry_map: dict,
         "change_pct": (round(change / (close - change) * 100, 2)
                        if change is not None and (close - change) else None),
         "vol_chg_pct": _volume_change(code, days),
-        "searched": True,
     }
-    decorate_rows(db, [row], date, days, industry_map)
     return row

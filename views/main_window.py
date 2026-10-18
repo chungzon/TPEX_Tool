@@ -15,6 +15,7 @@ from viewmodels.signal_viewmodel import SignalViewModel
 from viewmodels.chip_swing_viewmodel import ChipSwingViewModel
 from viewmodels.dashboard_viewmodel import DashboardViewModel
 from viewmodels.turnover_monitor_viewmodel import TurnoverMonitorViewModel
+from viewmodels.main_cost_premium_viewmodel import MainCostPremiumViewModel
 from viewmodels.nextday_monitor_viewmodel import NextDayMonitorViewModel
 from views.tick_monitor_view import TickMonitorView
 from views.nextday_monitor_view import NextDayMonitorView
@@ -32,6 +33,7 @@ from views.signal_view import SignalView
 from views.chip_swing_view import ChipSwingView
 from views.dashboard_view import DashboardView
 from views.turnover_monitor_view import TurnoverMonitorView
+from views.main_cost_premium_view import MainCostPremiumView
 from services.config_service import ConfigService
 from services.scheduler_service import SchedulerService
 from services.shioaji_service import ShioajiService
@@ -103,6 +105,14 @@ class MainWindow(ctk.CTk):
         turnover_monitor_view = TurnoverMonitorView(
             tab_turn_mon, self.turnover_monitor_vm)
         turnover_monitor_view.pack(fill="both", expand=True)
+
+        # Tab 0c: 主力追價（量>1000張、近5日主力買均價 > 5日均價；沿用高周轉率版面）
+        tab_premium = self.tabview.add("主力追價")
+
+        self.premium_vm = MainCostPremiumViewModel(
+            shioaji_svc=self._shioaji_svc)
+        premium_view = MainCostPremiumView(tab_premium, self.premium_vm)
+        premium_view.pack(fill="both", expand=True)
 
         # Tab 1: 即時神手（連次連量多檔監控，共用同一 Shioaji 連線）
         tab1 = self.tabview.add("即時神手")
@@ -231,6 +241,7 @@ class MainWindow(ctk.CTk):
     def _on_close(self):
         self.dashboard_vm.shutdown()
         self.turnover_monitor_vm.shutdown()
+        self.premium_vm.shutdown()
         self.tick_monitor_vm.shutdown()
         self.nextday_vm.shutdown()
         self.batch_vm.shutdown()
