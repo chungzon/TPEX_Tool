@@ -16,6 +16,10 @@ from services.config_service import ConfigService
 
 log = logging.getLogger(__name__)
 
+# 分點覆蓋率達此比例才算「當日已下載完成」，低於就續跑補齊缺口。
+# 不設 1.0：少數個股（停牌、全日無成交）本來就查不到資料，永遠補不滿。
+_COVERAGE_OK = 0.97
+
 
 class SchedulerService:
     """Timer-based daily scheduler that downloads broker data."""
@@ -191,29 +195,44 @@ class SchedulerService:
                 self._status(f"輔助資料下載失敗（不影響主流程）：{e}")
 
         # Check if we already have data for this trading date.
-        # 每個要跑的市場各取一檔抽樣：只看上櫃第一檔的話，上市整批失敗時
-        # 隔天會誤判「已存在」整批跳過，上市分點就永遠補不回來。
+        # 用「覆蓋率」判斷，不抽單檔：下載中途斷線（例如上市只跑完 166/1093）
+        # 時，清單第一檔早就寫入了，抽查會誤判整批已存在而再也補不回來。
         if trading_date:
             from services.db_service import DbService
-            samples: list[tuple[str, str]] = []
-            if market in ("otc", "all") and otc_codes:
-                samples.append(("上櫃", otc_codes[0]))
-            if market in ("twse", "all") and twse_codes:
-                samples.append(("上市", twse_codes[0]))
             db = DbService()
             try:
                 db.connect()
-                missing = [lbl for lbl, code in samples
-                           if not db.broker_data_exists(code, trading_date)]
-                if samples and not missing:
+                have = db.get_broker_stocks_by_date(trading_date)
+                targets: list[tuple[str, list[str]]] = []
+                if market in ("otc", "all") and otc_codes:
+                    targets.append(("上櫃", otc_codes))
+                if market in ("twse", "all") and twse_codes:
+                    targets.append(("上市", twse_codes))
+                gaps: list[str] = []
+                missing: dict[str, list[str]] = {}
+                for lbl, lst in targets:
+                    miss = [c for c in lst if c not in have]
+                    missing[lbl] = miss
+                    if len(miss) > len(lst) * (1.0 - _COVERAGE_OK):
+                        gaps.append(f"{lbl}缺 {len(miss)}/{len(lst)}")
+                if targets and not gaps:
                     self.last_result = f"{trading_date} 資料已存在，跳過"
                     self._status(self.last_result)
                     log.info("Data for %s already exists, skipping", trading_date)
                     return
-                if missing and len(missing) < len(samples):
-                    self._status(f"{trading_date} 缺少 {'/'.join(missing)} 資料，續跑")
-                    log.info("Partial data for %s, missing: %s",
-                             trading_date, missing)
+                if gaps and have:
+                    # 只跑缺的：已下載的個股若照跑，每檔仍要實際連線查一次
+                    # （skip_existing 是查完才比對），幾百檔就是好幾小時白等。
+                    otc_codes = missing.get("上櫃", otc_codes)
+                    twse_codes = missing.get("上市", twse_codes)
+                    codes = (otc_codes if market == "otc"
+                             else twse_codes if market == "twse"
+                             else otc_codes + twse_codes)
+                    self._status(f"{trading_date} {'、'.join(gaps)}，只補缺口")
+                    log.info("Resuming %s, missing only: %s", trading_date, gaps)
+                elif gaps:
+                    self._status(f"{trading_date} {'、'.join(gaps)}，續跑")
+                    log.info("Incomplete data for %s: %s", trading_date, gaps)
             except Exception:
                 pass
             finally:

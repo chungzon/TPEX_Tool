@@ -661,6 +661,20 @@ class DbService:
         )
         return cur.fetchone() is not None
 
+    def get_broker_stocks_by_date(self, trade_date: str) -> set[str]:
+        """該日已有分點明細的股票代號集合。
+
+        整批跳過的判斷要用覆蓋率，不能只抽查清單第一檔：下載中途斷線時
+        前面幾檔已寫入，單檔抽查會誤判「全部已存在」而永遠補不回來。
+        """
+        cur = self._cursor()
+        trade_date = _normalize_date(trade_date)
+        cur.execute(
+            "SELECT DISTINCT stock_code FROM BrokerDailyStats WHERE trade_date=%s",
+            (trade_date,),
+        )
+        return {r[0] for r in cur.fetchall()}
+
     def get_all_broker_buys_by_date(self, trade_date: str) -> list[dict]:
         """All broker buy records for a given date, with stock info."""
         cur = self._cursor()
