@@ -104,13 +104,13 @@ class TurnoverMonitorView(ctk.CTkFrame):
     """高周轉率監控 tab page。"""
 
     TITLE = "高周轉率監控"
-    COLS = styled_cols()
+    COLS = styled_cols(drop=("nd",))   # 隱藏「隔日」欄
     GRAN_WRAP = True       # 葛蘭碧徽章：訊號與法則名分兩行（可縮窄欄寬）
     GRAN_BADGE_H = 34
     ROW_MIN_H = 40         # 資料列最小高度 px（0＝依內容）
     CELL_WRAP = True       # 收盤/短沖隔日沖/自營避險/同類股 改兩行顯示
     ALIGN = "e"            # 資料統一水平對齊："e"/"center"/"w"；None＝各欄自訂
-    ALIGN_KEEP = ("stock", "nd")   # 不受 ALIGN 影響、維持 COLS 自訂對齊的欄位 key
+    ALIGN_KEEP = ("stock",)   # 不受 ALIGN 影響、維持 COLS 自訂對齊的欄位 key
     HEADER_ALIGN = "center"   # 表頭水平對齊（優先於 ALIGN）；None＝同資料
     HEADER_BG = "#202126"     # 表頭底色（非透明時畫成圓角色帶）
     HEADER_ACCENT = ("turn", "mf")  # 以強調色顯示標題的欄位 key（該頁核心指標）
